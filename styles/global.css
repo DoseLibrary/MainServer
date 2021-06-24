@@ -1,0 +1,125 @@
+header {
+    background-color: rgba(14, 26, 33, 0.45);
+    height: 100px;
+    -webkit-box-shadow: 0px 7px 25px -9px rgba(0, 0, 0, 0.4);
+    -moz-box-shadow: 0px 7px 25px -9px rgba(0, 0, 0, 0.4);
+    box-shadow: 0px 7px 25px -9px rgba(0, 0, 0, 0.4);
+    position: absolute;
+    z-index: 100;
+    width: 100%;
+}
+
+body {
+    min-height: 100%;
+    height: 100%;
+    background-color: #232323 !important;
+}
+
+html {
+    min-height: 100%;
+    height: 100%;
+}
+
+#__next {
+    height: 100%;
+}
+
+.video-js .vjs-big-play-button {
+    display: none;
+}
+
+.vjs-menu-button-popup .vjs-menu {
+    left: -6em !important;
+}
+/*
+.plyr {
+    position: absolute;
+    width: 100%
+}
+*/
+
+
+
+p, h1, h2, h3, h4, h5, h6 {
+    font-family: 'Roboto', sans-serif !important;
+}
+
+
+
+
+.backIcon {
+    position: absolute;
+    top: 15px;
+    left: 15px;
+    height: 50px;
+    width: 50px;
+    background-image: url('../public/images/back_icon.png');
+    background-size: contain;
+    background-position: center;
+    cursor: pointer;
+    z-index: 20;
+}
+
+
+
+
+
+.vjs-picture-in-picture-control {
+    display: none !important;
+}
+
+
+
+
+
+/* For chnageImages, changeMetadata */
+.metadataBox {
+    position: fixed;
+    z-index: 100;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 70vw;
+    min-width: 500px;
+    height: 80vh;
+    min-height: 500px;
+    background-color: #1b1b1bf2;
+    padding: 25px;
+    color: white;
+    overflow-y: auto;
+}
+
+.metadataBox form button {
+    float: right;
+}
+
+.metadataBox img {
+    width: 100px;
+}
+
+.list-group-item {
+    background-color: #1b1b1bf2 !important;
+}
+.list-group-item img {
+    float: left;
+    margin-right: 10px;
+}
+
+.metadataSearchRow {
+    background-color: inherit !important;
+}
+
+.buttonMiddle {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+}
+
+.metadataSearchRow img {
+    margin: 0 10px 10px 0;
+    float: left;
+}
+
+.metadataSearchRow button {
+    float: right;
+}
