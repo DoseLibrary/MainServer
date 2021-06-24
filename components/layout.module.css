@@ -1,0 +1,40 @@
+.SearchResult {
+    width: 100%;
+    color: white;
+    overflow: auto;
+    overflow-y: visible;
+    -ms-overflow-style: none;
+    white-space: nowrap;
+    scroll-behavior: smooth;
+    position: relative;
+}
+
+.SearchResult::-webkit-scrollbar { width: 0 !important }
+
+.searchResultBox {
+    width: 100%;
+    height: auto;
+    color: white;
+    position: relative;
+    height: 235px;
+}
+
+.scrollButton {
+    filter: invert(1);
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    cursor: pointer;
+}
+
+.logo {
+    width: 198px !important; 
+    height: auto !important;
+    min-height: 0 !important;
+    min-width: 0 !important;
+    filter: invert(1);
+    position: absolute;
+    top: 50% !important;
+    transform: translateY(-50%) !important;
+    margin: 0 0 0 15px !important;
+}
