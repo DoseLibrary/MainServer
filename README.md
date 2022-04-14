@@ -34,10 +34,10 @@ Client -> MainServer -> Client -> ContentServer -> Client
 
 The client loads the webpage without any information from the MainServer. The client then sends a request to the MovieServer to get the movie information.
 
-### Content Server
-First you have to edit `.env.local` in ContentServer and set the temp folder to a path. This path should have a quite large volume, since the temp transcoding files are located here.
+### Main Server
+Import the file `dose` to a postgresql database called `dose`.
 
-To start the content server run the following commands in the `ContentServer` folder.
+To start the main server run:
 
 `$env:NODE_ENV="production"`
 
@@ -45,10 +45,8 @@ To start the content server run the following commands in the `ContentServer` fo
 
 `npm run start`
 
-Go to http://localhost:3001 and follow the setup process. After you've done the setup steps it's recommended that you restart the server. 
-
 #### Add users
-To add users to the server go to http://localhost:3001/dashboard/admins and add the users. Note that they have to be registered to the Main Server before this step.
+Users register by going to http://localhost:3000 and following the `register` link. Note that this step has to be done before adding users in the Content Server
 
 ## Support
 Join our newly created discord for support [here](https://discord.gg/fKeYBzwxrE)
