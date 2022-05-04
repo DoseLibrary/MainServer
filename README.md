@@ -1,4 +1,7 @@
-# DOSE
+<h1 align="center">DOSE</h1>
+<img src="https://user-images.githubusercontent.com/8510654/166718874-d591ea8e-fd8d-4b36-8326-30cc9b1f7db3.png"/>
+
+
 <div align="center">
   <img src="https://img.shields.io/badge/all_contributors-2-orange.svg?style=flat-square" alt="Coverage status">
   <img src="https://github.com/GustavPS/Dose/actions/workflows/main.yml/badge.svg" alt="CI status">
@@ -7,9 +10,8 @@
   
 </div>
 
-
-
 A complete library solution for movies and TV Shows. Display and view your purchased content via the web using a beautiful UI.
+This is the Main Server (front-end) part of Dose. The ContentServer (backend) is available [here](https://github.com/DoseLibrary/ContentServer)
 
 ### Features
 * Full TV Show support
@@ -56,6 +58,8 @@ I am not responsible or liable in any manner for any illegal content that people
 
 ### General Copyright Statement
 Most of the sourced material is posted according to the “fair use” doctrine of copyright law for non-commercial news reporting, education and discussion purposes. We comply with all takedown requests.
+I do not claim ownership of any of the pictures displayed on this site. I do not knowingly intend or attempt to offend or violate any copyright or intellectual property rights of any entity. Some images used in this project are taken from the web and believed to be in the public domain.
+If any images posted here are in violation of copyright law, please contact me and I will gladly remove the offending images immediately.
 
 You may not use the Service for any illegal or unauthorized purpose. You must not, in the use of the Service, violate any laws in your jurisdiction (including but not limited to copyright or trademark laws).
 
