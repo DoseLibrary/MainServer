@@ -1,6 +1,4 @@
 <h1 align="center">DOSE</h1>
-<img src="https://user-images.githubusercontent.com/8510654/166718874-d591ea8e-fd8d-4b36-8326-30cc9b1f7db3.png"/>
-
 
 <div align="center">
   <img src="https://img.shields.io/badge/all_contributors-2-orange.svg?style=flat-square" alt="Coverage status">
@@ -13,7 +11,16 @@
 A complete library solution for movies and TV Shows. Display and view your purchased content via the web using a beautiful UI.
 This is the Main Server (front-end) part of Dose. The ContentServer (backend) is available [here](https://github.com/DoseLibrary/ContentServer)
 
-### Features
+### Table of Contents
+1. [Features](#Features)
+2. [Android TV](#AndroidTV)
+3. [Setup](#Setup)
+4. [Support](#Support)
+5. [Screenshots](#Screenshots)
+6. [Disclaimer](#Disclaimer)
+7. [Contributors](#Contributors)
+
+# Features <a name="Features"></a>
 * Full TV Show support
 * Full Movie support
 * Support for multiple libraries
@@ -27,10 +34,10 @@ This is the Main Server (front-end) part of Dose. The ContentServer (backend) is
 * Automatically extract subtitles from video files
 * Support for videos with multiple audio streams
 
-### Android TV
+### Android TV <a name="AndroidTV"></a>
 The android TV app is available [here](https://github.com/GustavPS/DoseReactNative)
 
-## Setup
+## Setup <a name="Setup"></a>
 DOSE is made up of two parts, the main server and then one or multiple movie servers. Each movie server connects to a main server. A movie request looks like this:
 Client -> MainServer -> Client -> ContentServer -> Client
 
@@ -50,10 +57,16 @@ To start the main server run:
 #### Add users
 Users register by going to http://localhost:3000 and following the `register` link. Note that this step has to be done before adding users in the Content Server
 
-## Support
+## Support <a name="Support"></a>
 Join our newly created discord for support [here](https://discord.gg/fKeYBzwxrE)
 
-## DISCLAIMER
+## Screenshots <a name="Screenshots"></a>
+<img src="https://user-images.githubusercontent.com/8510654/166718874-d591ea8e-fd8d-4b36-8326-30cc9b1f7db3.png"/>
+<img src="https://user-images.githubusercontent.com/8510654/167170674-38ed5d21-a402-4ff8-93b7-839a4d15b2b4.png"/>
+<img src="https://user-images.githubusercontent.com/8510654/167170857-4b08d67a-91e0-4edc-8ed2-07ad41a98d07.png"/>
+<img src="https://user-images.githubusercontent.com/8510654/167170947-e1d57afb-0648-4877-9ccd-906d4a43f1ae.png"/>
+
+## DISCLAIMER <a name="Disclaimer"></a>
 I am not responsible or liable in any manner for any illegal content that people uses DOSE to view and/or host. I do not control and are not responsible for what people host, transmit, share or view using DOSE. I am not responsible for any illegal, offensive, inappropriate, obscene, unlawful or otherwise objectionable content that people host or view using DOSE.
 
 ### General Copyright Statement
@@ -63,7 +76,7 @@ If any images posted here are in violation of copyright law, please contact me a
 
 You may not use the Service for any illegal or unauthorized purpose. You must not, in the use of the Service, violate any laws in your jurisdiction (including but not limited to copyright or trademark laws).
 
-## Contributors ✨
+## Contributors ✨ <a name="Contributors"></a>
 
 Thanks goes to these wonderful people ([emoji key](https://allcontributors.org/docs/en/emoji-key)):
 
