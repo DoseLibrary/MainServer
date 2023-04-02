@@ -54,7 +54,7 @@ register(e) {
           <div className={LoginStyle.loginForm}>
               <h3 id="statusMessage"></h3>
               <h1>Register</h1>
-              <Link href={"/login"}><a className={LoginStyle.registerLink}>Already have an account? Login now!</a></Link>
+              <Link href={"/login"} className={LoginStyle.registerLink}>Already have an account? Login now!</Link>
               <div style={{clear: 'both'}}></div>
                   <Form onSubmit={this.register}>
                     <Form.Group controlId="formBasicUsername">
