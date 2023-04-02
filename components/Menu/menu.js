@@ -21,9 +21,9 @@ const Menu = (props) => {
 
     return (
         <nav className={className}>
-            <Link href={`/server/${server.server_id}`}><a className={Styles.link}>Home</a></Link>
-            <Link href={`/server/${server.server_id}/movies`}><a className={Styles.link}>Movies</a></Link>
-            <Link href={`/server/${server.server_id}/shows`}><a className={Styles.link}>TV Shows</a></Link>
+            <Link href={`/server/${server.server_id}`} className={Styles.link}>Home</Link>
+            <Link href={`/server/${server.server_id}/movies`} className={Styles.link}>Movies</Link>
+            <Link href={`/server/${server.server_id}/shows`} className={Styles.link}>TV Shows</Link>
         </nav>
     );
 }

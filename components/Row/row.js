@@ -43,12 +43,10 @@ export default function Row(props) {
         <div style={{ display: items.length > 0 ? 'block' : 'none' }}>
             <div className={className} style={style}>
                 {link != undefined &&
-                    <Link href={link}>
-                        <a className={Styles.link}>
-                            <h2 className={Styles.title} style={{ textTransform: 'capitalize' }}>
-                                {title}
-                            </h2>
-                        </a>
+                    <Link href={link} className={Styles.link}>
+                        <h2 className={Styles.title} style={{ textTransform: 'capitalize' }}>
+                            {title}
+                        </h2>
                     </Link>
                 }
                 {link == undefined &&

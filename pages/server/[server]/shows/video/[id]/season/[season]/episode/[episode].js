@@ -115,21 +115,6 @@ export default function Home(props) {
         });
     }, []);
 
-    const onChangeEpisode = (newSeason, newEpisode, newInternalID) => {
-        console.log("Season: " + newSeason + " episode: " + newEpisode);
-        // Change the URL so if the user reloads the page they get to the new episode
-        window.history.replaceState('state', 'Video', `${process.env.NEXT_PUBLIC_SERVER_URL}/server/${server.server_id}/shows/video/${id}/season/${newSeason}/episode/${newEpisode}?internalID=${newInternalID}`);
-        season = newSeason;
-        episode = newEpisode;
-        internalID = newInternalID;
-        console.log("EP: " + newEpisode);
-        videoRef.current.setSeason(newSeason, () => {
-            videoRef.current.setEpisode(newEpisode, () => {
-                videoRef.current.getNextEpisodeID();
-            });
-        });
-    }
-
     const markAsWatched = () => {
         validateServerAccess(server, (serverToken) => {
             fetch(`${server.server_ip}/api/movies/${id}/setWatched?watched=true&token=${serverToken}`)
