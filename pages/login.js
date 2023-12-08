@@ -1,11 +1,13 @@
-import Head from 'next/head'
-import Link from 'next/link';
 import Layout from '../components/layout'
-import LoginStyle from '../styles/login.module.css';
-import { Form, Button } from 'react-bootstrap';
-import cookie from 'js-cookie';
+import styles from '../styles/login.module.css';
 import Router from 'next/router';
 import { Component } from 'react';
+import cookie from 'js-cookie';
+import { Form } from 'react-bootstrap';
+
+
+import { ToastContainer, toast } from 'react-toastify';
+import 'react-toastify/dist/ReactToastify.css';
 
 
 export default class Login extends Component {
@@ -13,14 +15,15 @@ export default class Login extends Component {
     super(props);
     this.state = {
         username: '',
-        password: ''
+        password: '',
+        remember: true
     }
 
     this.login = this.login.bind(this);
-}
+  }
 
-login(e) {
-  e.preventDefault();
+  login(e) {
+    e.preventDefault();
     let serverUrl = process.env.NEXT_PUBLIC_SERVER_URL;
     fetch(`${serverUrl}/api/auth/login`, {
         method: 'POST',
@@ -35,9 +38,16 @@ login(e) {
     .then((r) => r.json())
     .then((data) => {
       if (data && data.status === 'error') {
-        let statusElement = document.getElementById("statusMessage");
-        statusElement.innerHTML = data.message;
-        // Show login error
+        toast.error('Error Logging in!', {
+          position: "top-right",
+          autoClose: 5000,
+          hideProgressBar: false,
+          closeOnClick: true,
+          pauseOnHover: true,
+          draggable: true,
+          progress: undefined,
+          theme: "colored",
+        });
       } else if (data && data.status === 'success') {
         cookie.set('token', data.token, {expires: 7});
         cookie.set('refreshToken', data.refreshToken, {expires: 7});
@@ -45,40 +55,32 @@ login(e) {
         Router.push('/');
       }
     });
-}
-
+  }
+  
   render() {
     return (
-      <Layout home relative>
-        <Head>
-          <title>Login</title>
-        </Head>
+      <Layout>
+        <div className={styles.loginBox}>
+        <img className={styles.logo} src={'/images/logo.png'} alt='logo'></img>
+          <Form onSubmit={this.login}>
+            <label className={styles.inputLabel} htmlFor="uname"><b>Username</b></label>
+            <input className={styles.inputBox} type="text" placeholder="" name="uname" onChange={(e) => this.setState({username: e.target.value})} required></input>
 
-        <div className={LoginStyle.container}>
-        <div className={LoginStyle.loginForm}>
-            <h3 id="statusMessage"></h3>
-            <h1>Login</h1>
-            <Link href={"/register"} className={LoginStyle.registerLink}>Don&apos;t have an account? Register now!</Link>
-            <div style={{clear: 'both'}}></div>
-            <Form onSubmit={this.login}>
-          <Form.Group controlId="formBasicUsername">
-              <Form.Label>Username</Form.Label>
-              <Form.Control type="text" placeholder="Enter username" onChange={(e) => this.setState({username: e.target.value})}/>
-          </Form.Group>
-
-          <Form.Group controlId="formBasicPassword">
-              <Form.Label>Password</Form.Label>
-              <Form.Control type="password" placeholder="Password" onChange={(e) => this.setState({password: e.target.value})}/>
-          </Form.Group>
-          <Button variant="primary" onClick={this.login}>
-              Login
-          </Button>
-          <input type="submit" style={{display: 'none'}} />
-      </Form>
-        </div>
+            <label className={styles.inputLabel} htmlFor="psw"><b>Password</b></label>
+            <input className={styles.inputBox} type="password" placeholder="" name="psw" onChange={(e) => this.setState({password: e.target.value})} required></input>
+            <button type="submit" style={{display: "none"}}></button>
+          </Form>
+          <div className={styles.loginButtonRow}>
+            <button className={styles.loginButton} type="submit" onClick={this.login}>Login</button>
+            <button className={styles.registerButton} onClick={() => { Router.push('/register'); return false }}>Register</button>
+          </div>
         </div>
 
+        <div className={styles.background} style={{backgroundImage: "url(/images/login_bg.jpg)"}}>
+          <div className={styles.blur}></div>
+        </div>
+        <ToastContainer />
       </Layout>
-    )
+    );
   }
 }

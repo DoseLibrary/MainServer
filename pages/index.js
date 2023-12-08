@@ -50,6 +50,9 @@ export default function Home() {
                     {data.servers.map((server, idx) => <ServerBox onClick={() => chooseServer(server)} key={idx} name={server.server_name} adress={server.server_ip}></ServerBox>)}
                 </div>
             }
+            <div className={style.background} style={{backgroundImage: "url(/images/login_bg.jpg)"}}>
+                <div className={style.blur}></div>
+            </div>
 
             {!data &&
                 <h1>Loading</h1>

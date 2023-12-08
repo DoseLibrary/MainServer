@@ -1,0 +1,168 @@
+.loginBox {
+    position: absolute;
+    width: 40em;
+    height: 30em;
+    background-color: #2c2c2c;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    border-radius: 1%;
+    display: flex;
+    flex-direction: column;
+    flex-flow: column;
+    justify-content: center;
+    z-index: 1;
+    opacity: 0.8;
+}
+
+.logo {
+    width: 35%;
+    margin-right: auto;
+    margin-left: auto;
+    filter: invert(1);
+}
+
+.inputBox {
+    width: 75%;
+    margin-top: 0em;
+    margin-left: 4em;
+    outline: none;
+    border: 0;
+    border-bottom: 2px solid #9b9b9b;
+    outline: 0;
+    font-size: 1.3rem;
+    color: #fff;
+    background: transparent;
+    transition: border-color 0.2s;
+}
+
+.inputBox::placeholder {
+    color: transparent;
+}
+  
+.inputLabel {
+    display: block;
+    font-size: 1rem;
+    color: #9b9b9b;
+    margin-left: 5em;
+    margin-top: 2em;
+}
+
+.inputBox:focus {
+    border-width: 2px;
+    border-image: linear-gradient(to right, #11998e, #38ef7d);
+    border-image-slice: 1;
+}
+
+.registerButton {
+    color: whitesmoke;
+    background: #009688;
+    border: 1px solid #009688;
+    font-size: 17px;
+    font-weight: normal;
+    text-decoration: none;
+    min-width: 5em;
+    width: 5em;
+    height: 2em;
+}
+
+.registerButton:hover {
+    opacity: 0.8;
+}
+
+.backButton {
+    color: whitesmoke;
+    background: #009688;
+    border: 1px solid #009688;
+    font-size: 17px;
+    font-weight: normal;
+    text-decoration: none;
+    min-width: 5em;
+    width: 5em;
+    height: 2em;
+    margin-left: 1em;
+}
+
+.backButton:hover {
+    opacity: 0.8;
+}
+
+.footer {
+    display: flex;
+    position: absolute;
+    bottom: 0;
+    justify-content: flex-end;
+    width: 100%;
+}
+
+.registerText {
+    margin-right: 1em;
+}
+
+.signupLink {
+    color: #009688;
+}
+
+.background {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    z-index: 0;
+    background-repeat: no-repeat;
+    background-size: cover;
+}
+
+.blur {
+    background: rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(5px);
+    height: 100vh;
+	width: 100vw;
+}
+
+
+.loginButtonRow {
+    display: inline-flex;
+    width: 100%;
+    justify-content: center;
+    margin-top: 1.5em;
+    align-items: center;
+}
+
+.rememberText {
+    margin-left: 1em;
+}
+
+.rememberLbl {
+    position: relative;
+    display: inline-block;
+    width: 40px;
+    height: 20px;
+    margin-top: 0.15em;
+    margin-left: 0.25em;
+    background-color: rgba(0, 0, 0, 0.25);
+    border-radius: 20px;
+    transition: all 0.3s;
+  }
+.rememberLbl::after {
+    content: '';
+    position: absolute;
+    width: 18px;
+    height: 18px;
+    border-radius:50%;
+    background-color: white;
+    top: 1px;
+    left: 1px;
+    transition: all 0.3s;
+}
+
+.rememberChk:checked + .rememberLbl::after {
+    left : 20px;
+}
+.rememberChk:checked + .rememberLbl {
+    background-color: #009688;
+}
+.rememberChk {
+    display : none;
+}
