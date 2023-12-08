@@ -5,7 +5,7 @@ import { Component, createRef } from 'react';
 export default class ServerBox extends Component {
     constructor(props) {
         super(props);
-        this.imgRef = createRef();
+        this.serverBox = createRef();
 
 
         this.serverName = props.name;
@@ -13,7 +13,7 @@ export default class ServerBox extends Component {
         this.checkStatus();
     }
 
-    fetchWithTimeout(url, options, timeout = 5000) {
+    fetchWithTimeout(url, options, timeout = 10000) {
         return Promise.race([
             fetch(url, options),
             new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), timeout))
@@ -21,28 +21,28 @@ export default class ServerBox extends Component {
     }
 
     checkStatus() {
-        this.fetchWithTimeout(`${this.serverAdress}/api/ping`, {}, 5000)    
+        this.fetchWithTimeout(`${this.serverAdress}/api/ping`, {}, 10000)    
         .then((res) => {
             // check so that the server we are pinging is responding to the request
             if(res.status == 200) {
-                this.imgRef.current.classList.add(style.statusSuccess);
+                this.serverBox.current.classList.add(style.statusSuccess);
+                this.serverBox.current.classList.remove(style.statusPing);
             } else {
-                this.imgRef.current.classList.add(style.statusError);
+                this.serverBox.current.classList.add(style.statusError);
+                this.serverBox.current.classList.remove(style.statusPing);
             }
         })
         .catch(e => {
-            this.imgRef.current.classList.add(style.statusError);
+            this.serverBox.current.classList.add(style.statusError);
+            this.serverBox.current.classList.remove(style.statusPing);
         });
     }
 
     render() {
         return (
-            <div onClick={this.props.onClick} className={style.server}>
-                <h5>{this.serverName}</h5>
-                <div className={style.statusBox}>
-                    <img alt="" ref={this.imgRef} className={style.statusImage} width="40"/>
-                </div>
-                <p>{this.serverAdress}</p>
+            <div onClick={this.props.onClick} className={style.server + ' ' + style.statusPing} ref={this.serverBox}>
+                <img src={'/images/test_logo.png'} alt='server logo' className={style.serverLogo}></img>
+                <p className={style.serverTitle}>{this.serverName}</p>
             </div>
         )
     }

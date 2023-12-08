@@ -1,88 +1,96 @@
-import Head from 'next/head'
-import Link from 'next/link';
-import { Component } from 'react';
 import Layout from '../components/layout'
-import LoginStyle from '../styles/login.module.css';
-import { Form, Button } from 'react-bootstrap';
+import styles from '../styles/register.module.css';
+import { Component } from 'react';
+import { Form } from 'react-bootstrap';
+import Router from 'next/router';
+
+
+import { ToastContainer, toast } from 'react-toastify';
+import 'react-toastify/dist/ReactToastify.css';
 
 
 export default class Register extends Component {
   constructor(props) {
     super(props);
     this.state = {
-        email: '',
+        username: '',
         password: '',
-        username: ''
+        email: ''
     }
 
     this.register = this.register.bind(this);
-}
+  }
 
-register(e) {
-  e.preventDefault();
-    fetch(`${process.env.NEXT_PUBLIC_SERVER_URL}/api/auth/register`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-            email: this.state.email,
-            password: this.state.password,
-            username: this.state.username
-        }),
-    })
-    .then((r) => r.json())
-    .then((data) => {
-      console.log(data.message)
-      let statusElement = document.getElementById("statusMessage");
-      if (data.message == "success") {
-        statusElement.innerHTML = "Successfully created an account";
-      } else {
-        statusElement.innerHTML = data.message;
-      }
-    });
-}
-
+  register(e) {
+    e.preventDefault();
+    console.log(process.env.NEXT_PUBLIC_SERVER_URL)
+      fetch(`${process.env.NEXT_PUBLIC_SERVER_URL}/api/auth/register`, {
+          method: 'POST',
+          headers: {
+              'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+              email: this.state.email,
+              password: this.state.password,
+              username: this.state.username
+          }),
+      })
+      .then((r) => r.json())
+      .then((data) => {
+        console.log(data.message)
+        if (data.message == "success") {
+          toast.success('Successfully created an account!', {
+            position: "top-right",
+            autoClose: 5000,
+            hideProgressBar: false,
+            closeOnClick: true,
+            pauseOnHover: true,
+            draggable: true,
+            progress: undefined,
+            theme: "colored",
+          });
+        } else {
+          toast.error('Error registering account!', {
+            position: "top-right",
+            autoClose: 5000,
+            hideProgressBar: false,
+            closeOnClick: true,
+            pauseOnHover: true,
+            draggable: true,
+            progress: undefined,
+            theme: "colored",
+          });
+        }
+      });
+  }
+  
   render() {
     return (
-      <Layout home>
-        <Head>
-          <title>Register</title>
-        </Head>
-
-        <div className={LoginStyle.container} style={{height: '100vh'}}>
-          <div className={LoginStyle.loginForm}>
-              <h3 id="statusMessage"></h3>
-              <h1>Register</h1>
-              <Link href={"/login"} className={LoginStyle.registerLink}>Already have an account? Login now!</Link>
-              <div style={{clear: 'both'}}></div>
-                  <Form onSubmit={this.register}>
-                    <Form.Group controlId="formBasicUsername">
-                      <Form.Label>Username</Form.Label>
-                      <Form.Control type="text" placeholder="Username" onChange={(e) => this.setState({username: e.target.value})}/>
-                    </Form.Group>
-
-                    <Form.Group controlId="formBasicEmail">
-                        <Form.Label>Email address</Form.Label>
-                        <Form.Control type="email" placeholder="Enter email" onChange={(e) => this.setState({email: e.target.value})}/>
-                        <Form.Text className="text-muted">
-                        We&apos;ll never share your email with anyone else.
-                        </Form.Text>
-                    </Form.Group>
-
-                    <Form.Group controlId="formBasicPassword">
-                        <Form.Label>Password</Form.Label>
-                        <Form.Control type="password" placeholder="Password" onChange={(e) => this.setState({password: e.target.value})}/>
-                    </Form.Group>
-                    <Button variant="primary" onClick={this.register}>
-                        Submit
-                    </Button>
-          <input type="submit" style={{display: 'none'}} />
-
-                </Form>
+      <Layout>
+        <div className={styles.loginBox}>
+        <img className={styles.logo} src={'/images/logo.png'} alt='logo'></img>
+          <Form onSubmit={this.register}>
+            <label className={styles.inputLabel} htmlFor="uname"><b>Username</b></label>
+            <input className={styles.inputBox} type="text" placeholder="" name="uname" onChange={(e) => this.setState({username: e.target.value})} required></input>
+            
+            <label className={styles.inputLabel} htmlFor="email"><b>E-mail</b></label>
+            <input className={styles.inputBox} type="text" placeholder="" name="email" onChange={(e) => this.setState({email: e.target.value})} required></input>
+            
+            <label className={styles.inputLabel} htmlFor="psw"><b>Password</b></label>
+            <input className={styles.inputBox} type="password" placeholder="" name="psw" onChange={(e) => this.setState({password: e.target.value})} required></input>
+            <button type="submit" style={{display: "none"}}></button>
+          </Form>
+          <div className={styles.loginButtonRow}>
+            <button className={styles.registerButton} type="submit" onClick={this.register}>Register</button>
+            <button className={styles.backButton} onClick={() => { Router.push('/login'); return false }}>Back</button>
           </div>
         </div>
+
+        <div className={styles.background} style={{backgroundImage: "url(/images/login_bg.jpg)"}}>
+          <div className={styles.blur}></div>
+        </div>
+        <ToastContainer />
       </Layout>
-    )
+    );
   }
 }
