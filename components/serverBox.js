@@ -33,6 +33,7 @@ export default class ServerBox extends Component {
             }
         })
         .catch(e => {
+            if (this.serverBox.current == null) return; // if the component is unmounted, dont try to set state
             this.serverBox.current.classList.add(style.statusError);
             this.serverBox.current.classList.remove(style.statusPing);
         });

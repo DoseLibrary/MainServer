@@ -7,6 +7,8 @@ import validateServerAccess from '../../../../../../../../lib/validateServerAcce
 import EpisodeRow from '../../../../../../../../components/episodeRow';
 
 import cookies from 'next-cookies'
+import ContentServer from '../../../../../../../../lib/ContentServer';
+import { fetchAuthImage } from '../../../../../../../../lib/fetchAuthImage';
 
 // Fetcher for useSWR, redirect to login if not authorized
 let fetchedMetadata = false;
@@ -14,126 +16,90 @@ let fetchedMetadata = false;
 
 export default function Home(props) {
   const server = props.server;
+  const contentServer = new ContentServer(server);
   const router = useRouter();
   const { id, season } = router.query;
   const serverToken = props.serverToken;
-  const [metadata, setMetadata] = useState({
-      episodes: []
-  });
+  const [metadata, setMetadata] = useState();
+  const [poster, setPoster] = useState(undefined);
+  const [backdrop, setBackdrop] = useState(undefined);
 
   const [loaded, setLoaded] = useState(false)
 
-
-  // This has it's own useEffect because if it doesn't videojs doesn't work (????)
   useEffect(() => {
-    validateServerAccess(server, (serverToken) => {
-      fetch(`${server.server_ip}/api/series/${id}/season/${season}?token=${serverToken}`, {
-        method: 'GET',
-        headers: {
-            'Content-Type': 'application/json'
-        }
-      })
-      .then(r => r.json())
-      .then(result => {
-        let meta = result.result;
-        for (let image of meta.images) {
-          if (image.active && image.type === 'BACKDROP') {
-            meta.backdrop = image.path;
-          }
-        }
-        console.log(meta);
-        
-        let new_added_date = new Date(parseInt(meta.added_date));
-        let added_year = new_added_date.getFullYear();
-        let added_month = new_added_date.getMonth() + 1;
-        if(added_month < 10) {
-          added_month = "0" + added_month.toString();
-        }
-        let adde_date = new_added_date.getDate();
-        if(adde_date < 10) {
-          adde_date = "0" + adde_date.toString();
-        }
-        meta.added_date = `${added_year}-${added_month}-${adde_date}`
-  
-        meta.poster = meta.poster_path;
-        setMetadata(meta);
-        return () => {
-        }
-      }).then(() => {
-        setLoaded(true)
-      });
+    contentServer.getSeasonInfo(id, season).then(async (result) => {
+      setMetadata(result);
+      const posterUrl = await fetchAuthImage(`${server.server_ip}/api/image/${result.posterId}?size=small`);
+      const backdropUrl = await fetchAuthImage(`${server.server_ip}/api/image/${result.backdropId}?size=large`);
+      setPoster(posterUrl);
+      setBackdrop(backdropUrl);
+      setLoaded(true);
     });
   }, []);
 
-  const selectEpisode = (episodeID, internalID) => {
-      Router.push(`/server/${server.server_id}/shows/video/${id}/season/${season}/episode/${episodeID}?internalID=${internalID}`);
+  const selectEpisode = (episodeID) => {
+    Router.push(`/server/${server.server_id}/shows/video/${id}/season/${season}/episode/${episodeID}`);
   }
-
-
 
   const getEpisodeElements = () => {
-      console.log(metadata);
-      let episodeElements = [];
-      for (let episode of metadata.episodes) {
-        console.log(episode.backdrop);
-          let img = episode.backdrop !== null ? `https://image.tmdb.org/t/p/w500/${episode.backdrop}` : 'https://via.placeholder.com/2000x1000' 
-          episodeElements.push(
-              <>
-              <EpisodeRow name={episode.name} overview={episode.overview} episode={episode.episode}  backdrop={img} onClick={() => selectEpisode(episode.episode, episode.internalID)}></EpisodeRow>
-              <br></br>
-              <br></br>
-              </>
-          )
-      }
-      return episodeElements;
+    return metadata.episodes.map(episode => {
+      const image = episode.backdropId != null ? `${server.server_ip}/api/image/${episode.backdropId}?size=small` : undefined;
+      return (
+        <EpisodeRow
+          key={episode.episode}
+          name={episode.name}
+          overview={episode.overview}
+          episode={episode.episode}
+          backdrop={image}
+          onClick={() => selectEpisode(episode.episode)}
+        />
+      );
+    });
   }
 
-
-
-  
   return (
 
     <>
-    {!loaded &&
-      <div className={Styles.loadingioSpinnerEclipse}>
+      {!loaded &&
+        <div className={Styles.loadingioSpinnerEclipse}>
           <div className={Styles.ldio}>
-              <div></div>
-          </div>
-      </div>
-    }
-    {loaded &&
-    <>
-        <Head>
-          <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300&display=swap" rel="stylesheet" />
-        </Head>
-
-        <div id="container">
-        <div style={{backgroundImage: `url('https://image.tmdb.org/t/p/original${metadata.backdrop}')`}} className={Styles.background}></div>
-        <div className="backIcon" onClick={() => Router.back()}></div>
-
-
-        <div className={Styles.top}>
-          <div className={Styles.poster} style={{backgroundImage: `url('https://image.tmdb.org/t/p/original${metadata.poster}')`}} />
-          <div className={Styles.description}>
-            <h1>{metadata.name}</h1>
-            <div className={Styles.metadata}>
-              <p className={Styles.releaseDate}>First air date: {metadata.air_date}</p>
-              <p className={Styles.addedDate}>Added to library: {metadata.added_date}</p>
-            </div>
-            <div className={Styles.overview}>
-                <p>{metadata.overview}</p>
-            </div>
-            <div className={Styles.actions}>
-            </div>
+            <div></div>
           </div>
         </div>
-        <div className={Styles.bottom}>
-          <h1>Episodes</h1>
-          <div className={Styles.EpisodeContainer}>
-            {getEpisodeElements()}
+      }
+      {loaded &&
+        <>
+          <Head>
+            <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300&display=swap" rel="stylesheet" />
+          </Head>
+
+          <div id="container">
+            <div style={{ backgroundImage: `url('${backdrop}')` }} className={Styles.background}></div>
+            <div className="backIcon" onClick={() => Router.back()}></div>
+
+
+            <div className={Styles.top}>
+              <div className={Styles.poster} style={{ backgroundImage: `url('${poster}')` }} />
+              <div className={Styles.description}>
+                <h1>{metadata.show.title} {metadata.title}</h1>
+                <div className={Styles.metadata}>
+                  <p className={Styles.releaseDate}>First air date: {metadata.airDate}</p>
+                  <p className={Styles.addedDate}>Added to library: {metadata.addedDate}</p>
+                </div>
+                <div className={Styles.overview}>
+                  <p>{metadata.overview}</p>
+                </div>
+                <div className={Styles.actions}>
+                </div>
+              </div>
+            </div>
+            <div className={Styles.bottom}>
+              <h1>Episodes</h1>
+              <div className={Styles.EpisodeContainer}>
+                {getEpisodeElements()}
+              </div>
+            </div>
           </div>
-        </div>
-        </div>
         </>
       }
     </>
@@ -146,21 +112,21 @@ export async function getServerSideProps(context) {
   let movieID = context.params.id;
 
   return await fetch(`http://localhost:${process.env.SERVER_PORT}${process.env.SERVER_SUB_FOLDER}/api/servers/getServer`, {
-      method: 'POST',
-      headers: {
-          'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-          id: serverId
-      }),
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      id: serverId
+    }),
   })
-  .then((r) => r.json())
-  .then(async (data) =>{
-    return {
+    .then((r) => r.json())
+    .then(async (data) => {
+      return {
         props: {
-            server: data.server,
-            serverToken: cookies(context).serverToken || ''
+          server: data.server,
+          serverToken: cookies(context).serverToken || ''
         }
-    }
-  });
+      }
+    });
 }

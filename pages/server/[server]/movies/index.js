@@ -19,12 +19,12 @@ const MoviePage = (props) => {
         contentServer.getAllGenres().then(genres => {
             const promises = [];
             for (const genre of genres) {
-                promises.push(contentServer.getMoviesByGenre(genre.name));
+                promises.push(contentServer.getMoviesByGenre(genre));
             }
             Promise.all(promises).then(values => {
                 setGenres(values.map((movies, idx) => {
                     return {
-                        name: genres[idx].name,
+                        name: genres[idx],
                         movies: movies
                     }
                 }));
@@ -41,7 +41,7 @@ const MoviePage = (props) => {
     }
 
     const renderMovie = (item, _index) => {
-        const img = item.backdrop !== null ? `https://image.tmdb.org/t/p/w500/${item.backdrop}` : 'https://via.placeholder.com/2000x1000'
+        const img = item.backdropId != null ? `${server.server_ip}/api/image/${item.backdropId}?size=small` : undefined;
         return (
             <MovieBackdrop id={item.id} time={item.watchtime} runtime={item.runtime} title={item.title}
                 overview={item.overview} backdrop={img} onClick={(id) => selectMovie(item.id)}>

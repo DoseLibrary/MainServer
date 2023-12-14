@@ -12,6 +12,8 @@ import EpisodePoster from '../../../components/episodePoster';
 import socketIOClient from "socket.io-client";
 import ContentServer from '../../../lib/ContentServer';
 
+const randomId = () => (Math.random() + 1).toString(36).substring(7);
+
 const Main = (props) => {
     // props.server is from the SSR under this function
     const server = props.server;
@@ -45,7 +47,7 @@ const Main = (props) => {
             setMovieWatchList(watchlist);
             setNewlyAddedMovies(newlyAddedMovies);
             setNewlyAddedShows(newlyAddedShows);
-            setOngoingShows([...ongoingShows.upcoming, ...ongoingShows.ongoing]);
+            setOngoingShows(ongoingShows);
             setNewlyAddedEpisodes(newlyAddedEpisodes);
             setLoaded(true);
         });
@@ -71,7 +73,7 @@ const Main = (props) => {
     }
 
     useEffect(() => {
-        setupSockets();
+        // setupSockets();
         fetchData();
         contentServer.getRandomTrailer().then(movie => {
             setRecommendedMovie(movie);
@@ -89,45 +91,43 @@ const Main = (props) => {
         Router.push(`/server/${server.server_id}/shows/video/${id}`);
     }
 
-    const selectEpisode = (showID, seasonNumber, episodeNumber, internalEpisodeID) => {
-        Router.push(`/server/${server.server_id}/shows/video/${showID}/season/${seasonNumber}/episode/${episodeNumber}?internalID=${internalEpisodeID}`)
+    const selectEpisode = (showID, seasonNumber, episodeNumber) => {
+        Router.push(`/server/${server.server_id}/shows/video/${showID}/season/${seasonNumber}/episode/${episodeNumber}`)
     }
 
     const renderMovie = (item, index) => {
-        const img = item.backdrop !== null ? `https://image.tmdb.org/t/p/w500/${item.backdrop}` : 'https://via.placeholder.com/2000x1000'
+        const img = item.backdropId != null ? `${server.server_ip}/api/image/${item.backdropId}?size=small` : undefined;
         return (
             <MovieBackdrop id={item.id} time={item.watchtime} runtime={item.runtime} title={item.title}
-                overview={item.overview} backdrop={img} onClick={(id) => selectMovie(item.id)}>
+                key={item.id} overview={item.overview} backdrop={img} onClick={(id) => selectMovie(item.id)}>
             </MovieBackdrop>
         )
     }
 
     const renderShows = (item, index) => {
-        const img = item.backdrop !== null ? `https://image.tmdb.org/t/p/w500/${item.backdrop}` : 'https://via.placeholder.com/2000x1000'
+        const img = item.backdropId != null ? `${server.server_ip}/api/image/${item.backdropId}?size=small` :  undefined;
         return (
             <MovieBackdrop id={item.id} time={item.watchtime} runtime={item.runtime} title={item.title} overview={item.overview}
-                backdrop={img} onClick={(id) => selectShow(item.id)}>
+                key={randomId() + item.id} backdrop={img} onClick={(id) => selectShow(item.id)}>
             </MovieBackdrop>
         )
     }
 
     const renderEpisodes = (item, index) => {
-        const poster = item.season_poster !== null ? `https://image.tmdb.org/t/p/w500/${item.season_poster}` : 'https://via.placeholder.com/500x1000';
-        const backdrop = item.backdrop !== null ? `https://image.tmdb.org/t/p/w500/${item.backdrop}` : 'https://via.placeholder.com/500x1000'
+        const poster = item.posterId != null ? `${server.server_ip}/api/image/${item.posterId}?size=small` : undefined;
         return (
-            <EpisodePoster show={item.serie_id} season={item.season} episode={item.episode} poster={poster}
-                internalEpisodeID={item.internalepisodeid} backdrop={backdrop}
-                onClick={(season, episode, show, internalEpisodeID) => selectEpisode(show, season, episode, internalEpisodeID)}>
+            <EpisodePoster show={item.showId} season={item.season} episode={item.episode} poster={poster}
+                key={randomId() + item.id} onClick={(season, episode, show) => selectEpisode(show, season, episode)}>
             </EpisodePoster>
         );
     };
 
     const renderOngoing = (item, index) => {
-        let img = item.backdrop !== null ? `https://image.tmdb.org/t/p/w500/${item.backdrop}` : 'https://via.placeholder.com/2000x1000'
+        const img = item.backdropId != null ? `${server.server_ip}/api/image/${item.backdropId}?size=small` : undefined;
         return (
-            <MovieBackdrop showTitle id={item.id} time={item.time_watched} title={item.season_name + " - Episode " + item.episode_number}
-                overview={item.overview} runtime={item.total_time} backdrop={img}
-                onClick={(id) => selectEpisode(item.show_id, item.season_number, item.episode_number, item.internalepisodeid)}>
+            <MovieBackdrop showTitle id={item.id} time={item.watchtime} title={`Season ${item.season} episode ${item.episode}`}
+                overview={item.overview} runtime={item.runtime} backdrop={img} key={`Season ${item.season} episode ${item.episode}`}
+                onClick={(id) => selectEpisode(item.showId, item.season, item.episode)}>
             </MovieBackdrop>
         );
     }
@@ -153,13 +153,13 @@ const Main = (props) => {
                 {recommendedMovie != false &&
                     <div className={Styles.recommended}>
                         <video autoPlay={true} loop={true} preload="auto" muted>
-                            <source src={`${server.server_ip}/api/trailer/${recommendedMovie["id"]}?type=MOVIE&token=${cookie.get('serverToken')}`} type="video/mp4" />
+                            <source src={`${server.server_ip}/api/movie/${recommendedMovie["id"]}/trailer?token=${cookie.get('serverToken')}`} type="video/mp4" />
                         </video>
                         <div className={Styles.recommendedInformation}>
-                            {recommendedMovie["activeLogo"] != false &&
-                                <img src={`https://image.tmdb.org/t/p/original/${recommendedMovie["activeLogo"].path}`} className={Styles.logo} alt="Logo" />
+                            {recommendedMovie["logoId"] != undefined &&
+                                <img src={`${server.server_ip}/api/image/${recommendedMovie.logoId}?size=medium`} className={Styles.logo} alt="Logo" />
                             }
-                            {recommendedMovie["activeLogo"] == false &&
+                            {recommendedMovie["logoId"] == undefined &&
                                 <h1>{recommendedMovie["title"]}</h1>
                             }
                             <p>{recommendedMovie["overview"]}</p>

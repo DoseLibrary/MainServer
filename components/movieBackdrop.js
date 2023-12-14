@@ -1,23 +1,34 @@
 import style from './movieBackdrop.module.css';
 import validateServerAccess from '../lib/validateServerAccess';
 import { Component } from 'react';
+import { fetchAuthImage } from '../lib/fetchAuthImage';
 
 export default class MovieBackdrop extends Component {
     constructor(props) {
         super(props);
         this.title = props.title;
-        this.overview = props.overview;
-        this.poster = props.poster
-        this.runtime = props.runtime;
+        this.overview = props.overview || "";
         this.backdrop = props.backdrop;
+        this.runtime = props.runtime;
         this.id = props.id;
         this.time = props.time ? props.time : null;
         this.runtime = props.runtime ? props.runtime : null;
         this.markAsDoneButton = props.markAsDoneButton;
-        this.showTitle = props.showTitle;
+        this.showTitle = this.backdrop === undefined || props.showTitle;
         this.multipleRows = props.multipleRows ? props.multipleRows : null;
         this.animate = props.animate ? props.animate : false
         this.markAsWatched = this.markAsWatched.bind(this);
+
+        this.state = {
+            backdropUrl: undefined
+        }
+    }
+
+    async componentDidMount() {
+        if (this.backdrop !== undefined) {
+            const backdropUrl = await fetchAuthImage(this.backdrop);
+            this.setState({ backdropUrl });
+        }
     }
 
     markAsWatched() {
@@ -45,8 +56,11 @@ export default class MovieBackdrop extends Component {
     }
 
     getBackdropStyle() {
-        let style = {
-            backgroundImage: `url('${this.backdrop}')`
+        let style = {};
+        if (this.state.backdropUrl !== undefined) {
+            style.backgroundImage = `url('${this.state.backdropUrl}')`;
+        } else {
+            style.backgroundColor = 'black';
         }
         if (this.multipleRows) {
             style.marginBottom = "20px";

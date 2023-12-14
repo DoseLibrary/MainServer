@@ -1,3 +1,4 @@
+import { fetchAuthImage } from '../lib/fetchAuthImage';
 import Styles from './actor.module.css';
 import { Component } from 'react';
 
@@ -8,14 +9,29 @@ export default class Actor extends Component {
         this.characterName = props.characterName;
         this.image = props.image;
         this.id = props.id;
+
+        this.state = {
+            imageUrl: undefined
+        }
+    }
+
+    componentDidMount() {
+        if (this.image) {
+            fetchAuthImage(this.image)
+                .then(url => this.setState({ imageUrl: url }))
+        }
+    }
+
+    getImageStyle() {
+        return {
+            backgroundImage: `url('${this.state.imageUrl}')`
+        }
     }
 
     render() {
         return (
             <div className={Styles.actorBox}>
-                <div className={Styles.actorImage} style={{backgroundImage: `url('https://image.tmdb.org/t/p/w500${this.image}')`}}>
-
-                </div>
+                <div className={Styles.actorImage} style={this.getImageStyle()}></div>
                 <h2>{this.name}</h2>
                 <p>as {this.characterName}</p>
             </div>

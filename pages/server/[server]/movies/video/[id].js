@@ -1,7 +1,7 @@
 import Head from 'next/head'
 import { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/router'
-import { Form, Button, ListGroup, Image} from 'react-bootstrap';
+import { Form, Button, ListGroup, Image } from 'react-bootstrap';
 import Styles from '../../../../../styles/movies.video.module.css';
 import Router from 'next/router';
 import cookies from 'next-cookies'
@@ -12,18 +12,25 @@ import Actor from '../../../../../components/actor';
 import useWindowSize from '../../../../../components/hooks/WindowSize';
 import MovieBackdrop from '../../../../../components/movieBackdrop';
 import ChangeImages from '../../../../../components/changeImages';
+import ContentServer from '../../../../../lib/ContentServer';
+import { fetchAuthImage } from '../../../../../lib/fetchAuthImage';
 
 
 export default function Home(props) {
   const server = props.server;
+  const contentServer = new ContentServer(server);
   const router = useRouter();
   const { id } = router.query;
   const serverToken = props.serverToken;
   const [metadata, setMetadata] = useState({});
+  const [endsAt, setEndsAt] = useState('unknown');
   const [watched, setWatched] = useState(false);
   const [inWatchList, setInWatchList] = useState(false);
-  const [actors, setActors] = useState([]);
+  const [watchtime, setWatchtime] = useState(undefined);
+  const [characters, setCharacters] = useState([]);
   const [recommended, setRecommended] = useState([]);
+  const [backdrop, setBackdrop] = useState(undefined);
+  const [poster, setPoster] = useState(undefined);
 
   const [viewTrailer, setViewTrailer] = useState(false);
   const [trailer, setTrailer] = useState(false);
@@ -41,249 +48,139 @@ export default function Home(props) {
   const [metadataSearchResult, setMetadataSearchResult] = useState([]);
   const metadataSearch = useRef(null);
 
+  const formatSeconds = (seconds) => {
+    const hours = Math.floor(seconds / 3600);
+    let minutes = Math.floor(seconds / 60) - hours * 60;
+    let secondsLeft = seconds - minutes * 60 - hours * 3600;
 
+    // Pad minutes and seconds with leading zero if needed
+    minutes = minutes.toString().padStart(2, '0');
+    secondsLeft = secondsLeft.toString().padStart(2, '0');
+
+    let timeString = '';
+    if (hours > 0) {
+      timeString += `${hours}:`;
+    }
+    timeString += `${minutes}:${secondsLeft}`;
+
+    return timeString;
+  }
 
   // This has it's own useEffect because if it doesn't videojs doesn't work (????)
   useEffect(() => {
-    validateServerAccess(server, (serverToken) => {
-      fetch(`${server.server_ip}/api/movies/${id}/getRecommended?token=${serverToken}`, {
-        method: 'GET',
-        headers: {
-            'Content-Type': 'application/json'
-        }
-      })
-      .then(r => r.json())
-      .then(result => {
-        if (result.success) {
-          console.log(result);
-          result.movies.forEach(movie => {
-            for (let image of movie.images) {
-                if (image.active) {
-                    if (image.type === 'BACKDROP') {
-                        if (image.path === 'no_image') {
-                            movie.backdrop = null;
-                        } else {
-                            movie.backdrop = image.path;
-                        }
-                    } else {
-                        if (image.path === 'no_image') {
-                            movie.backdrop = null;
-                        } else {
-                            movie.poster = image.path;
-                        }
-                    }
-
-                    if (movie.backdrop != null && movie.poster != null) {
-                        break;
-                    }
-                }
-            }
-        });
-          setRecommended(result.movies);
-        }
-      })
-      .then(() => {
+    contentServer.listRecommendedMovies(id)
+      .then(movies => {
+        setRecommended(movies);
         setRecommendedLoaded(true);
       });
 
+    contentServer.getMovieInfo(id)
+      .then(async ({ movie, characters, userMovieData }) => {
+        // videoRef.current.setTitle(meta.title);
 
-
-      fetch(`${server.server_ip}/api/movies/${id}?token=${serverToken}`, {
-        method: 'GET',
-        headers: {
-            'Content-Type': 'application/json'
+        const posterUrl = await fetchAuthImage(`${server.server_ip}/api/image/${movie.posterId}?size=small`);
+        const backdropUrl = await fetchAuthImage(`${server.server_ip}/api/image/${movie.backdropId}?size=original`);
+        setPoster(posterUrl);
+        setBackdrop(backdropUrl);
+        setMetadata(movie);
+        setCharacters(characters);
+        setInWatchList(userMovieData.inWatchlist);
+        setWatchtime(userMovieData.timeWatched);
+        setWatched(userMovieData.watched);
+        if (movie.duration) {
+          const endsAt = new Date(Date.now() + movie.duration * 1000);
+          setEndsAt(endsAt.toTimeString().split(' ')[0]);
         }
-      })
-      .then(r => r.json())
-      .then(result => {
-        let meta = result.result;
-        console.log(meta)
-        let finish_at = new Date(new Date().getTime() + meta.runtime * 60000);
-        meta.finish_at = finish_at.getHours() + ":" + finish_at.getMinutes();
-        for (let image of meta.images) {
-          if (image.active && image.type === 'BACKDROP') {
-            meta.backdrop = image.path;
-          }
-          if (image.active && image.type === 'POSTER') {
-            meta.poster = image.path;
-          }
-        }
-        
-        let new_added_date = new Date(parseInt(meta.added_date));
-        let added_year = new_added_date.getFullYear();
-        let added_month = new_added_date.getMonth() + 1;
-        if(added_month < 10) {
-          added_month = "0" + added_month.toString();
-        }
-        let adde_date = new_added_date.getDate();
-        if(adde_date < 10) {
-          adde_date = "0" + adde_date.toString();
-        }
-        meta.added_date = `${added_year}-${added_month}-${adde_date}`
-  
-        let currentTime = "";
-        let hours = Math.floor(meta.currentTime / 60 / 60)
-        let minutes = Math.floor((meta.currentTime / 60) % 60)
-        let seconds = Math.floor(meta.currentTime % 60);
-        if (hours >= 1) {
-          currentTime += `${hours}:`
-        }
-        if (minutes < 10) {
-          minutes = `0${minutes}`;
-        }
-        if (seconds < 10) {
-          seconds = `0${seconds}`
-        }
-        currentTime += `${minutes}:${seconds}`
-        meta.currentTimeSeconds = meta.currentTime;
-        meta.currentTime = currentTime;
-        console.log(videoRef)
-        videoRef.current.setTitle(meta.title);
-  
-        setInWatchList(meta.inwatchlist);
-        setWatched(meta.watched);
-        setMetadata(meta);
-        setTrailer(meta.trailer);
-        meta.actors = meta.actors.sort((a, b) => {
-          return parseFloat(a.order) - parseFloat(b.order);
-        });
-        setActors(meta.actors);
-
+        //setTrailer(meta.trailer);
         if (router.query.autoPlay) {
           videoRef.current.show();
         }
       }).then(() => {
         setLoaded(true)
       });
-    });
   }, []);
 
   const markAsWatched = () => {
-    validateServerAccess(server, (serverToken) => {
-      fetch(`${server.server_ip}/api/movies/${id}/setWatched?watched=true&token=${serverToken}`)
-      .then(r => r.json())
-      .then(status => {
-        if (status.success) {
-          setWatched(true);
-        } else {
-          console.log("ERROR MARKING AS WATCHED: " + status);
-        }
-      }).catch(err => {
+    contentServer.markMovieAsWatched(id)
+      .then(() => setWatched(true))
+      .catch(err => {
+        console.log("ERROR MARKING AS WATCHED: " + status);
         console.log(err);
       });
-    });
-
   }
 
   const markAsNotWatched = () => {
-    validateServerAccess(server, (serverToken) => {
-      fetch(`${server.server_ip}/api/movies/${id}/setWatched?watched=false&token=${serverToken}`)
-      .then(r => r.json())
-      .then(status => {
-        if (status.success) {
-          setWatched(false);
-        } else {
-          console.log("ERROR MARKING AS WATCHED: " + status);
-        }
-      })
+    contentServer.markMovieAsUnwatched(id)
+      .then(() => setWatched(false))
       .catch(err => {
+        console.log("ERROR MARKING AS NOT WATCHED: " + status);
         console.log(err);
       });
-    });
   }
 
   const addToWatchList = () => {
-    validateServerAccess(server, (serverToken) => {
-      fetch(`${server.server_ip}/api/movies/${id}/addToWatchList?add=true&token=${serverToken}`)
-      .then(r => r.json())
-      .then(status => {
-        if (status.success) {
-          setInWatchList(true);
-        } else {
-          console.log("ERROR adding to watchlist: " + status);
-        }
-      })      .catch(err => {
+    contentServer.addMovieToWatchlist(id)
+      .then(() => setInWatchList(true))
+      .catch(err => {
+        console.log("ERROR adding to watchlist: " + status);
         console.log(err);
       });
-    });
   }
 
   const removeFromWatchList = () => {
-    validateServerAccess(server, (serverToken) => {
-      fetch(`${server.server_ip}/api/movies/${id}/addToWatchList?add=false&token=${serverToken}`)
-      .then(r => r.json())
-      .then(status => {
-        if (status.success) {
-          setInWatchList(false);
-        } else {
-          console.log("ERROR removing from watchlist: " + status);
-        }
-      })
+    contentServer.removeMovieFromWatchlist(id)
+      .then(() => setInWatchList(false))
       .catch(err => {
+        console.log("ERROR removing from watchlist: " + status);
         console.log(err);
       });
-    });
   }
 
   const searchMetadata = (event) => {
     let search = metadataSearch.current.value;
-    if(search != ""){
-      validateServerAccess(server, (serverToken) => {
-        fetch(`${server.server_ip}/api/movies/searchMetadata?search=${search}&token=${serverToken}`)
-        .then(r => r.json())
-        .then(result => {
-          console.log(result);
-          let metadataElements = [];
-          for (let movie of result) {
-            const img = movie.poster_path !== null ? `https://image.tmdb.org/t/p/w500/${movie.poster_path}` : 'https://via.placeholder.com/500x750' 
-            metadataElements.push(
-              <ListGroup.Item key={movie.id} className={Styles.metadataSearchRow} data-metadataid={movie.id}>
-                <Image src={img} alt="" />
-                <div>
-                  <h5>{movie.title}</h5>
-                  <p>{movie.overview}</p>
-                </div>
-                <Button onClick={() => updateMetadata(movie.id)}>Välj</Button>
-              </ListGroup.Item>
-            );        
-          }
-          setMetadataSearchResult(metadataElements);
-        });
-      });
+    if (search != "") {
+      contentServer.searchForMovieMetadata(search)
+        .then(result => result.map(movie => (
+          <ListGroup.Item key={movie.externalid} className={Styles.metadataSearchRow} data-metadataid={movie.externalid}>
+            <Image
+              src={movie.poster !== undefined ? `https://image.tmdb.org/t/p/w500/${movie.poster}` : 'https://via.placeholder.com/500x750'}
+              alt=""
+            />
+            <div>
+              <h5>{movie.title}</h5>
+              <p>{movie.overview}</p>
+            </div>
+            <Button onClick={() => updateMetadata(movie.externalId)}>Choose</Button>
+          </ListGroup.Item>
+        )))
+        .then(setMetadataSearchResult);
     }
-   
+
     event.preventDefault();
   }
 
-  const updateMetadata = (metadataID) => {
-    validateServerAccess(server, (serverToken) => {
-      fetch(`${server.server_ip}/api/movies/${id}/updateMetadata?metadataID=${metadataID}&token=${serverToken}`)
-      .then(r => r.json())
-      .then(json => {
-        if (json.success) {
-          Router.reload(window.location.pathname);
-        }
-      });
-    });
+  const updateMetadata = (externalId) => {
+    contentServer.updateMovieMetadata(id, externalId)
+      .then(() => Router.reload(window.location.pathname));
   }
 
 
-  const getActors = () => {
-    let elements = [];
-    for (const actor of actors) {
-      elements.push(
-        <Actor key={actor.order} name={actor.name} characterName={actor.character} image={actor.image} />
-      )
-    }
-    return elements;
+  const getCharacters = () => {
+    return characters.map(character =>
+      <Actor
+        key={character.orderInCredit}
+        name={character.actor.name}
+        characterName={character.name}
+        image={character.actor.imageId ? `${server.server_ip}/api/image/${character.actor.imageId}?size=small` : undefined}
+      />)
   }
 
   const getRecommended = () => {
     let elements = [];
     for (const movie of recommended) {
-      let img = movie.backdrop !== null ? `https://image.tmdb.org/t/p/w500/${movie.backdrop}` : 'https://via.placeholder.com/2000x1000' 
+      const img = movie.backdropId != null ? `${server.server_ip}/api/image/${movie.backdropId}?size=small` : undefined;
       elements.push(
-          <MovieBackdrop markAsDoneButton id={movie.id} time={0} runtime={0} title={movie.title} overview={movie.overview} backdrop={img} onClick={(id) => selectMovie(movie.id)}></MovieBackdrop>
+        <MovieBackdrop markAsDoneButton id={movie.id} runtime={movie.duration} title={movie.title} overview={movie.overview} backdrop={img} onClick={(id) => selectMovie(movie.id)}></MovieBackdrop>
       );
     }
     return elements;
@@ -293,204 +190,190 @@ export default function Home(props) {
     Router.push(`/server/${server.server_id}/movies/video/${id}`);
     Router.events.on("routeChangeComplete", () => {
       Router.reload(window.location.pathname);
-
-
     });
   }
-  
+
   const scrollLeft = (id) => {
-    document.getElementById(id).scrollLeft -= (window.innerWidth)*0.8;
+    document.getElementById(id).scrollLeft -= (window.innerWidth) * 0.8;
     window.scrollTo(window.scrollX, window.scrollY - 1);
     window.scrollTo(window.scrollX, window.scrollY + 1);
   }
   const scrollRight = (id) => {
-      document.getElementById(id).scrollLeft += (window.innerWidth)*0.8;
-      window.scrollTo(window.scrollX, window.scrollY - 1);
-      window.scrollTo(window.scrollX, window.scrollY + 1);
+    document.getElementById(id).scrollLeft += (window.innerWidth) * 0.8;
+    window.scrollTo(window.scrollX, window.scrollY - 1);
+    window.scrollTo(window.scrollX, window.scrollY + 1);
   }
+
   return (
     <>
-    <HlsPlayer
-      ref={videoRef}
-      server={server}
-      id={id}
-      type={"movie"}>
+      <HlsPlayer
+        ref={videoRef}
+        server={server}
+        id={id}
+        type={"movie"}>
 
-    </HlsPlayer>
-   
-    {(!loaded || !recommendedLoaded) &&
-    <>
-      <Head>
-        <title>Dose</title>
-      </Head>
-      <div className={Styles.loadingioSpinnerEclipse}>
-          <div className={Styles.ldio}>
+      </HlsPlayer>
+
+      {(!loaded || !recommendedLoaded) &&
+        <>
+          <Head>
+            <title>Dose</title>
+          </Head>
+          <div className={Styles.loadingioSpinnerEclipse}>
+            <div className={Styles.ldio}>
               <div></div>
-          </div>
-      </div>
-    </>
-    }
-    {loaded && recommendedLoaded && 
-    <>
-
-
-  <Head>
-      <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300&display=swap" rel="stylesheet" />
-      <title>{metadata.title + " (" + metadata.release_date.split('-')[0] + ")"}</title>
-      <meta name="title" content={metadata.title + " (" + metadata.release_date + ")"} />
-      <meta name="description" content={metadata.overview} />
-
-      <meta property="og:type" content="website" />
-      <meta property="og:title" content={metadata.title + " (" + metadata.release_date.split('-')[0] + ")"} />
-      <meta property="og:description" content={metadata.overview} />
-      <meta property="og:image" content={"https://image.tmdb.org/t/p/original" + metadata.backdrop} />
-
-      <meta property="twitter:card" content="summary_large_image" />
-      <meta property="twitter:title" content={metadata.title + " (" + metadata.release_date.split('-')[0] + ")"} />
-      <meta property="twitter:description" content={metadata.overview} />
-      <meta property="twitter:image" content={"https://image.tmdb.org/t/p/original" + metadata.backdrop} />
-    </Head>
-
-    {trailer !== false && viewTrailer &&
-    <VideoTrailer onClose={() => setViewTrailer(false)} videoPath={trailer} />
-    }
-
-
-    <div id="container">
-    <div style={{backgroundImage: `url('https://image.tmdb.org/t/p/original${metadata.backdrop}')`}} className={Styles.background}></div>
-    <div className="backIcon" onClick={() => {
-      Router.back();
-      Router.events.on("routeChangeComplete", () => {
-        Router.reload(window.location.pathname);
-      });
-      }}></div>
-
-
-    {metadataBox &&
-      <div className="metadataBox">
-        <Form onSubmit={searchMetadata}>
-          <Form.Group controlId="formSearch">
-            <Form.Label>Update metadata for {metadata.path}</Form.Label>
-            <Form.Control ref={metadataSearch} type="text" placeholder="Search for new metadata..." />
-          </Form.Group>
-          <Button variant="primary" type="submit">
-            Search
-          </Button>
-        </Form>
-        <div style={{clear: 'both'}}></div>
-
-        <ListGroup id="metadataSearchResult">
-          {metadataSearchResult}
-        </ListGroup>
-      </div>
-    }
-
-
-    <div className={Styles.top}>
-      <div className={Styles.poster} style={{backgroundImage: `url('https://image.tmdb.org/t/p/original${metadata.poster}')`}} />
-      <div className={Styles.description}>
-        <h1>{metadata.title}</h1>
-        <div className={Styles.metadata}>
-          <p className={Styles.releaseDate}>{metadata.release_date}</p>
-          <p className={Styles.runtime}>{Math.floor(metadata.runtime / 60) + "h " + metadata.runtime%60+"m"}</p>
-          <p className={Styles.endsat}>Ends At {metadata.finish_at}</p>
-          <p className={Styles.addedDate}>Added {metadata.added_date}</p>
-        </div>
-        <div className={Styles.overview}>
-            <p>{metadata.overview}</p>
-        </div>
-        <div className={Styles.actions}>
-          {metadata.currentTimeSeconds > 0 &&
-          <div style={{marginRight: "15px"}} className={Styles.actionButton}>
-            <div className={Styles.playButton} onClick={() => videoRef.current.show(metadata.currentTimeSeconds)}></div>
-            <p style={{marginTop: "5px", fontSize: '14px'}}>Resume from {metadata.currentTime}</p>
-          </div>
-          }
-          <div style={{marginRight: "15px"}} className={Styles.actionButton}>
-            <div className={Styles.playButton} onClick={() => videoRef.current.show()}></div>
-            <p style={{marginTop: "5px", fontSize: '14px'}}>Play from start</p>
-          </div>
-          <div className={`${Styles.actionButton} ${Styles.buttonHiddenForMobile}`}>
-            <div className={Styles.playButton} onClick={() => setViewTrailer(true)}></div>
-            <p style={{marginTop: "5px", fontSize: '14px'}}>Show trailer</p>
-          </div>
-          {watched &&
-              <div style={{marginLeft: "15px"}} className={Styles.actionButton}>
-              <div id="markAsWatched" style={{backgroundImage: `url('${process.env.NEXT_PUBLIC_SERVER_URL}/images/cross.svg')`}} className={Styles.playButton} onClick={() => markAsNotWatched()}></div>
-              <p id="markAsWatchedText" style={{marginTop: "5px", fontSize: '14px'}}>Mark as watched</p>
-              </div>
-          }
-          {!watched &&
-            <div style={{marginLeft: "15px"}} className={Styles.actionButton}>
-              <div id="markAsWatched" style={{backgroundImage: `url('${process.env.NEXT_PUBLIC_SERVER_URL}/images/eye.svg')`}} className={Styles.playButton} onClick={() => markAsWatched()}></div>
-              <p id="markAsWatchedText" style={{marginTop: "5px", fontSize: '14px'}}>Unmark as watched</p>
             </div>
-          }
-          {inWatchList &&
-              <div style={{marginLeft: "15px"}} className={Styles.actionButton}>
-              <div id="inWatchList" style={{backgroundImage: `url('${process.env.NEXT_PUBLIC_SERVER_URL}/images/cross.svg')`}} className={Styles.playButton} onClick={() => removeFromWatchList()}></div>
-              <p id="inWatchListText" style={{marginTop: "5px", fontSize: '14px'}}>Remove from watchlist</p>
-              </div>
-          }
-          {!inWatchList &&
-            <div style={{marginLeft: "15px"}} className={Styles.actionButton}>
-              <div id="inWatchList" style={{backgroundImage: `url('${process.env.NEXT_PUBLIC_SERVER_URL}/images/eye.svg')`}} className={Styles.playButton} onClick={() => addToWatchList()}></div>
-              <p id="inWatchListText" style={{marginTop: "5px", fontSize: '14px'}}>Add to watchlist</p>
-            </div>
-          }
-          <div className={`${Styles.actionButton} ${Styles.buttonHiddenForMobile}`}>
-            <div style={{marginLeft: "15px", backgroundImage: `url('${process.env.NEXT_PUBLIC_SERVER_URL}/images/search.svg')`}} className={Styles.playButton} onClick={() => setMetadataBox(true)}></div>
-            <p style={{marginLeft: "15px", marginTop: "5px", fontSize: '14px'}}>Update metadata</p>
           </div>
+        </>
+      }
+      {loaded && recommendedLoaded &&
+        <>
+          <Head>
+            <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300&display=swap" rel="stylesheet" />
+            <title>{metadata.title + " (" + metadata.releaseDate}</title>
+            <meta name="title" content={metadata.title + " (" + metadata.releaseDate + ")"} />
+            <meta name="description" content={metadata.overview} />
+          </Head>
 
-          <ChangeImages  id={id} server={server} serverToken={serverToken} type="movies"></ChangeImages>
-          <div style={{clear: 'both'}}></div>
-        </div>
-      </div>
-    </div>
-    <div className={Styles.bottom}>
-      <h1>Actors</h1>
-      <div className={Styles.actors}>
-        <div id="actors" className={Styles.actorBox}>
-          {getActors()}
-        </div>
-        {actors.length * 200 > windowSize.width &&
-                                <>
-                                    <div className={Styles.scrollButton} onClick={() => scrollLeft('actors')}>
-                                        <img alt="" src={`${process.env.NEXT_PUBLIC_SERVER_URL}/images/left.svg`} width="70" height="70" />
-                                    </div>
-                                    <div className={Styles.scrollButton} style={{right: '0'}} onClick={() => scrollRight('actors')}>
-                                        <img alt="" src={`${process.env.NEXT_PUBLIC_SERVER_URL}/images/right.svg`} width="70" height="70" />
-                                    </div>
-                                </>
-                            }
-      </div>
+          {trailer !== false && viewTrailer &&
+            <VideoTrailer onClose={() => setViewTrailer(false)} videoPath={trailer} />
+          }
 
-    <h1>Recommended</h1>
-    {recommended.length > 0 &&
-                    <div style={{position: 'relative'}}>
-                        <div className={Styles.movieRow}>
-                            <div id="recommended" className={Styles.scrollable}>
-                                {getRecommended()}
-                            </div>
-                            {recommended.length * 480 > windowSize.width &&
-                                <div>
-                                    <div className={Styles.scrollButton} onClick={() => scrollLeft('recommended')}>
-                                        <img alt="" src={`${process.env.NEXT_PUBLIC_SERVER_URL}/images/left.svg`} width="70" height="70" />
-                                    </div>
-                                    <div className={Styles.scrollButton} style={{right: '0'}} onClick={() => scrollRight('recommended')}>
-                                        <img alt="" src={`${process.env.NEXT_PUBLIC_SERVER_URL}/images/right.svg`} width="70" height="70" />
-                                    </div>
-                                </div>
-                            }
-                        </div> 
-                    <hr className={Styles.divider}></hr>
-                    </div> 
+
+          <div id="container">
+            <div style={{ backgroundImage: `url('${backdrop}')` }} className={Styles.background}></div>
+            <div className="backIcon" onClick={() => {
+              Router.back();
+              Router.events.on("routeChangeComplete", () => {
+                Router.reload(window.location.pathname);
+              });
+            }}></div>
+
+
+            {metadataBox &&
+              <div className="metadataBox">
+                <Form onSubmit={searchMetadata}>
+                  <Form.Group controlId="formSearch">
+                    <Form.Label>Update metadata for {metadata.path}</Form.Label>
+                    <Form.Control ref={metadataSearch} type="text" placeholder="Search for new metadata..." />
+                  </Form.Group>
+                  <Button variant="primary" type="submit">
+                    Search
+                  </Button>
+                </Form>
+                <div style={{ clear: 'both' }}></div>
+
+                <ListGroup id="metadataSearchResult">
+                  {metadataSearchResult}
+                </ListGroup>
+              </div>
+            }
+
+
+            <div className={Styles.top}>
+              <div className={Styles.poster} style={{ backgroundImage: `url('${poster}')` }} />
+              <div className={Styles.description}>
+                <h1>{metadata.title}</h1>
+                <div className={Styles.metadata}>
+                  <p className={Styles.releaseDate}>Released {metadata.releaseDate}</p>
+                  <p className={Styles.runtime}>Length {Math.floor(metadata.duration / 3600) + "h " + Math.floor(metadata.duration % 60) + "m"}</p>
+                  <p className={Styles.endsat}>Ends at {endsAt}</p>
+                  <p className={Styles.addedDate}>Added {metadata.addedDate}</p>
+                </div>
+                <div className={Styles.overview}>
+                  <p>{metadata.overview}</p>
+                </div>
+                <div className={Styles.actions}>
+                  {watchtime > 0 &&
+                    <div style={{ marginRight: "15px" }} className={Styles.actionButton}>
+                      <div className={Styles.playButton} onClick={() => videoRef.current.show(watchtime)}></div>
+                      <p style={{ marginTop: "5px", fontSize: '14px' }}>Resume from {formatSeconds(watchtime)}</p>
+                    </div>
+                  }
+                  <div style={{ marginRight: "15px" }} className={Styles.actionButton}>
+                    <div className={Styles.playButton} onClick={() => videoRef.current.show()}></div>
+                    <p style={{ marginTop: "5px", fontSize: '14px' }}>Play from start</p>
+                  </div>
+                  <div className={`${Styles.actionButton} ${Styles.buttonHiddenForMobile}`}>
+                    <div className={Styles.playButton} onClick={() => setViewTrailer(true)}></div>
+                    <p style={{ marginTop: "5px", fontSize: '14px' }}>Show trailer</p>
+                  </div>
+                  {watched &&
+                    <div style={{ marginLeft: "15px" }} className={Styles.actionButton}>
+                      <div id="markAsWatched" style={{ backgroundImage: `url('${process.env.NEXT_PUBLIC_SERVER_URL}/images/cross.svg')` }} className={Styles.playButton} onClick={() => markAsNotWatched()}></div>
+                      <p id="markAsWatchedText" style={{ marginTop: "5px", fontSize: '14px' }}>Mark as watched</p>
+                    </div>
+                  }
+                  {!watched &&
+                    <div style={{ marginLeft: "15px" }} className={Styles.actionButton}>
+                      <div id="markAsWatched" style={{ backgroundImage: `url('${process.env.NEXT_PUBLIC_SERVER_URL}/images/eye.svg')` }} className={Styles.playButton} onClick={() => markAsWatched()}></div>
+                      <p id="markAsWatchedText" style={{ marginTop: "5px", fontSize: '14px' }}>Unmark as watched</p>
+                    </div>
+                  }
+                  {inWatchList &&
+                    <div style={{ marginLeft: "15px" }} className={Styles.actionButton}>
+                      <div id="inWatchList" style={{ backgroundImage: `url('${process.env.NEXT_PUBLIC_SERVER_URL}/images/cross.svg')` }} className={Styles.playButton} onClick={() => removeFromWatchList()}></div>
+                      <p id="inWatchListText" style={{ marginTop: "5px", fontSize: '14px' }}>Remove from watchlist</p>
+                    </div>
+                  }
+                  {!inWatchList &&
+                    <div style={{ marginLeft: "15px" }} className={Styles.actionButton}>
+                      <div id="inWatchList" style={{ backgroundImage: `url('${process.env.NEXT_PUBLIC_SERVER_URL}/images/eye.svg')` }} className={Styles.playButton} onClick={() => addToWatchList()}></div>
+                      <p id="inWatchListText" style={{ marginTop: "5px", fontSize: '14px' }}>Add to watchlist</p>
+                    </div>
+                  }
+                  <div className={`${Styles.actionButton} ${Styles.buttonHiddenForMobile}`}>
+                    <div style={{ marginLeft: "15px", backgroundImage: `url('${process.env.NEXT_PUBLIC_SERVER_URL}/images/search.svg')` }} className={Styles.playButton} onClick={() => setMetadataBox(true)}></div>
+                    <p style={{ marginLeft: "15px", marginTop: "5px", fontSize: '14px' }}>Update metadata</p>
+                  </div>
+
+                  <div style={{ clear: 'both' }}></div>
+                </div>
+              </div>
+            </div>
+            <div className={Styles.bottom}>
+              <h1>Actors</h1>
+              <div className={Styles.actors}>
+                <div id="actors" className={Styles.actorBox}>
+                  {getCharacters()}
+                </div>
+                {characters.length * 200 > windowSize.width &&
+                  <>
+                    <div className={Styles.scrollButton} onClick={() => scrollLeft('actors')}>
+                      <img alt="" src={`${process.env.NEXT_PUBLIC_SERVER_URL}/images/left.svg`} width="70" height="70" />
+                    </div>
+                    <div className={Styles.scrollButton} style={{ right: '0' }} onClick={() => scrollRight('actors')}>
+                      <img alt="" src={`${process.env.NEXT_PUBLIC_SERVER_URL}/images/right.svg`} width="70" height="70" />
+                    </div>
+                  </>
                 }
-    </div>
-    </div>
-    </>
-    }
+              </div>
+
+              <h1>Recommended</h1>
+              {recommended.length > 0 &&
+                <div style={{ position: 'relative' }}>
+                  <div className={Styles.movieRow}>
+                    <div id="recommended" className={Styles.scrollable}>
+                      {getRecommended()}
+                    </div>
+                    {recommended.length * 480 > windowSize.width &&
+                      <div>
+                        <div className={Styles.scrollButton} onClick={() => scrollLeft('recommended')}>
+                          <img alt="" src={`${process.env.NEXT_PUBLIC_SERVER_URL}/images/left.svg`} width="70" height="70" />
+                        </div>
+                        <div className={Styles.scrollButton} style={{ right: '0' }} onClick={() => scrollRight('recommended')}>
+                          <img alt="" src={`${process.env.NEXT_PUBLIC_SERVER_URL}/images/right.svg`} width="70" height="70" />
+                        </div>
+                      </div>
+                    }
+                  </div>
+                  <hr className={Styles.divider}></hr>
+                </div>
+              }
+            </div>
+          </div>
+        </>
+      }
     </>
   )
 }
@@ -501,22 +384,22 @@ export async function getServerSideProps(context) {
   let movieID = context.params.id;
 
   return await fetch(`http://localhost:${process.env.SERVER_PORT}${process.env.SERVER_SUB_FOLDER}/api/servers/getServer`, {
-      method: 'POST',
-      headers: {
-          'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-          id: serverId
-      }),
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      id: serverId
+    }),
   })
-  .then((r) => r.json())
-  .then(async (data) =>{
-    return {
-      props: {
+    .then((r) => r.json())
+    .then(async (data) => {
+      return {
+        props: {
           server: data.server,
           serverToken: cookies(context).serverToken || ''
+        }
       }
-    }
 
-  });
+    });
 }

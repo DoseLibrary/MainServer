@@ -59,6 +59,7 @@ const Main = (props) => {
                     <h1>{genre.charAt(0).toUpperCase() + genre.slice(1)} movies</h1>
 
                     {movies.map((movie, idx) => {
+                        const img = movie.backdropId != null ? `${server.server_ip}/api/image/${movie.backdropId}?size=small` : undefined;
                         return (
                             <MovieBackdrop multipleRows
                                 key={idx}
@@ -67,7 +68,7 @@ const Main = (props) => {
                                 runtime={movie.runtime}
                                 title={movie.title}
                                 overview={movie.overview}
-                                backdrop={movie.backdrop !== null ? `https://image.tmdb.org/t/p/w500/${movie.backdrop}` : 'https://via.placeholder.com/2000x1000'}
+                                backdrop={img}
                                 onClick={(id) => selectMovie(movie.id)} />
                         )
                     })}

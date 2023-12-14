@@ -1,3 +1,4 @@
+import { fetchAuthImage } from '../lib/fetchAuthImage';
 import style from './episodeRow.module.css';
 import { Component } from 'react';
 
@@ -8,13 +9,28 @@ export default class EpisodeRow extends Component {
         this.episode = props.episode
         this.backdrop = props.backdrop
         this.overview = props.overview
+
+        this.state = {
+            img: ''
+        }
+    }
+
+    async componentDidMount() {
+        const posterUrl = await fetchAuthImage(this.backdrop);
+        this.setState({ img: posterUrl });
+    }
+
+    getBackdropStyle() {
+        return {
+            backgroundImage: `url('${this.state.img}')`
+        }
     }
 
     render() {
 
         return (
             <div className={style.row}>
-                <div onClick={() => this.props.onClick(this.episode)} className={style.backdrop}  style={{backgroundImage: `url('${this.backdrop}')`}}>
+                <div onClick={() => this.props.onClick(this.episode)} className={style.backdrop} style={this.getBackdropStyle()}>
                     <div className={style.playIcon}></div>
                 </div>
                 <div className={style.episodeInformation}>
