@@ -347,9 +347,12 @@ export default class HlsPlayer extends Component {
       subs.push({
         id: -1,
         name: "Off",
+        lang: "Off",
+        language: "Off",
         serverId: -1,
       });
     }
+    console.log(subs);
     this.setState({
       subtitles: data.subtitles
     });
@@ -373,12 +376,11 @@ export default class HlsPlayer extends Component {
    * @returns {string} - The server id of the subtitle track
    */
   getSubtitleIdFromHlsUrl(url) {
-    const regex = /subtitles\/(\d+)/i;
+    const regex = /subtitle\/(\d+)/i;
     try {
       return url.match(regex)[1];
     } catch (e) {
       console.log("[HLS] No subtitle id found in HLS URL. Can't autoswitch subtitles between directplay and transcoding");
-      console.log(e);
       return -2; // -2 is a special value that means that we can't autoswitch subtitles
     }
   }
@@ -680,11 +682,9 @@ export default class HlsPlayer extends Component {
    * Ping the server that we are still active
    */
   ping() {
-    validateServerAccess(this.server, (serverToken) => {
-      if (this.transcodingId != undefined && !this.state.usingDirectplay) {
-        fetch(`${this.server.server_ip}/api/video/${this.id}/hls/ping?group=${this.transcodingId}&serverToken=${serverToken}`);
-      }
-    });
+    if (this.transcodingId !== undefined && !this.state.usingDirectplay) {
+      this.contentServer.pingTranscoding(this.transcodingId);
+    }
   }
 
   /**
@@ -881,12 +881,12 @@ export default class HlsPlayer extends Component {
    * @param {object} subtitle - The subtitle object
    */
   setSubtitle(subtitle) {
-    console.log(`[HLS] Change subtitle to ${subtitle.name} (id: ${subtitle.id}) for ${this.state.usingDirectplay ? 'directplay' : 'hls'}`);
+    console.log(`[HLS] Change subtitle to ${subtitle.language} (id: ${subtitle.id}) for ${this.state.usingDirectplay ? 'directplay' : 'hls'}`);
     if (this.chromecastHandler.isCasting() && subtitle.id != -1) {
-      this.chromecastHandler.setSubtitle(subtitle.name);
+      this.chromecastHandler.setSubtitle(subtitle.language);
     } else if (this.state.usingDirectplay) {
       validateServerAccess(this.server, (serverToken) => {
-        this.subtitleNode.src = `${this.server.server_ip}/api/subtitles/get?type=${this.type}&id=${subtitle.id}&token=${serverToken}`;
+        this.subtitleNode.src = `${this.server.server_ip}/api/video/directplay/subtitle/${subtitle.id}?token=${serverToken}`;
         this.videoNode.textTracks[0].mode = 'showing';
       });
     } else {
@@ -1059,7 +1059,7 @@ export default class HlsPlayer extends Component {
                           <ul>
                             {!this.state.usingDirectplay && this.state.subtitles.map((subtitle, index) => {
                               return (
-                                <li key={index} className={subtitle.id == this.state.activeSubtitleId ? `${Styles.activeSubtitle}` : ''} onClick={() => this.setSubtitle(subtitle)}>{subtitle.name}</li>
+                                <li key={index} className={subtitle.id == this.state.activeSubtitleId ? `${Styles.activeSubtitle}` : ''} onClick={() => this.setSubtitle(subtitle)}>{subtitle.language || subtitle.lang}</li>
                               )
                             })}
 

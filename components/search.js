@@ -3,20 +3,19 @@ import Form from 'react-bootstrap/Form';
 import validateServerAccess from '../lib/validateServerAccess';
 import didYouMean from 'didyoumean';
 import { Component } from 'react';
+import ContentServer from '../lib/ContentServer';
 didYouMean.threshold = 0.1;
 
 export default class Search extends Component {
     constructor(props) {
         super(props);
-        this.server = props.server;
-        this.serverToken = props.serverToken;
+        this.contentServer = new ContentServer(props.server);
         this.series = [];
         this.movies = [];
         this.enabled = props.searchEnabled;
         this.search = this.search.bind(this);
         this.onClose = props.onClose;
         this.onSearch = props.onSearch;
-        this.dataDownloaded = false;
         this.className = props.className;
 
         this.state = {
@@ -26,44 +25,14 @@ export default class Search extends Component {
         this.openForm = this.openForm.bind(this);
     }
 
-    /**
-     * This is used to get all the movies/series from the server
-     */
-    getAllContent() {
-        validateServerAccess(this.server, (serverToken) => {
-            fetch(`${this.server.server_ip}/api/list?token=${serverToken}`)
-                .then(r => r.json())
-                .then(content => {
-                    this.series = content.series;
-                    this.movies = content.movies;
-                });
-        });
-    }
-
-    search(event) {
-        if (!this.dataDownloaded && this.enabled) {
-            this.getAllContent();
-            this.dataDownloaded = true;
-        }
-        let query = event.target.value;
+    async search(event) {
+        const query = event.target.value;
         if (query === "") {
             this.onClose();
             return;
         }
-        let found = [];
-        for (let movie of this.movies) {
-            if (movie.title.toLowerCase().includes(query.toLowerCase())) {
-                movie.type = 'movie'
-                found.push(movie);
-            }
-        }
-        for (let serie of this.series) {
-            if (serie.title.toLowerCase().includes(query.toLowerCase())) {
-                serie.type = 'serie';
-                found.push(serie);
-            }
-        }
-        this.onSearch(found);
+        const result = await this.contentServer.search(query);
+        this.onSearch(result);
     }
 
     openForm() {
