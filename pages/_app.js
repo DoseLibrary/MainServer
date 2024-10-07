@@ -34,7 +34,7 @@ DoseApp.getInitialProps = async (appContext) => {
 
         const currentTime = Date.now() / 1000;
 
-        let accessTokenLegitimate = await fetch(`http://localhost:${process.env.SERVER_PORT}${process.env.SERVER_SUB_FOLDER}/api/auth/validate`, {
+        let accessTokenLegitimate = await fetch(`${process.env.SERVER_HOST}:${process.env.SERVER_PORT}${process.env.SERVER_SUB_FOLDER}/api/auth/validate`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -51,7 +51,7 @@ DoseApp.getInitialProps = async (appContext) => {
         }
 
         // If access token has expired or is about to expire
-        const req = await fetch(`http://localhost:${process.env.SERVER_PORT}${process.env.SERVER_SUB_FOLDER}/api/auth/refreshToken`, {
+        const req = await fetch(`${process.env.SERVER_HOST}:${process.env.SERVER_PORT}${process.env.SERVER_SUB_FOLDER}/api/auth/refreshToken`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
