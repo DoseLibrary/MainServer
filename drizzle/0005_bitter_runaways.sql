@@ -1,0 +1,2 @@
+ALTER TABLE "media_files" ADD COLUMN "last_seen_scan_id" uuid;--> statement-breakpoint
+ALTER TABLE "media_files" ADD CONSTRAINT "media_files_last_seen_scan_id_scan_runs_id_fk" FOREIGN KEY ("last_seen_scan_id") REFERENCES "public"."scan_runs"("id") ON DELETE set null ON UPDATE no action;

@@ -1,0 +1,1 @@
+ALTER TABLE "media_items" ADD CONSTRAINT "media_items_parent_id_media_items_id_fk" FOREIGN KEY ("parent_id") REFERENCES "public"."media_items"("id") ON DELETE cascade ON UPDATE no action;

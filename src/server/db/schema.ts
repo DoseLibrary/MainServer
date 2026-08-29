@@ -1,0 +1,298 @@
+import {
+  bigint,
+  boolean,
+  date,
+  index,
+  integer,
+  jsonb,
+  pgEnum,
+  pgTable,
+  real,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid,
+  type AnyPgColumn,
+} from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+
+export const userRole = pgEnum('user_role', ['admin', 'member']);
+export const libraryKind = pgEnum('library_kind', ['movies', 'shows']);
+export const mediaKind = pgEnum('media_kind', ['movie', 'series', 'season', 'episode']);
+export const scanStatus = pgEnum('scan_status', ['queued', 'running', 'completed', 'failed']);
+export const pluginRunStatus = pgEnum('plugin_run_status', ['running', 'succeeded', 'failed']);
+
+const timestamps = {
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+};
+
+export const users = pgTable('users', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  username: text('username').notNull(),
+  passwordHash: text('password_hash').notNull(),
+  role: userRole('role').notNull().default('member'),
+  disabled: boolean('disabled').notNull().default(false),
+  ...timestamps,
+}, (table) => [uniqueIndex('users_username_unique').on(table.username)]);
+
+export const sessions = pgTable('sessions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  tokenHash: text('token_hash').notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('sessions_token_hash_unique').on(table.tokenHash),
+  index('sessions_user_id_index').on(table.userId),
+]);
+
+export const libraries = pgTable('libraries', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  name: text('name').notNull(),
+  kind: libraryKind('kind').notNull(),
+  rootPath: text('root_path').notNull(),
+  enabled: boolean('enabled').notNull().default(true),
+  lastScannedAt: timestamp('last_scanned_at', { withTimezone: true }),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex('libraries_name_unique').on(table.name),
+  uniqueIndex('libraries_root_path_unique').on(table.rootPath),
+]);
+
+export const mediaItems = pgTable('media_items', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  libraryId: uuid('library_id').notNull().references(() => libraries.id, { onDelete: 'cascade' }),
+  parentId: uuid('parent_id').references((): AnyPgColumn => mediaItems.id, { onDelete: 'cascade' }),
+  kind: mediaKind('kind').notNull(),
+  naturalKey: text('natural_key').notNull(),
+  title: text('title').notNull(),
+  sortTitle: text('sort_title').notNull(),
+  originalTitle: text('original_title'),
+  year: integer('year'),
+  releaseDate: date('release_date'),
+  seasonNumber: integer('season_number'),
+  episodeNumber: integer('episode_number'),
+  overview: text('overview'),
+  tagline: text('tagline'),
+  providerRating: real('provider_rating'),
+  contentRating: text('content_rating'),
+  userTitle: text('user_title'),
+  userYear: integer('user_year'),
+  userOverview: text('user_overview'),
+  posterPath: text('poster_path'),
+  backdropPath: text('backdrop_path'),
+  logoPath: text('logo_path'),
+  metadataSource: text('metadata_source'),
+  providerIds: jsonb('provider_ids').$type<Record<string, string>>().notNull().default({}),
+  enrichmentVersion: integer('enrichment_version').notNull().default(0),
+  enrichmentLastAttemptAt: timestamp('enrichment_last_attempt_at', { withTimezone: true }),
+  enrichmentLastSuccessAt: timestamp('enrichment_last_success_at', { withTimezone: true }),
+  available: boolean('available').notNull().default(true),
+  ...timestamps,
+}, (table) => [
+  index('media_items_library_id_index').on(table.libraryId),
+  index('media_items_parent_id_index').on(table.parentId),
+  uniqueIndex('media_items_library_natural_key_unique').on(table.libraryId, table.naturalKey),
+]);
+
+export const mediaFiles = pgTable('media_files', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  mediaItemId: uuid('media_item_id').notNull().references(() => mediaItems.id, { onDelete: 'cascade' }),
+  libraryId: uuid('library_id').notNull().references(() => libraries.id, { onDelete: 'cascade' }),
+  relativePath: text('relative_path').notNull(),
+  sizeBytes: bigint('size_bytes', { mode: 'number' }).notNull(),
+  modifiedAt: timestamp('modified_at', { withTimezone: true }).notNull(),
+  durationSeconds: integer('duration_seconds'),
+  probe: jsonb('probe').$type<Record<string, unknown>>().notNull().default({}),
+  available: boolean('available').notNull().default(true),
+  lastSeenScanId: uuid('last_seen_scan_id').references((): AnyPgColumn => scanRuns.id, { onDelete: 'set null' }),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex('media_files_library_path_unique').on(table.libraryId, table.relativePath),
+  index('media_files_media_item_id_index').on(table.mediaItemId),
+]);
+
+export const mediaTechnicalProfiles = pgTable('media_technical_profiles', {
+  mediaFileId: uuid('media_file_id').primaryKey().references(() => mediaFiles.id, { onDelete: 'cascade' }),
+  resolutionLabel: text('resolution_label'),
+  width: integer('width'),
+  height: integer('height'),
+  videoCodec: text('video_codec'),
+  audioCodec: text('audio_codec'),
+  audioChannels: text('audio_channels'),
+  dynamicRange: text('dynamic_range'),
+  bitrate: bigint('bitrate', { mode: 'number' }),
+  details: jsonb('details').$type<Record<string, unknown>>().notNull().default({}),
+  ...timestamps,
+}, (table) => [
+  index('media_technical_profiles_resolution_index').on(table.resolutionLabel),
+]);
+
+export const genres = pgTable('genres', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  libraryId: uuid('library_id').notNull().references(() => libraries.id, { onDelete: 'cascade' }),
+  providerSource: text('provider_source').notNull().default('tmdb'),
+  providerId: text('provider_id'),
+  name: text('name').notNull(),
+  normalizedName: text('normalized_name').notNull(),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex('genres_library_normalized_name_unique').on(table.libraryId, table.normalizedName),
+  uniqueIndex('genres_library_provider_unique').on(table.libraryId, table.providerSource, table.providerId),
+  index('genres_library_id_index').on(table.libraryId),
+]);
+
+export const mediaItemGenres = pgTable('media_item_genres', {
+  mediaItemId: uuid('media_item_id').notNull().references(() => mediaItems.id, { onDelete: 'cascade' }),
+  genreId: uuid('genre_id').notNull().references(() => genres.id, { onDelete: 'cascade' }),
+  position: integer('position').notNull().default(0),
+}, (table) => [
+  uniqueIndex('media_item_genres_item_genre_unique').on(table.mediaItemId, table.genreId),
+  index('media_item_genres_genre_id_index').on(table.genreId),
+  index('media_item_genres_item_position_index').on(table.mediaItemId, table.position),
+]);
+
+export const people = pgTable('people', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  libraryId: uuid('library_id').notNull().references(() => libraries.id, { onDelete: 'cascade' }),
+  providerSource: text('provider_source').notNull().default('tmdb'),
+  providerId: text('provider_id').notNull(),
+  name: text('name').notNull(),
+  profilePath: text('profile_path'),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex('people_library_provider_unique').on(table.libraryId, table.providerSource, table.providerId),
+  index('people_library_name_index').on(table.libraryId, table.name),
+]);
+
+export const castCredits = pgTable('cast_credits', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  mediaItemId: uuid('media_item_id').notNull().references(() => mediaItems.id, { onDelete: 'cascade' }),
+  personId: uuid('person_id').notNull().references(() => people.id, { onDelete: 'cascade' }),
+  character: text('character'),
+  billingOrder: integer('billing_order').notNull().default(0),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex('cast_credits_item_person_unique').on(table.mediaItemId, table.personId),
+  index('cast_credits_item_order_index').on(table.mediaItemId, table.billingOrder),
+  index('cast_credits_person_id_index').on(table.personId),
+]);
+
+export const collections = pgTable('collections', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  libraryId: uuid('library_id').notNull().references(() => libraries.id, { onDelete: 'cascade' }),
+  providerSource: text('provider_source').notNull().default('tmdb'),
+  providerId: text('provider_id').notNull(),
+  name: text('name').notNull(),
+  overview: text('overview'),
+  posterPath: text('poster_path'),
+  backdropPath: text('backdrop_path'),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex('collections_library_provider_unique').on(table.libraryId, table.providerSource, table.providerId),
+  index('collections_library_name_index').on(table.libraryId, table.name),
+]);
+
+export const collectionMembers = pgTable('collection_members', {
+  collectionId: uuid('collection_id').notNull().references(() => collections.id, { onDelete: 'cascade' }),
+  mediaItemId: uuid('media_item_id').notNull().references(() => mediaItems.id, { onDelete: 'cascade' }),
+  position: integer('position').notNull().default(0),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex('collection_members_collection_item_unique').on(table.collectionId, table.mediaItemId),
+  uniqueIndex('collection_members_media_item_unique').on(table.mediaItemId),
+  index('collection_members_collection_position_index').on(table.collectionId, table.position),
+]);
+
+export const recommendationEdges = pgTable('recommendation_edges', {
+  sourceMediaItemId: uuid('source_media_item_id').notNull().references(() => mediaItems.id, { onDelete: 'cascade' }),
+  recommendedMediaItemId: uuid('recommended_media_item_id').notNull().references(() => mediaItems.id, { onDelete: 'cascade' }),
+  position: integer('position').notNull().default(0),
+  providerSource: text('provider_source').notNull().default('tmdb'),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex('recommendation_edges_source_recommended_unique').on(table.sourceMediaItemId, table.recommendedMediaItemId),
+  index('recommendation_edges_source_position_index').on(table.sourceMediaItemId, table.position),
+  index('recommendation_edges_recommended_id_index').on(table.recommendedMediaItemId),
+]);
+
+export const playbackProgress = pgTable('playback_progress', {
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  mediaItemId: uuid('media_item_id').notNull().references(() => mediaItems.id, { onDelete: 'cascade' }),
+  positionSeconds: integer('position_seconds').notNull().default(0),
+  watched: boolean('watched').notNull().default(false),
+  lastWatchedAt: timestamp('last_watched_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('playback_progress_user_media_unique').on(table.userId, table.mediaItemId),
+  index('playback_progress_user_recent_index').on(table.userId, table.lastWatchedAt),
+]);
+
+export const watchlistEntries = pgTable('watchlist_entries', {
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  mediaItemId: uuid('media_item_id').notNull().references(() => mediaItems.id, { onDelete: 'cascade' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('watchlist_entries_user_media_unique').on(table.userId, table.mediaItemId),
+  index('watchlist_entries_user_recent_index').on(table.userId, table.createdAt),
+]);
+
+export const scanRuns = pgTable('scan_runs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  libraryId: uuid('library_id').notNull().references(() => libraries.id, { onDelete: 'cascade' }),
+  status: scanStatus('status').notNull().default('queued'),
+  discoveredFiles: integer('discovered_files').notNull().default(0),
+  processedFiles: integer('processed_files').notNull().default(0),
+  failedFiles: integer('failed_files').notNull().default(0),
+  error: text('error'),
+  startedAt: timestamp('started_at', { withTimezone: true }),
+  heartbeatAt: timestamp('heartbeat_at', { withTimezone: true }).notNull().defaultNow(),
+  finishedAt: timestamp('finished_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('scan_runs_library_created_index').on(table.libraryId, table.createdAt),
+  uniqueIndex('scan_runs_one_active_per_library_unique').on(table.libraryId).where(sql`${table.status} in ('queued', 'running')`),
+]);
+
+export const pluginConfigurations = pgTable('plugin_configurations', {
+  pluginId: text('plugin_id').primaryKey(),
+  enabled: boolean('enabled').notNull().default(false),
+  schedule: text('schedule'),
+  settings: jsonb('settings').$type<Record<string, unknown>>().notNull().default({}),
+  nextRunAt: timestamp('next_run_at', { withTimezone: true }),
+  lastRunAt: timestamp('last_run_at', { withTimezone: true }),
+  lastRunStatus: pluginRunStatus('last_run_status'),
+  lastRunDurationMs: integer('last_run_duration_ms'),
+  lastRunSummary: text('last_run_summary'),
+  lastRunError: text('last_run_error'),
+  ...timestamps,
+});
+
+export const pluginRuns = pgTable('plugin_runs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  pluginId: text('plugin_id').notNull().references(() => pluginConfigurations.pluginId, { onDelete: 'cascade' }),
+  status: pluginRunStatus('status').notNull().default('running'),
+  startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+  finishedAt: timestamp('finished_at', { withTimezone: true }),
+  durationMs: integer('duration_ms'),
+  summary: text('summary'),
+  error: text('error'),
+}, (table) => [
+  index('plugin_runs_plugin_started_index').on(table.pluginId, table.startedAt),
+  uniqueIndex('plugin_runs_one_active_per_plugin_unique').on(table.pluginId).where(sql`${table.status} = 'running'`),
+]);
+
+export const mediaTrailers = pgTable('media_trailers', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  mediaItemId: uuid('media_item_id').notNull().references(() => mediaItems.id, { onDelete: 'cascade' }),
+  providerSource: text('provider_source').notNull().default('tmdb'),
+  providerId: text('provider_id').notNull(), site: text('site').notNull(), key: text('key').notNull(),
+  name: text('name').notNull(), type: text('type').notNull(), official: boolean('official').notNull().default(false),
+  language: text('language'), country: text('country'), publishedAt: timestamp('published_at', { withTimezone: true }),
+  preferred: boolean('preferred').notNull().default(false), ...timestamps,
+}, (table) => [
+  uniqueIndex('media_trailers_item_provider_unique').on(table.mediaItemId, table.providerSource, table.providerId),
+  index('media_trailers_item_preferred_index').on(table.mediaItemId, table.preferred),
+]);

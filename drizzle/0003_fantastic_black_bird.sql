@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "scan_runs_one_active_per_library_unique" ON "scan_runs" USING btree ("library_id") WHERE "scan_runs"."status" in ('queued', 'running');
