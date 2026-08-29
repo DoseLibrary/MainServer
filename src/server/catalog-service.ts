@@ -144,12 +144,13 @@ export class CatalogService {
     ].filter((group) => group.items.length > 0);
     return { query: term, groups };
   }
-  async saveProgress(userId: string, mediaItemId: string, positionSeconds: number, watched?: boolean) {
+  async saveProgress(userId: string, mediaItemId: string, positionSeconds?: number, watched?: boolean) {
     const now = new Date();
+    // Position is optional so "mark watched" can flip the flag without clobbering resume.
     await this.database.insert(playbackProgress)
-      .values({ userId, mediaItemId, positionSeconds, watched: watched ?? false, lastWatchedAt: now, updatedAt: now })
-      .onConflictDoUpdate({ target: [playbackProgress.userId, playbackProgress.mediaItemId], set: { positionSeconds, ...(watched != null ? { watched } : {}), lastWatchedAt: now, updatedAt: now } });
-    return { mediaItemId, positionSeconds, watched: watched ?? false };
+      .values({ userId, mediaItemId, positionSeconds: positionSeconds ?? 0, watched: watched ?? false, lastWatchedAt: now, updatedAt: now })
+      .onConflictDoUpdate({ target: [playbackProgress.userId, playbackProgress.mediaItemId], set: { ...(positionSeconds != null ? { positionSeconds } : {}), ...(watched != null ? { watched } : {}), lastWatchedAt: now, updatedAt: now } });
+    return { mediaItemId, positionSeconds: positionSeconds ?? 0, watched: watched ?? false };
   }
   async setWatchlist(userId: string, mediaItemId: string, saved: boolean) {
     if (saved) await this.database.insert(watchlistEntries).values({ userId, mediaItemId }).onConflictDoNothing();
@@ -234,6 +235,7 @@ export class CatalogService {
     return {
       ...toCatalogItem(row.item, row.progress, files[0]?.durationSeconds),
       inWatchlist,
+      watched: row.progress?.watched ?? false,
       originalTitle: row.item.originalTitle ?? undefined,
       releaseDate: row.item.releaseDate ?? undefined,
       tagline: row.item.tagline ?? undefined,

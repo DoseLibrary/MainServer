@@ -62,6 +62,8 @@ export interface CatalogItemDetails extends Omit<CatalogItem, 'genres' | 'collec
   trailers?: CatalogTrailer[];
   /** Whether the current user has saved this title to their watch list. */
   inWatchlist?: boolean;
+  /** Whether the current user has marked this title watched. */
+  watched?: boolean;
 }
 
 export interface CatalogTrailer { site: string; key: string; name: string; type: string; official: boolean; preferred: boolean }
@@ -148,6 +150,7 @@ export const api = {
   catalogSearch: (libraryId: string, query: string) => request<CatalogSearch>(`/api/v1/catalog/search?libraryId=${encodeURIComponent(libraryId)}&q=${encodeURIComponent(query)}`),
   playback: (id: string, capabilities: ClientCapabilities) => request<PlaybackResponse>(`/api/v1/catalog/items/${encodeURIComponent(id)}/playback`, { method: 'POST', body: JSON.stringify(capabilities) }),
   saveProgress: (id: string, positionSeconds: number, watched?: boolean) => request<{ mediaItemId: string; positionSeconds: number; watched: boolean }>(`/api/v1/catalog/items/${encodeURIComponent(id)}/progress`, { method: 'POST', body: JSON.stringify({ positionSeconds: Math.round(positionSeconds), ...(watched != null ? { watched } : {}) }) }),
+  markWatched: (id: string, watched: boolean) => request<{ mediaItemId: string; positionSeconds: number; watched: boolean }>(`/api/v1/catalog/items/${encodeURIComponent(id)}/progress`, { method: 'POST', body: JSON.stringify({ watched }) }),
   setWatchlist: (id: string, saved: boolean) => request<{ mediaItemId: string; inWatchlist: boolean }>(`/api/v1/catalog/items/${encodeURIComponent(id)}/watchlist`, { method: saved ? 'POST' : 'DELETE' }),
   startLibraryScan: (id: string) => request<{ scan: LibraryScan }>(`/api/v1/libraries/${encodeURIComponent(id)}/scan`, { method: 'POST' }),
   refreshLibraryMetadata: (id: string, force = false) => request<{ libraryId: string; refreshed: number; failed: number }>(`/api/v1/libraries/${encodeURIComponent(id)}/refresh${force ? '?force=true' : ''}`, { method: 'POST' }),

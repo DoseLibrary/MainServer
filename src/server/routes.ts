@@ -20,7 +20,7 @@ const loginCredentials = credentials.extend({ password: z.string().min(1).max(25
 const libraryInput = z.object({ name: z.string().trim().min(1).max(128), kind: z.enum(['movies', 'shows']), rootPath: z.string().min(1), enabled: z.boolean().optional() });
 const idParams = z.object({ id: z.string().uuid() });
 const homeQuery = z.object({ libraryId: z.string().uuid().optional() });
-const progressBody = z.object({ positionSeconds: z.number().int().min(0).max(86_400), watched: z.boolean().optional() });
+const progressBody = z.object({ positionSeconds: z.number().int().min(0).max(86_400).optional(), watched: z.boolean().optional() }).refine((value) => value.positionSeconds != null || value.watched != null, { message: 'positionSeconds or watched is required' });
 const searchQuery = z.object({ libraryId: z.string().uuid(), q: z.string().trim().min(1).max(128) });
 const capabilities = z.object({
   containers: z.array(z.string().min(1).max(32)).max(32).default([]),

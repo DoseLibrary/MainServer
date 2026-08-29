@@ -9,10 +9,11 @@ export function CatalogDetails() {
   const [item, setItem] = useState<CatalogItemDetails>();
   const [error, setError] = useState<string>();
   const [saved, setSaved] = useState(false);
+  const [watched, setWatched] = useState(false);
   const [trailerOpen, setTrailerOpen] = useState(false);
   const load = useCallback(async () => {
     setError(undefined);
-    try { const next = (await api.catalogItem(id)).item; setItem(next); setSaved(Boolean(next.inWatchlist)); }
+    try { const next = (await api.catalogItem(id)).item; setItem(next); setSaved(Boolean(next.inWatchlist)); setWatched(Boolean(next.watched)); }
     catch (caught) { setError(caught instanceof Error ? caught.message : 'Could not load this title.'); }
   }, [id]);
   useEffect(() => { queueMicrotask(() => { void load(); }); }, [load]);
@@ -21,6 +22,11 @@ export function CatalogDetails() {
     const next = !saved;
     setSaved(next); // Optimistic; revert if the request fails.
     try { await api.setWatchlist(id, next); } catch { setSaved(!next); }
+  }
+  async function toggleWatched() {
+    const next = !watched;
+    setWatched(next); // Optimistic; revert if the request fails.
+    try { await api.markWatched(id, next); } catch { setWatched(!next); }
   }
 
   const kind = item?.kind === 'show' || item?.kind === 'series' || item?.kind === 'season' ? 'show' : 'movie';
@@ -60,6 +66,10 @@ export function CatalogDetails() {
     secondaryAction: item?.kind === 'movie' ? { label: saved ? 'In Watch List' : 'Add to Watch List', onClick: () => void toggleWatchlist() } : undefined,
     onPlayTrailer: trailer ? () => setTrailerOpen(true) : undefined,
     trailerLabel: 'Play Trailer',
+    watched,
+    onToggleWatched: item && (item.kind === 'movie' || item.kind === 'episode') ? () => void toggleWatched() : undefined,
+    markWatchedLabel: 'Mark watched',
+    markUnwatchedLabel: 'Mark unwatched',
   };
   const seasons = (item?.children ?? []).filter((child) => child.kind === 'season').map((season) => ({
     id: season.id,

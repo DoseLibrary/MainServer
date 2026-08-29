@@ -104,6 +104,17 @@ describe('CatalogService enrichment serialization', () => {
     expect(await service.person('00000000-0000-4000-8000-0000000000ff')).toBeNull();
   });
 
+  it('marks a title watched without a position and reflects it on details', async () => {
+    await client.query(`insert into users (id, username, password_hash, role) values ($1, 'viewer2', 'x', 'member')`, [USER]);
+    await service.saveProgress(USER, MOVIE, undefined, true);
+    const details = await service.item(MOVIE, USER) as Record<string, unknown>;
+    expect(details.watched).toBe(true);
+    expect(details.progress).toBe(1);
+    await service.saveProgress(USER, MOVIE, undefined, false);
+    const cleared = await service.item(MOVIE, USER) as Record<string, unknown>;
+    expect(cleared.watched).toBe(false);
+  });
+
   it('tolerates items with no enrichment', async () => {
     const details = await service.item(REC, USER) as Record<string, unknown>;
     expect(details.quality).toBeUndefined();
