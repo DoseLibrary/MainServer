@@ -110,6 +110,17 @@ export class TmdbClient {
     }).then((value) => value ?? []);
   }
 
+  /** All candidate poster/backdrop/logo paths for a matched title, for admin artwork selection. */
+  getImages(kind: MediaKind, id: number): Promise<{ posters: string[]; backdrops: string[]; logos: string[] }> {
+    if (!integer(id, 1)) return Promise.resolve({ posters: [], backdrops: [], logos: [] });
+    return this.cached(`images:all:${kind}:${id}`, async () => {
+      const media = kind === 'series' ? 'tv' : 'movie';
+      const body = await this.json(`https://api.themoviedb.org/3/${media}/${id}/images`);
+      const paths = (key: string) => records(body?.[key], 100).flatMap((value) => { const path = image(value.file_path); return path ? [path] : []; });
+      return { posters: paths('posters'), backdrops: paths('backdrops'), logos: paths('logos') };
+    }).then((value) => value ?? { posters: [], backdrops: [], logos: [] });
+  }
+
   private async fetchById(kind: MediaKind, id: number): Promise<TmdbMetadata | null> {
     const media = kind === 'series' ? 'tv' : 'movie';
     const append = kind === 'movie' ? 'credits,recommendations,release_dates,external_ids,images' : 'credits,recommendations,content_ratings,external_ids,images';

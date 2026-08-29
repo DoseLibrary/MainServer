@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom';
 import { api, imageVariant, type CatalogItemDetails } from '@/lib/api';
 import { MediaDetailsPage } from '@/pages/MediaDetailsPage';
 import { Modal, ModalContent } from '@/components/ui/modal';
+import { ArtworkManager } from '@/routes/ArtworkManager';
 
 export function CatalogDetails() {
   const { id = '' } = useParams();
@@ -11,12 +12,15 @@ export function CatalogDetails() {
   const [saved, setSaved] = useState(false);
   const [watched, setWatched] = useState(false);
   const [trailerOpen, setTrailerOpen] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [artworkOpen, setArtworkOpen] = useState(false);
   const load = useCallback(async () => {
     setError(undefined);
     try { const next = (await api.catalogItem(id)).item; setItem(next); setSaved(Boolean(next.inWatchlist)); setWatched(Boolean(next.watched)); }
     catch (caught) { setError(caught instanceof Error ? caught.message : 'Could not load this title.'); }
   }, [id]);
   useEffect(() => { queueMicrotask(() => { void load(); }); }, [load]);
+  useEffect(() => { queueMicrotask(async () => { try { const { user } = await api.me(); setIsAdmin(user.role === 'admin'); } catch { setIsAdmin(false); } }); }, []);
 
   async function toggleWatchlist() {
     const next = !saved;
@@ -75,6 +79,9 @@ export function CatalogDetails() {
     onToggleWatched: item && (item.kind === 'movie' || item.kind === 'episode') ? () => void toggleWatched() : undefined,
     markWatchedLabel: 'Mark watched',
     markUnwatchedLabel: 'Mark unwatched',
+    canManage: isAdmin,
+    onEditMetadata: isAdmin && item ? () => setArtworkOpen(true) : undefined,
+    manageLabel: 'Change artwork',
   };
   const seasons = (item?.children ?? []).filter((child) => child.kind === 'season').map((season) => ({
     id: season.id,
@@ -109,5 +116,6 @@ export function CatalogDetails() {
         )}
       </ModalContent>
     </Modal>
+    {isAdmin && <ArtworkManager open={artworkOpen} itemId={id} onOpenChange={setArtworkOpen} onApplied={() => void load()} />}
   </>;
 }

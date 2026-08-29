@@ -11,6 +11,7 @@ import type { CatalogService } from './catalog-service.ts';
 import { PluginAlreadyRunningError, type PluginService } from './plugin-service.ts';
 import type { PluginScheduler } from './plugin-scheduler.ts';
 import { UnknownPluginError } from './plugins/registry.ts';
+import { ArtworkPathError, type ArtworkService } from './artwork-service.ts';
 import { negotiatePlayback } from './playback.ts';
 import { buildTranscodeArgs, contentTypeFor, decodePlaybackPlan, encodePlaybackPlan, resolveRange, resolveWithin } from './streaming.ts';
 import { ImageVariantStore } from './images.ts';
@@ -43,6 +44,8 @@ const userCreate = credentials.extend({ role: z.enum(['admin', 'member']).defaul
 const userUpdate = z.object({ role: z.enum(['admin', 'member']).optional(), disabled: z.boolean().optional(), password: z.string().min(10).max(256).optional() }).refine((value) => Object.keys(value).length > 0);
 const pluginIdParams = z.object({ id: z.string().min(1).max(64) });
 const pluginConfigBody = z.object({ enabled: z.boolean().optional(), schedule: z.string().trim().max(200).nullable().optional(), settings: z.record(z.string(), z.unknown()).optional() });
+const tmdbImagePath = z.string().regex(/^\/[A-Za-z0-9._/-]{1,255}$/);
+const artworkBody = z.object({ posterPath: tmdbImagePath.nullable().optional(), backdropPath: tmdbImagePath.nullable().optional() }).refine((value) => value.posterPath !== undefined || value.backdropPath !== undefined, { message: 'posterPath or backdropPath is required' });
 
 function setSession(reply: FastifyReply, token: string, production: boolean) {
   reply.setCookie(SESSION_COOKIE, token, { path: '/', httpOnly: true, sameSite: 'lax', secure: production, maxAge: SESSION_TTL_MS / 1000 });
@@ -59,7 +62,7 @@ function requireAdmin(user: PublicUser, reply: FastifyReply) {
   return true;
 }
 
-export async function registerApiRoutes(app: FastifyInstance, service: AuthService, production: boolean, filesystem: LibraryFilesystem = nodeLibraryFilesystem, scanner?: ScanCoordinator, catalog?: CatalogService, imagesDir = '/config/images', nativeLibraryPaths = false, plugins?: PluginService, pluginScheduler?: PluginScheduler) {
+export async function registerApiRoutes(app: FastifyInstance, service: AuthService, production: boolean, filesystem: LibraryFilesystem = nodeLibraryFilesystem, scanner?: ScanCoordinator, catalog?: CatalogService, imagesDir = '/config/images', nativeLibraryPaths = false, plugins?: PluginService, pluginScheduler?: PluginScheduler, artwork?: ArtworkService) {
   const imageVariants = new ImageVariantStore(imagesDir);
   app.get('/api/v1/setup/status', async () => ({ setupRequired: await service.setupRequired() }));
   app.post('/api/v1/setup', async (request, reply) => {
@@ -145,6 +148,27 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
     const params = idParams.safeParse(request.params); if (!params.success) return reply.status(400).send({ error: 'Invalid item id' });
     if (!catalog) return reply.status(503).send({ error: 'Catalog unavailable' });
     return catalog.setWatchlist(user.id, params.data.id, false);
+  });
+  app.get('/api/v1/catalog/items/:id/artwork', async (request, reply) => {
+    const actor = await requireUser(request, reply, service); if (!actor || !requireAdmin(actor, reply)) return;
+    if (!artwork) return reply.status(503).send({ error: 'Artwork unavailable' });
+    const parsed = idParams.safeParse(request.params); if (!parsed.success) return reply.status(400).send({ error: 'Invalid item id' });
+    const options = await artwork.options(parsed.data.id); if (!options) return reply.status(404).send({ error: 'Item not found' });
+    return options;
+  });
+  app.patch('/api/v1/catalog/items/:id/artwork', async (request, reply) => {
+    const actor = await requireUser(request, reply, service); if (!actor || !requireAdmin(actor, reply)) return;
+    if (!artwork) return reply.status(503).send({ error: 'Artwork unavailable' });
+    const parsed = idParams.safeParse(request.params); const body = artworkBody.safeParse(request.body);
+    if (!parsed.success || !body.success) return reply.status(400).send({ error: 'Invalid artwork selection' });
+    try {
+      const updated = await artwork.apply(parsed.data.id, body.data);
+      if (!updated) return reply.status(404).send({ error: 'Item not found' });
+      return { item: updated };
+    } catch (error) {
+      if (error instanceof ArtworkPathError) return reply.status(400).send({ error: 'Invalid image path' });
+      throw error;
+    }
   });
   app.get('/api/v1/catalog/genres/:id', async (request, reply) => {
     const user = await requireUser(request, reply, service); if (!user) return;
