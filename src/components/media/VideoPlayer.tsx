@@ -13,6 +13,7 @@ import {
   RotateCw,
   Loader2,
   ArrowLeft,
+  SkipForward,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -71,6 +72,8 @@ export interface VideoPlayerProps {
   /** Fired periodically with the current position for progress persistence. */
   onProgress?: (positionSeconds: number, durationSeconds: number) => void;
   onEnded?: () => void;
+  /** When set, a "Next episode" control is shown to skip to the next item. */
+  onNext?: () => void;
   autoPlay?: boolean;
   className?: string;
 }
@@ -120,6 +123,7 @@ export function VideoPlayer({
   startPositionSeconds,
   onProgress,
   onEnded,
+  onNext,
   autoPlay = false,
   className,
 }: VideoPlayerProps) {
@@ -505,6 +509,11 @@ export function VideoPlayer({
           <ControlButton label="Forward 10 seconds" onClick={() => seekBy(10)}>
             <RotateCw className="h-5 w-5" />
           </ControlButton>
+          {onNext && (
+            <ControlButton label="Next episode" onClick={onNext}>
+              <SkipForward className="h-5 w-5" />
+            </ControlButton>
+          )}
 
           <div className="group/vol flex items-center">
             <ControlButton label={muted ? 'Unmute' : 'Mute'} onClick={toggleMute}>

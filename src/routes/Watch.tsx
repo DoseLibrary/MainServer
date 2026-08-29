@@ -29,6 +29,7 @@ export function Watch() {
   // Resume from the last saved spot; progress is a 0..1 fraction, so scale by runtime.
   const startPositionSeconds = typeof item.progress === 'number' && item.progress > 0 && item.progress < 1 && duration ? item.progress * duration : undefined;
   const subtitles = (item.subtitles ?? []).map((track) => ({ id: track.id, label: track.label, srcLang: track.language, src: track.url }));
+  const nextHref = item.nextEpisodeId ? `/watch/${encodeURIComponent(item.nextEpisodeId)}` : undefined;
   return <main className="flex min-h-screen items-center bg-black"><VideoPlayer
     src={playback.stream.url}
     title={item.title}
@@ -43,8 +44,9 @@ export function Watch() {
     onEnded={() => {
       void api.saveProgress(id, duration ?? 0, true).catch(() => {});
       // Autoplay the next episode when one exists; the fresh /watch route auto-plays.
-      if (item.nextEpisodeId) navigate(`/watch/${encodeURIComponent(item.nextEpisodeId)}`);
+      if (nextHref) navigate(nextHref);
     }}
+    onNext={nextHref ? () => navigate(nextHref) : undefined}
     autoPlay
     className="mx-auto max-h-screen max-w-[min(100vw,177.78vh)] rounded-none"
   /></main>;
