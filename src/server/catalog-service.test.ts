@@ -49,7 +49,7 @@ describe('CatalogService enrichment serialization', () => {
     expect(details.quality).toMatchObject({ badge: '4K HDR', resolutionLabel: '4K', audioChannels: '5.1' });
     expect(details.genres).toEqual([{ id: GENRE, name: 'Action' }]);
     expect(details.collection).toMatchObject({ name: 'Saga', posterUrl: '/api/v1/images/c.jpg' });
-    expect(details.cast).toEqual([{ name: 'Actor A', character: 'Hero', profileUrl: '/api/v1/images/a.jpg', order: 0 }]);
+    expect(details.cast).toEqual([{ id: PERSON, name: 'Actor A', character: 'Hero', profileUrl: '/api/v1/images/a.jpg', order: 0 }]);
     const recs = details.recommendations as Array<{ id: string; posterUrl: string }>;
     expect(recs).toHaveLength(1);
     expect(recs[0]).toMatchObject({ id: REC, posterUrl: '/api/v1/images/q.jpg' });
@@ -94,6 +94,14 @@ describe('CatalogService enrichment serialization', () => {
       const kinds = new Set(section.items.map((entry) => (entry as { kind: string }).kind));
       expect(kinds.size).toBeLessThanOrEqual(1);
     }
+  });
+
+  it('returns a person with every local title they are credited in', async () => {
+    const person = await service.person(PERSON) as { id: string; name: string; profileUrl?: string; titles: Array<{ id: string; character?: string }> };
+    expect(person).toMatchObject({ id: PERSON, name: 'Actor A', profileUrl: '/api/v1/images/a.jpg' });
+    expect(person.titles.map((title) => title.id)).toContain(MOVIE);
+    expect(person.titles.find((title) => title.id === MOVIE)?.character).toBe('Hero');
+    expect(await service.person('00000000-0000-4000-8000-0000000000ff')).toBeNull();
   });
 
   it('tolerates items with no enrichment', async () => {

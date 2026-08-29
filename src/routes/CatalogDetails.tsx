@@ -43,8 +43,9 @@ export function CatalogDetails() {
     interaction: { href: `/media/${encodeURIComponent(rec.id)}` },
   }));
   const cast = (item?.cast ?? []).map((member, index) => ({
-    id: `${member.order}-${index}`, name: member.name, role: member.character,
+    id: member.id ?? `${member.order}-${index}`, name: member.name, role: member.character,
     imageSrc: imageVariant(member.profileUrl, { width: 96, height: 96, fit: 'cover', format: 'webp' }),
+    href: member.id ? `/person/${encodeURIComponent(member.id)}` : undefined,
   }));
   // Prefer the flagged trailer, else the first YouTube one; trailers play in an embedded modal.
   const trailer = (item?.trailers ?? []).find((entry) => entry.preferred && entry.site.toLowerCase() === 'youtube')

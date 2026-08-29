@@ -41,7 +41,8 @@ export interface CatalogItem {
 
 export interface CatalogGenre { id: string; name: string }
 export interface CatalogCollection { id: string; name: string; posterUrl?: string }
-export interface CatalogCastMember { name: string; character?: string; profileUrl?: string; order: number }
+export interface CatalogCastMember { id?: string; name: string; character?: string; profileUrl?: string; order: number }
+export interface CatalogPerson { id: string; name: string; profileUrl?: string; titles: Array<CatalogItem & { character?: string }> }
 export interface CatalogQuality { badge?: string; resolutionLabel: string | null; dynamicRange: string | null; videoCodec: string | null; audioCodec: string | null; audioChannels: string | null }
 
 /** Full detail view model; every enriched field is optional so partial metadata renders. */
@@ -143,6 +144,7 @@ export const api = {
   deleteLibrary: (id: string) => request<void>(`/api/v1/libraries/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   catalogHome: (libraryId?: string) => request<CatalogHome>(`/api/v1/catalog/home${libraryId ? `?libraryId=${encodeURIComponent(libraryId)}` : ''}`),
   catalogItem: (id: string) => request<{ item: CatalogItemDetails }>(`/api/v1/catalog/items/${encodeURIComponent(id)}`),
+  catalogPerson: (id: string) => request<{ person: CatalogPerson }>(`/api/v1/catalog/people/${encodeURIComponent(id)}`),
   catalogSearch: (libraryId: string, query: string) => request<CatalogSearch>(`/api/v1/catalog/search?libraryId=${encodeURIComponent(libraryId)}&q=${encodeURIComponent(query)}`),
   playback: (id: string, capabilities: ClientCapabilities) => request<PlaybackResponse>(`/api/v1/catalog/items/${encodeURIComponent(id)}/playback`, { method: 'POST', body: JSON.stringify(capabilities) }),
   saveProgress: (id: string, positionSeconds: number, watched?: boolean) => request<{ mediaItemId: string; positionSeconds: number; watched: boolean }>(`/api/v1/catalog/items/${encodeURIComponent(id)}/progress`, { method: 'POST', body: JSON.stringify({ positionSeconds: Math.round(positionSeconds), ...(watched != null ? { watched } : {}) }) }),

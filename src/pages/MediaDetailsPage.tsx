@@ -32,6 +32,8 @@ export interface CastMember {
   name: string;
   role?: ReactNode;
   imageSrc?: string;
+  /** Links the cast card to the person's page when provided. */
+  href?: string;
 }
 
 export interface SeasonSummary {
@@ -265,8 +267,8 @@ function CastRow({ title, cast }: { title: string; cast: readonly CastMember[] }
     <section aria-labelledby="media-cast">
       <h2 id="media-cast" className="mb-3 text-xl font-semibold">{title}</h2>
       <ul className="grid list-none grid-cols-2 gap-3 p-0 sm:grid-cols-3 lg:grid-cols-4">
-        {cast.map((member) => (
-          <li key={member.id}>
+        {cast.map((member) => {
+          const body = (
             <Card className="flex h-full items-center gap-3 p-3">
               <Avatar src={member.imageSrc} alt={member.name} className="h-12 w-12" />
               <div className="min-w-0">
@@ -274,8 +276,15 @@ function CastRow({ title, cast }: { title: string; cast: readonly CastMember[] }
                 {member.role != null && <div className="truncate text-sm text-muted-foreground">{member.role}</div>}
               </div>
             </Card>
-          </li>
-        ))}
+          );
+          return (
+            <li key={member.id}>
+              {member.href ? (
+                <a href={member.href} aria-label={member.name} className="block rounded-lg transition-shadow hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{body}</a>
+              ) : body}
+            </li>
+          );
+        })}
       </ul>
     </section>
   );

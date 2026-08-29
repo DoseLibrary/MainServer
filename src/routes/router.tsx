@@ -3,11 +3,13 @@ import { Home } from '@/routes/Home';
 import { CatalogDetails } from '@/routes/CatalogDetails';
 import { Watch } from '@/routes/Watch';
 import { Profile } from '@/routes/Profile';
+import { PersonPage } from '@/routes/PersonPage';
 
 const routes: RouteObject[] = [
   { path: '/', element: <Home /> },
   { path: '/media/:id', element: <CatalogDetails /> },
   { path: '/watch/:id', element: <Watch /> },
+  { path: '/person/:id', element: <PersonPage /> },
   { path: '/profile', element: <Profile /> },
 ];
 

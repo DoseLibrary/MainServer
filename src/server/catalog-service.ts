@@ -76,10 +76,22 @@ export class CatalogService {
   }
 
   private async castForItem(itemId: string) {
-    const rows = await this.database.select({ name: people.name, profilePath: people.profilePath, character: castCredits.character, order: castCredits.billingOrder })
+    const rows = await this.database.select({ id: people.id, name: people.name, profilePath: people.profilePath, character: castCredits.character, order: castCredits.billingOrder })
       .from(castCredits).innerJoin(people, eq(people.id, castCredits.personId))
       .where(eq(castCredits.mediaItemId, itemId)).orderBy(castCredits.billingOrder).limit(CAST_LIMIT);
-    return rows.map((row) => ({ name: row.name, character: row.character ?? undefined, profileUrl: imageLocalUrl(row.profilePath), order: row.order }));
+    return rows.map((row) => ({ id: row.id, name: row.name, character: row.character ?? undefined, profileUrl: imageLocalUrl(row.profilePath), order: row.order }));
+  }
+
+  /** A person and every local title they are credited in, for actor pages. */
+  async person(personId: string) {
+    const [person] = await this.database.select({ id: people.id, name: people.name, profilePath: people.profilePath }).from(people).where(eq(people.id, personId)).limit(1);
+    if (!person) return null;
+    const rows = await this.database.select({ item: mediaItems, character: castCredits.character })
+      .from(castCredits).innerJoin(mediaItems, eq(mediaItems.id, castCredits.mediaItemId))
+      .where(and(eq(castCredits.personId, personId), eq(mediaItems.available, true), inArray(mediaItems.kind, ['movie', 'series'])))
+      .orderBy(castCredits.billingOrder, mediaItems.sortTitle);
+    const titles = rows.map((row) => ({ ...toCatalogItem(row.item, null), character: row.character ?? undefined }));
+    return { id: person.id, name: person.name, profileUrl: imageLocalUrl(person.profilePath), titles };
   }
 
   private async recommendationsForItem(itemId: string) {

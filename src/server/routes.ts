@@ -146,6 +146,13 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
     if (!catalog) return reply.status(503).send({ error: 'Catalog unavailable' });
     return catalog.setWatchlist(user.id, params.data.id, false);
   });
+  app.get('/api/v1/catalog/people/:id', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    const parsed = idParams.safeParse(request.params); if (!parsed.success) return reply.status(400).send({ error: 'Invalid person id' });
+    if (!catalog) return reply.status(503).send({ error: 'Catalog unavailable' });
+    const person = await catalog.person(parsed.data.id); if (!person) return reply.status(404).send({ error: 'Person not found' });
+    return { person };
+  });
   app.get('/api/v1/catalog/search', async (request, reply) => {
     const user = await requireUser(request, reply, service); if (!user) return;
     const parsed = searchQuery.safeParse(request.query); if (!parsed.success) return reply.status(400).send({ error: 'Invalid search query' });
