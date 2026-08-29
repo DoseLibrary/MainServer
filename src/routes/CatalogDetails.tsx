@@ -72,7 +72,7 @@ export function CatalogDetails() {
     tagline: item?.tagline, badges: badges.length > 0 ? badges : undefined, recommendations,
     metadata, state: error ? 'error' as const : item ? 'loaded' as const : 'loading' as const,
     errorMessage: error, onRetry: load,
-    primaryAction: item && (item.kind === 'movie' || item.kind === 'episode') ? { label: 'Play', href: `/watch/${encodeURIComponent(item.id)}` } : undefined,
+    primaryAction: item && (item.kind === 'movie' || item.kind === 'episode') ? { label: typeof item.progress === 'number' && item.progress > 0 && item.progress < 1 ? 'Resume' : 'Play', href: `/watch/${encodeURIComponent(item.id)}` } : undefined,
     secondaryAction: item && (item.kind === 'movie' || item.kind === 'series') ? { label: saved ? 'In Watch List' : 'Add to Watch List', onClick: () => void toggleWatchlist() } : undefined,
     onPlayTrailer: trailer ? () => setTrailerOpen(true) : undefined,
     trailerLabel: 'Play Trailer',
@@ -96,6 +96,7 @@ export function CatalogDetails() {
     name: episode.title || (episode.episodeNumber != null ? `Episode ${episode.episodeNumber}` : 'Episode'),
     overview: episode.overview,
     posterSrc: imageVariant(episode.posterUrl, { width: 640, height: 360, fit: 'cover', format: 'webp' }),
+    progress: episode.progress,
     interaction: { href: `/media/${encodeURIComponent(episode.id)}` },
   }));
   const children = item?.kind === 'season' ? episodes : seasons;

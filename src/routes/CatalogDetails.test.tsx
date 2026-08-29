@@ -12,6 +12,12 @@ describe('CatalogDetails', () => {
     expect(screen.getByText('First contact.')).toBeInTheDocument();
     expect(globalThis.fetch).toHaveBeenCalledWith('/api/v1/catalog/items/movie%2F1', expect.anything());
   });
+
+  it('labels the primary action Resume for a partially watched movie', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ item: { id: 'm3', title: 'Dune', kind: 'movie', progress: 0.4 } }), { status: 200 }));
+    render(<MemoryRouter initialEntries={['/media/m3']}><Routes><Route path="/media/:id" element={<CatalogDetails />} /></Routes></MemoryRouter>);
+    expect(await screen.findByRole('link', { name: 'Resume' })).toHaveAttribute('href', '/watch/m3');
+  });
   it('renders enriched movie details: quality badge, genres, tagline, cast, and recommendations', async () => {
     globalThis.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ item: {
       id: 'm1', title: 'Inception', year: 2010, kind: 'movie', overview: 'A heist inside dreams.', tagline: 'Your mind is the scene of the crime.',

@@ -43,6 +43,8 @@ export interface SeasonSummary {
   episodeCount?: number;
   posterSrc?: string;
   posterAlt?: string;
+  /** Watch progress 0..1; renders a resume bar (partial) or a watched marker (1). */
+  progress?: number;
   interaction?: MediaCollectionInteraction;
 }
 
@@ -303,6 +305,11 @@ function SeasonsList({ title, seasons }: { title: string; seasons: readonly Seas
               <div className="min-w-0 flex-1">
                 <div className="font-semibold leading-tight">{season.name}</div>
                 {season.episodeCount != null && <div className="mt-0.5 text-sm text-muted-foreground">{season.episodeCount} episodes</div>}
+                {season.progress === 1
+                  ? <div className="mt-1 text-xs font-medium text-emerald-600">Watched</div>
+                  : typeof season.progress === 'number' && season.progress > 0 && (
+                    <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-primary" style={{ width: `${Math.round(Math.min(1, season.progress) * 100)}%` }} /></div>
+                  )}
                 {season.overview != null && <p className="mt-2 line-clamp-3 text-sm text-muted-foreground">{season.overview}</p>}
               </div>
             </div>
