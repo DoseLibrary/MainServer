@@ -40,7 +40,11 @@ export function Watch() {
     onBack={(event) => { event.preventDefault(); navigate(detailsHref); }}
     startPositionSeconds={startPositionSeconds}
     onProgress={(positionSeconds) => { void api.saveProgress(id, positionSeconds).catch(() => {}); }}
-    onEnded={() => { void api.saveProgress(id, duration ?? 0, true).catch(() => {}); }}
+    onEnded={() => {
+      void api.saveProgress(id, duration ?? 0, true).catch(() => {});
+      // Autoplay the next episode when one exists; the fresh /watch route auto-plays.
+      if (item.nextEpisodeId) navigate(`/watch/${encodeURIComponent(item.nextEpisodeId)}`);
+    }}
     autoPlay
     className="mx-auto max-h-screen max-w-[min(100vw,177.78vh)] rounded-none"
   /></main>;

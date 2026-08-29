@@ -72,7 +72,7 @@ export function CatalogDetails() {
     metadata, state: error ? 'error' as const : item ? 'loaded' as const : 'loading' as const,
     errorMessage: error, onRetry: load,
     primaryAction: item && (item.kind === 'movie' || item.kind === 'episode') ? { label: 'Play', href: `/watch/${encodeURIComponent(item.id)}` } : undefined,
-    secondaryAction: item?.kind === 'movie' ? { label: saved ? 'In Watch List' : 'Add to Watch List', onClick: () => void toggleWatchlist() } : undefined,
+    secondaryAction: item && (item.kind === 'movie' || item.kind === 'series') ? { label: saved ? 'In Watch List' : 'Add to Watch List', onClick: () => void toggleWatchlist() } : undefined,
     onPlayTrailer: trailer ? () => setTrailerOpen(true) : undefined,
     trailerLabel: 'Play Trailer',
     watched,

@@ -64,6 +64,8 @@ export interface CatalogItemDetails extends Omit<CatalogItem, 'genres' | 'collec
   files?: Array<{ id: string; relativePath: string; durationSeconds?: number }>;
   trailers?: CatalogTrailer[];
   subtitles?: CatalogSubtitle[];
+  /** Next episode in the series, for autoplay when this one ends. */
+  nextEpisodeId?: string;
   /** Whether the current user has saved this title to their watch list. */
   inWatchlist?: boolean;
   /** Whether the current user has marked this title watched. */

@@ -1,4 +1,5 @@
 import { and, count, desc, eq, ilike, inArray, isNull } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 import type { Database } from './db/client.ts';
 import { castCredits, collectionMembers, collections, genres, libraries, mediaFiles, mediaItemGenres, mediaItems, mediaSubtitles, mediaTechnicalProfiles, mediaTrailers, people, playbackProgress, recommendationEdges, watchlistEntries } from './db/schema.ts';
 import type { Probe } from './playback.ts';
@@ -80,6 +81,20 @@ export class CatalogService {
       .from(castCredits).innerJoin(people, eq(people.id, castCredits.personId))
       .where(eq(castCredits.mediaItemId, itemId)).orderBy(castCredits.billingOrder).limit(CAST_LIMIT);
     return rows.map((row) => ({ id: row.id, name: row.name, character: row.character ?? undefined, profileUrl: imageLocalUrl(row.profilePath), order: row.order }));
+  }
+
+  /** The next episode to play after this one, in season/episode order across the series. */
+  private async nextEpisodeId(episode: typeof mediaItems.$inferSelect): Promise<string | undefined> {
+    if (episode.kind !== 'episode' || !episode.parentId) return undefined;
+    const [season] = await this.database.select({ seriesId: mediaItems.parentId }).from(mediaItems).where(eq(mediaItems.id, episode.parentId)).limit(1);
+    if (!season?.seriesId) return undefined;
+    const seasons = alias(mediaItems, 'season_scope');
+    const rows = await this.database.select({ id: mediaItems.id, seasonNumber: mediaItems.seasonNumber, episodeNumber: mediaItems.episodeNumber })
+      .from(mediaItems).innerJoin(seasons, eq(seasons.id, mediaItems.parentId))
+      .where(and(eq(seasons.parentId, season.seriesId), eq(mediaItems.kind, 'episode'), eq(mediaItems.available, true)))
+      .orderBy(mediaItems.seasonNumber, mediaItems.episodeNumber);
+    const index = rows.findIndex((row) => row.id === episode.id);
+    return index >= 0 && index + 1 < rows.length ? rows[index + 1].id : undefined;
   }
 
   /** Player caption tracks for a title, across its available files. */
@@ -238,7 +253,9 @@ export class CatalogService {
     const watchOrder = await this.database.select({ mediaItemId: watchlistEntries.mediaItemId }).from(watchlistEntries)
       .where(eq(watchlistEntries.userId, userId)).orderBy(desc(watchlistEntries.createdAt));
     const movieById = new Map(movies.map((movie) => [movie.id, movie]));
+    const seriesById = new Map(series.map((item) => [item.id, item]));
     const watchlist = watchOrder.map((row) => movieById.get(row.mediaItemId)).filter((movie): movie is typeof movies[number] => Boolean(movie)).slice(0, HOME_ROW_LIMIT);
+    const watchlistShows = watchOrder.map((row) => seriesById.get(row.mediaItemId)).filter((item): item is typeof series[number] => Boolean(item)).slice(0, HOME_ROW_LIMIT);
 
     // Newly added movies, newest first by ingest time.
     const createdAtById = new Map(items.map(({ item }) => [item.id, item.createdAt]));
@@ -254,6 +271,7 @@ export class CatalogService {
     if (newlyAdded.length > 0) sections.push({ id: 'newly-added', title: 'Newly Added', layout: 'card', items: newlyAdded });
 
     // Shows get their own rows: newest episodes as posters, newest series as backdrops.
+    if (watchlistShows.length > 0) sections.push({ id: 'watchlist-shows', title: 'Watch List – Shows', layout: 'poster', items: watchlistShows });
     if (episodes.length > 0) sections.push({ id: 'new-episodes', title: 'Newly Added Episodes', layout: 'poster', items: episodes });
     const newlyAddedShows = [...series].sort((a, b) => (createdAtById.get(b.id)?.getTime() ?? 0) - (createdAtById.get(a.id)?.getTime() ?? 0)).slice(0, HOME_ROW_LIMIT);
     if (newlyAddedShows.length > 0) sections.push({ id: 'newly-added-shows', title: 'Newly Added Shows', layout: 'card', items: newlyAddedShows });
@@ -270,8 +288,8 @@ export class CatalogService {
     const childFiles = await this.database.select({ mediaItemId: mediaFiles.mediaItemId, durationSeconds: mediaFiles.durationSeconds }).from(mediaFiles).innerJoin(mediaItems, eq(mediaItems.id, mediaFiles.mediaItemId)).where(and(eq(mediaItems.parentId, id), eq(mediaFiles.available, true)));
     const children = serializeCatalogChildren(childRows, new Map(childFiles.map((file) => [file.mediaItemId, file.durationSeconds])));
     const files = await this.database.select({ id: mediaFiles.id, relativePath: mediaFiles.relativePath, durationSeconds: mediaFiles.durationSeconds }).from(mediaFiles).where(and(eq(mediaFiles.mediaItemId, id), eq(mediaFiles.available, true)));
-    const [quality, genreMap, collectionMap, cast, recommendations, inWatchlist, subtitles, trailers] = await Promise.all([
-      this.qualityByItem([id]), this.genresByItem([id]), this.collectionByItem([id]), this.castForItem(id), this.recommendationsForItem(id), this.isWatchlisted(userId, id), this.subtitlesForItem(id),
+    const [quality, genreMap, collectionMap, cast, recommendations, inWatchlist, subtitles, nextEpisodeId, trailers] = await Promise.all([
+      this.qualityByItem([id]), this.genresByItem([id]), this.collectionByItem([id]), this.castForItem(id), this.recommendationsForItem(id), this.isWatchlisted(userId, id), this.subtitlesForItem(id), this.nextEpisodeId(row.item),
       this.database.select({ site: mediaTrailers.site, key: mediaTrailers.key, name: mediaTrailers.name, type: mediaTrailers.type, official: mediaTrailers.official, preferred: mediaTrailers.preferred }).from(mediaTrailers).where(eq(mediaTrailers.mediaItemId, id)).orderBy(desc(mediaTrailers.preferred), desc(mediaTrailers.publishedAt)),
     ]);
     const profile = quality.get(id) ?? null;
@@ -292,6 +310,7 @@ export class CatalogService {
       recommendations,
       trailers,
       subtitles,
+      nextEpisodeId,
       children,
       files,
     };

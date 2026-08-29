@@ -102,6 +102,29 @@ describe('CatalogService enrichment serialization', () => {
     }
   });
 
+  it('tracks the next episode and surfaces watch-listed shows', async () => {
+    const SERIES = '20000000-0000-4000-8000-000000000021';
+    const SEASON = '20000000-0000-4000-8000-000000000022';
+    const EP1 = '20000000-0000-4000-8000-000000000023';
+    const EP2 = '20000000-0000-4000-8000-000000000024';
+    await client.query(`insert into users (id, username, password_hash, role) values ($1, 'viewer3', 'x', 'member')`, [USER]);
+    await client.query(`insert into media_items (id, library_id, kind, natural_key, title, sort_title) values ($1, $2, 'series', 'series:show', 'Show', 'show')`, [SERIES, LIB]);
+    await client.query(`insert into media_items (id, library_id, parent_id, kind, natural_key, title, sort_title, season_number) values ($1, $2, $3, 'season', 'series:show:s1', 'Season 1', '001', 1)`, [SEASON, LIB, SERIES]);
+    await client.query(`insert into media_items (id, library_id, parent_id, kind, natural_key, title, sort_title, season_number, episode_number) values ($1, $2, $3, 'episode', 'ep:s1e1', 'Pilot', 'pilot', 1, 1)`, [EP1, LIB, SEASON]);
+    await client.query(`insert into media_items (id, library_id, parent_id, kind, natural_key, title, sort_title, season_number, episode_number) values ($1, $2, $3, 'episode', 'ep:s1e2', 'Second', 'second', 1, 2)`, [EP2, LIB, SEASON]);
+
+    const first = await service.item(EP1, USER) as Record<string, unknown>;
+    expect(first.nextEpisodeId).toBe(EP2);
+    const second = await service.item(EP2, USER) as Record<string, unknown>;
+    expect(second.nextEpisodeId).toBeUndefined();
+
+    await service.setWatchlist(USER, SERIES, true);
+    const home = await service.home(LIB, USER);
+    const showsWatchlist = home.sections.find((section) => section.id === 'watchlist-shows');
+    expect(showsWatchlist?.layout).toBe('poster');
+    expect(showsWatchlist?.items.map((entry) => entry.id)).toContain(SERIES);
+  });
+
   it('returns every available title tagged with a genre', async () => {
     const genre = await service.genre(GENRE) as { id: string; name: string; titles: Array<{ id: string; badge?: string }> };
     expect(genre).toMatchObject({ id: GENRE, name: 'Action' });
