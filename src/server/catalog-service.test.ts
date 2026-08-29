@@ -61,6 +61,13 @@ describe('CatalogService enrichment serialization', () => {
     expect(item).toMatchObject({ badge: '4K HDR', genres: ['Action'] });
   });
 
+  it('includes matching people in search results', async () => {
+    const { groups } = await service.search(LIB, 'Actor');
+    const people = groups.find((group) => group.id === 'people');
+    expect(people?.items.map((item) => item.id)).toContain(PERSON);
+    expect(people?.items.find((item) => item.id === PERSON)).toMatchObject({ kind: 'person', title: 'Actor A' });
+  });
+
   it('adds badge, genres, and collection label to home items', async () => {
     const home = await service.home(LIB, USER);
     const item = home.sections.flatMap((section) => section.items).find((entry) => entry.id === MOVIE) as Record<string, unknown>;

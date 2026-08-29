@@ -32,7 +32,7 @@ export function CatalogSearch({ libraryId }: { libraryId?: string }) {
       meta: item.meta,
       badge: item.badge,
       posterSrc: imageVariant(item.posterUrl, { width: 80, height: 120, fit: 'cover', format: 'webp' }),
-      href: `/media/${encodeURIComponent(item.id)}`,
+      href: item.kind === 'person' ? `/person/${encodeURIComponent(item.id)}` : `/media/${encodeURIComponent(item.id)}`,
     })),
   })) : [];
   return <SearchDropdown query={query} onQueryChange={setQuery} groups={groups} loading={Boolean(query.trim()) && loading} className="w-52 sm:w-72" />;

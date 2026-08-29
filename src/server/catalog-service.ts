@@ -196,9 +196,15 @@ export class CatalogService {
       return { id: base.id, title: base.title, year: base.year, posterUrl: base.posterUrl, kind: item.kind, meta, badge: qualityBadge(quality.get(item.id)), genres: (genreMap.get(item.id) ?? []).map((genre) => genre.name) };
     };
 
+    const peopleRows = await this.database.select({ id: people.id, name: people.name, profilePath: people.profilePath })
+      .from(people).where(and(eq(people.libraryId, libraryId), ilike(people.name, `%${term}%`)))
+      .orderBy(people.name).limit(SEARCH_LIMIT);
+    const peopleResults: SearchResult[] = peopleRows.map((person) => ({ id: person.id, title: person.name, year: null, posterUrl: imageLocalUrl(person.profilePath), kind: 'person' }));
+
     const groups = [
       { id: 'movies', label: 'Movies', items: rows.filter((item) => item.kind === 'movie').map(toResult) },
       { id: 'shows', label: 'Shows', items: rows.filter((item) => item.kind === 'series').map(toResult) },
+      { id: 'people', label: 'People', items: peopleResults },
     ].filter((group) => group.items.length > 0);
     return { query: term, groups };
   }
