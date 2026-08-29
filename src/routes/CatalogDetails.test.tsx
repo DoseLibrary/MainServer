@@ -28,7 +28,7 @@ describe('CatalogDetails', () => {
     expect(screen.getByText('Your mind is the scene of the crime.')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Action' })).toHaveAttribute('href', '/genre/g1');
     expect(screen.getByRole('link', { name: 'Sci-Fi' })).toHaveAttribute('href', '/genre/g2');
-    expect(screen.getByText(/Part of Nolan Collection/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Nolan Collection' })).toHaveAttribute('href', '/collection/c1');
     expect(screen.getByText('Leonardo DiCaprio')).toBeInTheDocument();
     expect(screen.getByText('Cobb')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /Interstellar/ })).toHaveAttribute('href', '/media/m2');

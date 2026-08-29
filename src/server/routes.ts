@@ -183,6 +183,13 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
       return reply.send(body);
     } catch { return reply.status(404).send({ error: 'Subtitle not found' }); }
   });
+  app.get('/api/v1/catalog/collections/:id', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    const parsed = idParams.safeParse(request.params); if (!parsed.success) return reply.status(400).send({ error: 'Invalid collection id' });
+    if (!catalog) return reply.status(503).send({ error: 'Catalog unavailable' });
+    const collection = await catalog.collection(parsed.data.id); if (!collection) return reply.status(404).send({ error: 'Collection not found' });
+    return { collection };
+  });
   app.get('/api/v1/catalog/genres/:id', async (request, reply) => {
     const user = await requireUser(request, reply, service); if (!user) return;
     const parsed = idParams.safeParse(request.params); if (!parsed.success) return reply.status(400).send({ error: 'Invalid genre id' });

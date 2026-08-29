@@ -44,6 +44,7 @@ export interface CatalogCollection { id: string; name: string; posterUrl?: strin
 export interface CatalogCastMember { id?: string; name: string; character?: string; profileUrl?: string; order: number }
 export interface CatalogPerson { id: string; name: string; profileUrl?: string; titles: Array<CatalogItem & { character?: string }> }
 export interface CatalogGenreView { id: string; name: string; titles: CatalogItem[] }
+export interface CatalogCollectionView { id: string; name: string; posterUrl?: string; titles: CatalogItem[] }
 export interface ArtworkOption { path: string; previewUrl: string }
 export interface ArtworkOptions { posters: ArtworkOption[]; backdrops: ArtworkOption[] }
 export interface CatalogQuality { badge?: string; resolutionLabel: string | null; dynamicRange: string | null; videoCodec: string | null; audioCodec: string | null; audioChannels: string | null }
@@ -155,6 +156,7 @@ export const api = {
   catalogItem: (id: string) => request<{ item: CatalogItemDetails }>(`/api/v1/catalog/items/${encodeURIComponent(id)}`),
   catalogPerson: (id: string) => request<{ person: CatalogPerson }>(`/api/v1/catalog/people/${encodeURIComponent(id)}`),
   catalogGenre: (id: string) => request<{ genre: CatalogGenreView }>(`/api/v1/catalog/genres/${encodeURIComponent(id)}`),
+  catalogCollection: (id: string) => request<{ collection: CatalogCollectionView }>(`/api/v1/catalog/collections/${encodeURIComponent(id)}`),
   artworkOptions: (id: string) => request<ArtworkOptions>(`/api/v1/catalog/items/${encodeURIComponent(id)}/artwork`),
   setArtwork: (id: string, change: { posterPath?: string | null; backdropPath?: string | null }) =>
     request<{ item: { id: string; posterUrl?: string; backdropUrl?: string } }>(`/api/v1/catalog/items/${encodeURIComponent(id)}/artwork`, { method: 'PATCH', body: JSON.stringify(change) }),

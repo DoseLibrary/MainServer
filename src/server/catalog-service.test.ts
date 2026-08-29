@@ -125,6 +125,13 @@ describe('CatalogService enrichment serialization', () => {
     expect(showsWatchlist?.items.map((entry) => entry.id)).toContain(SERIES);
   });
 
+  it('returns a collection with its available parts', async () => {
+    const collection = await service.collection(COLLECTION) as { id: string; name: string; posterUrl?: string; titles: Array<{ id: string; badge?: string }> };
+    expect(collection).toMatchObject({ id: COLLECTION, name: 'Saga', posterUrl: '/api/v1/images/c.jpg' });
+    expect(collection.titles.map((title) => title.id)).toContain(MOVIE);
+    expect(await service.collection('00000000-0000-4000-8000-0000000000fd')).toBeNull();
+  });
+
   it('returns every available title tagged with a genre', async () => {
     const genre = await service.genre(GENRE) as { id: string; name: string; titles: Array<{ id: string; badge?: string }> };
     expect(genre).toMatchObject({ id: GENRE, name: 'Action' });

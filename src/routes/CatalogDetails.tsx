@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { useParams } from 'react-router-dom';
 import { api, imageVariant, type CatalogItemDetails } from '@/lib/api';
 import { MediaDetailsPage } from '@/pages/MediaDetailsPage';
@@ -45,13 +45,14 @@ export function CatalogDetails() {
     ...[item?.quality?.badge, item?.contentRating].filter((value): value is string => Boolean(value)),
     ...genreChips,
   ];
-  const metadata = [
-    item?.year != null ? String(item.year) : undefined,
-    episodeLabel,
-    item?.runtime,
-    item?.providerRating != null ? `★ ${item.providerRating.toFixed(1)}` : undefined,
-    item?.collection ? `Part of ${item.collection.name}` : undefined,
-  ].filter((value) => value != null).join('  ·  ') || undefined;
+  const metaPieces: ReactNode[] = [
+    item?.year != null ? String(item.year) : null,
+    episodeLabel || null,
+    item?.runtime || null,
+    item?.providerRating != null ? `★ ${item.providerRating.toFixed(1)}` : null,
+    item?.collection ? <span key="collection">Part of <a href={`/collection/${encodeURIComponent(item.collection.id)}`} className="hover:underline focus-visible:outline-none focus-visible:underline">{item.collection.name}</a></span> : null,
+  ].filter((piece) => piece != null);
+  const metadata = metaPieces.length > 0 ? <>{metaPieces.map((piece, index) => <span key={index}>{index > 0 ? '  ·  ' : ''}{piece}</span>)}</> : undefined;
   const recommendations = (item?.recommendations ?? []).map((rec) => ({
     id: rec.id, title: rec.title, posterSrc: imageVariant(rec.posterUrl, { width: 342, height: 513, fit: 'cover', format: 'webp' }),
     subtitle: rec.year != null ? String(rec.year) : undefined, badge: rec.badge,

@@ -112,6 +112,20 @@ export class CatalogService {
     return row ?? null;
   }
 
+  /** A collection and its available parts in release order, for collection pages. */
+  async collection(collectionId: string) {
+    const [collection] = await this.database.select({ id: collections.id, name: collections.name, posterPath: collections.posterPath }).from(collections).where(eq(collections.id, collectionId)).limit(1);
+    if (!collection) return null;
+    const rows = await this.database.select({ item: mediaItems }).from(collectionMembers)
+      .innerJoin(mediaItems, eq(mediaItems.id, collectionMembers.mediaItemId))
+      .where(and(eq(collectionMembers.collectionId, collectionId), eq(mediaItems.available, true)))
+      .orderBy(collectionMembers.position, mediaItems.sortTitle);
+    const items = rows.map(({ item }) => item);
+    const quality = await this.qualityByItem(items.map((item) => item.id));
+    const titles = items.map((item) => ({ ...toCatalogItem(item, null), badge: qualityBadge(quality.get(item.id)) }));
+    return { id: collection.id, name: collection.name, posterUrl: imageLocalUrl(collection.posterPath), titles };
+  }
+
   /** Every available top-level title tagged with a genre, for genre browse pages. */
   async genre(genreId: string) {
     const [genre] = await this.database.select({ id: genres.id, name: genres.name }).from(genres).where(eq(genres.id, genreId)).limit(1);

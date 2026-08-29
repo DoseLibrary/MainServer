@@ -5,6 +5,7 @@ import { Watch } from '@/routes/Watch';
 import { Profile } from '@/routes/Profile';
 import { PersonPage } from '@/routes/PersonPage';
 import { GenrePage } from '@/routes/GenrePage';
+import { CollectionPage } from '@/routes/CollectionPage';
 
 const routes: RouteObject[] = [
   { path: '/', element: <Home /> },
@@ -12,6 +13,7 @@ const routes: RouteObject[] = [
   { path: '/watch/:id', element: <Watch /> },
   { path: '/person/:id', element: <PersonPage /> },
   { path: '/genre/:id', element: <GenrePage /> },
+  { path: '/collection/:id', element: <CollectionPage /> },
   { path: '/profile', element: <Profile /> },
 ];
 
