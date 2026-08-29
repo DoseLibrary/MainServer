@@ -1,4 +1,5 @@
 import { useState, type CSSProperties, type MouseEventHandler, type ReactNode } from 'react';
+import { Play } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 export type PosterInteraction =
@@ -36,7 +37,7 @@ export interface PosterProps {
 type PosterImageProps = Pick<
   PosterProps,
   'src' | 'title' | 'alt' | 'badge' | 'aspectRatio' | 'imageAreaClassName' | 'imageClassName'
->;
+> & { interactive?: boolean };
 
 function PosterImage({
   src,
@@ -46,6 +47,7 @@ function PosterImage({
   aspectRatio = '2 / 3',
   imageAreaClassName,
   imageClassName,
+  interactive,
 }: PosterImageProps) {
   const [status, setStatus] = useState<'loading' | 'loaded' | 'error'>(
     src ? 'loading' : 'error',
@@ -54,7 +56,7 @@ function PosterImage({
   return (
     <div
       className={cn(
-        'relative isolate w-full overflow-hidden rounded-lg bg-muted transition-shadow duration-200 group-hover:shadow-lg group-hover:shadow-black/30',
+        'relative isolate w-full overflow-hidden rounded-lg bg-muted transition-shadow duration-300 motion-reduce:transition-none group-hover:shadow-xl group-hover:shadow-black/40',
         imageAreaClassName,
       )}
       style={{ aspectRatio }}
@@ -72,7 +74,7 @@ function PosterImage({
           src={src}
           alt={alt}
           className={cn(
-            'absolute inset-0 h-full w-full object-cover transition-[opacity,transform] duration-300 ease-out group-hover:scale-105 group-focus-visible:scale-105',
+            'absolute inset-0 h-full w-full object-cover transition-[opacity,transform] duration-500 ease-out motion-reduce:transform-none motion-reduce:transition-none group-hover:scale-[1.04] group-focus-visible:scale-[1.04]',
             status === 'loaded' ? 'opacity-100' : 'opacity-0',
             imageClassName,
           )}
@@ -96,6 +98,14 @@ function PosterImage({
           {badge}
         </span>
       )}
+
+      {interactive && (
+        <div aria-hidden="true" className="absolute inset-0 flex items-center justify-center bg-black/0 opacity-0 transition-[background-color,opacity] duration-300 motion-reduce:transition-none group-hover:bg-black/25 group-hover:opacity-100 group-focus-visible:bg-black/25 group-focus-visible:opacity-100">
+          <span className="flex h-11 w-11 translate-y-2 items-center justify-center rounded-full bg-white text-black shadow-xl transition-transform duration-300 motion-reduce:transform-none motion-reduce:transition-none group-hover:translate-y-0 group-focus-visible:translate-y-0">
+            <Play className="ml-0.5 h-5 w-5 fill-current" />
+          </span>
+        </div>
+      )}
     </div>
   );
 }
@@ -111,7 +121,8 @@ function PosterBody({
   imageAreaClassName,
   imageClassName,
   contentClassName,
-}: Omit<PosterProps, 'className' | 'interaction'>) {
+  interactive,
+}: Omit<PosterProps, 'className' | 'interaction'> & { interactive?: boolean }) {
   return (
     <>
       <PosterImage
@@ -123,6 +134,7 @@ function PosterBody({
         aspectRatio={aspectRatio}
         imageAreaClassName={imageAreaClassName}
         imageClassName={imageClassName}
+        interactive={interactive}
       />
       {!hideCaption && (
         <div className={cn('mt-2 min-w-0', contentClassName)}>
@@ -141,7 +153,7 @@ function PosterBody({
 }
 
 const rootClasses =
-  'group block min-w-0 rounded-lg text-left text-foreground transition-transform duration-200 ease-out will-change-transform hover:-translate-y-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background';
+  'group block min-w-0 rounded-lg text-left text-foreground transition-[transform,filter] duration-300 ease-out motion-reduce:transform-none motion-reduce:transition-none hover:-translate-y-1 hover:drop-shadow-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background';
 
 export function Poster({ className, interaction, ...props }: PosterProps) {
   if (!interaction) {
@@ -163,7 +175,7 @@ export function Poster({ className, interaction, ...props }: PosterProps) {
         aria-label={ariaLabel}
         className={cn(rootClasses, className)}
       >
-        <PosterBody {...props} />
+        <PosterBody {...props} interactive />
       </a>
     );
   }
@@ -181,7 +193,7 @@ export function Poster({ className, interaction, ...props }: PosterProps) {
         className,
       )}
     >
-      <PosterBody {...props} />
+      <PosterBody {...props} interactive />
     </button>
   );
 }

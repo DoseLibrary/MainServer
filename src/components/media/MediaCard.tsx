@@ -1,4 +1,5 @@
 import { useState, type MouseEventHandler, type ReactNode } from 'react';
+import { Play } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 export type MediaCardInteraction =
@@ -25,9 +26,10 @@ interface CardArtworkProps {
   badge?: ReactNode;
   subtitle?: ReactNode;
   progress?: number;
+  interactive?: boolean;
 }
 
-function CardArtwork({ src, title, alt, badge, subtitle, progress }: CardArtworkProps) {
+function CardArtwork({ src, title, alt, badge, subtitle, progress, interactive }: CardArtworkProps) {
   const [status, setStatus] = useState<'loading' | 'loaded' | 'error'>(src ? 'loading' : 'error');
   const clampedProgress = progress == null ? null : Math.min(1, Math.max(0, progress));
 
@@ -39,7 +41,7 @@ function CardArtwork({ src, title, alt, badge, subtitle, progress }: CardArtwork
         <img
           src={src}
           alt={alt ?? title}
-          className={cn('absolute inset-0 h-full w-full object-cover transition-[opacity,transform] duration-300 group-hover:scale-105 group-focus-visible:scale-105', status === 'loaded' ? 'opacity-100' : 'opacity-0')}
+          className={cn('absolute inset-0 h-full w-full object-cover transition-[opacity,transform] duration-500 ease-out motion-reduce:transform-none motion-reduce:transition-none group-hover:scale-[1.04] group-focus-visible:scale-[1.04]', status === 'loaded' ? 'opacity-100' : 'opacity-0')}
           onLoad={() => setStatus('loaded')}
           onError={() => setStatus('error')}
         />
@@ -52,6 +54,14 @@ function CardArtwork({ src, title, alt, badge, subtitle, progress }: CardArtwork
       )}
 
       <div aria-hidden="true" className="absolute inset-x-0 bottom-0 h-2/3 bg-gradient-to-t from-black/85 via-black/20 to-transparent opacity-90 transition-opacity group-hover:opacity-100" />
+
+      {interactive && (
+        <div aria-hidden="true" className="absolute inset-0 flex items-center justify-center bg-black/0 opacity-0 transition-[background-color,opacity] duration-300 motion-reduce:transition-none group-hover:bg-black/20 group-hover:opacity-100 group-focus-visible:bg-black/20 group-focus-visible:opacity-100">
+          <span className="flex h-11 w-11 translate-y-2 items-center justify-center rounded-full bg-white text-black shadow-xl transition-transform duration-300 motion-reduce:transform-none motion-reduce:transition-none group-hover:translate-y-0 group-focus-visible:translate-y-0">
+            <Play className="ml-0.5 h-5 w-5 fill-current" />
+          </span>
+        </div>
+      )}
 
       {badge != null && (
         <span className="absolute left-2 top-2 rounded-md bg-black/70 px-2 py-1 text-xs font-semibold text-white backdrop-blur-sm">{badge}</span>
@@ -76,10 +86,10 @@ function CardArtwork({ src, title, alt, badge, subtitle, progress }: CardArtwork
 }
 
 const rootClasses =
-  'group block w-full rounded-lg text-left transition-transform duration-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background hover:-translate-y-0.5';
+  'group block w-full rounded-lg text-left transition-[transform,filter] duration-300 ease-out motion-reduce:transform-none motion-reduce:transition-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background hover:-translate-y-1 hover:drop-shadow-xl';
 
 export function MediaCard({ title, imageSrc, imageAlt, subtitle, badge, progress, interaction, className }: MediaCardProps) {
-  const artwork = <CardArtwork src={imageSrc} title={title} alt={imageAlt} badge={badge} subtitle={subtitle} progress={progress} />;
+  const artwork = <CardArtwork src={imageSrc} title={title} alt={imageAlt} badge={badge} subtitle={subtitle} progress={progress} interactive={interaction != null} />;
 
   if (!interaction) {
     return <article className={cn('group min-w-0', className)}>{artwork}</article>;
