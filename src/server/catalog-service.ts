@@ -192,6 +192,19 @@ export class CatalogService {
       .orderBy(desc(mediaItems.createdAt)).limit(HOME_ROW_LIMIT);
     const episodes = episodeRows.map(({ item }) => ({ ...toCatalogItem(item, null), badge: undefined as string | undefined, genres: [] as string[], collection: undefined as string | undefined }));
 
+    // Episodes the user is partway through, most recently watched first (posters, shows-only).
+    const ongoingEpRows = await this.database.select({ item: mediaItems, progress: playbackProgress, duration: mediaFiles.durationSeconds })
+      .from(playbackProgress)
+      .innerJoin(mediaItems, eq(mediaItems.id, playbackProgress.mediaItemId))
+      .leftJoin(mediaFiles, and(eq(mediaFiles.mediaItemId, mediaItems.id), eq(mediaFiles.available, true)))
+      .where(and(eq(playbackProgress.userId, userId), eq(mediaItems.kind, 'episode'), eq(mediaItems.available, true), eq(playbackProgress.watched, false), ...(scope ? [scope] : [])))
+      .orderBy(desc(playbackProgress.lastWatchedAt)).limit(HOME_ROW_LIMIT);
+    const seenEpisode = new Set<string>();
+    const ongoingEpisodes = ongoingEpRows
+      .filter((row) => (seenEpisode.has(row.item.id) ? false : (seenEpisode.add(row.item.id), true)))
+      .map(({ item, progress, duration }) => ({ ...toCatalogItem(item, progress, duration), badge: undefined as string | undefined, genres: [] as string[], collection: undefined as string | undefined }))
+      .filter((episode) => episode.progress != null && episode.progress > 0 && episode.progress < 1);
+
     // Watch list: movies the user saved, most recently added first.
     const watchOrder = await this.database.select({ mediaItemId: watchlistEntries.mediaItemId }).from(watchlistEntries)
       .where(eq(watchlistEntries.userId, userId)).orderBy(desc(watchlistEntries.createdAt));
@@ -207,6 +220,7 @@ export class CatalogService {
     // Movie rows mirror the classic home: resume, saved, then freshest. All movies-only (never mixed).
     const resume = movies.filter((item) => item.progress != null && item.progress > 0 && item.progress < 1).slice(0, HOME_ROW_LIMIT);
     if (resume.length > 0) sections.push({ id: 'continue-watching', title: 'Continue Watching', layout: 'card', items: resume });
+    if (ongoingEpisodes.length > 0) sections.push({ id: 'continue-watching-episodes', title: 'Continue Watching – Episodes', layout: 'poster', items: ongoingEpisodes });
     if (watchlist.length > 0) sections.push({ id: 'watchlist', title: 'Watch List', layout: 'card', items: watchlist });
     if (newlyAdded.length > 0) sections.push({ id: 'newly-added', title: 'Newly Added', layout: 'card', items: newlyAdded });
 

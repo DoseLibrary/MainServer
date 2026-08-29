@@ -74,8 +74,14 @@ describe('CatalogService enrichment serialization', () => {
     await client.query(`insert into media_items (id, library_id, parent_id, kind, natural_key, title, sort_title, season_number, episode_number, poster_path) values ($1, $2, $3, 'episode', 'episode:show:s1e1', 'Pilot', 'pilot', 1, 1, '/e.jpg')`, [EPISODE, LIB, SERIES]);
     await client.query(`insert into users (id, username, password_hash, role) values ($1, 'viewer', 'x', 'member')`, [USER]);
     await service.setWatchlist(USER, MOVIE, true);
+    await client.query(`insert into media_files (id, media_item_id, library_id, relative_path, size_bytes, modified_at, duration_seconds) values ('30000000-0000-4000-8000-0000000000e1', $1, $2, 'Pilot.mkv', 1000, now(), 1000)`, [EPISODE, LIB]);
+    await service.saveProgress(USER, EPISODE, 300, false);
 
     const home = await service.home(LIB, USER);
+
+    const ongoing = home.sections.find((section) => section.id === 'continue-watching-episodes');
+    expect(ongoing?.layout).toBe('poster');
+    expect(ongoing?.items.map((entry) => entry.id)).toContain(EPISODE);
 
     const newlyAdded = home.sections.find((section) => section.id === 'newly-added');
     expect(newlyAdded?.layout).toBe('card');
