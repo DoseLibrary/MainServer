@@ -12,6 +12,7 @@ import { PluginAlreadyRunningError, type PluginService } from './plugin-service.
 import type { PluginScheduler } from './plugin-scheduler.ts';
 import { UnknownPluginError } from './plugins/registry.ts';
 import { ArtworkPathError, type ArtworkService } from './artwork-service.ts';
+import type { SubtitleStore } from './subtitles.ts';
 import { negotiatePlayback } from './playback.ts';
 import { buildTranscodeArgs, contentTypeFor, decodePlaybackPlan, encodePlaybackPlan, resolveRange, resolveWithin } from './streaming.ts';
 import { ImageVariantStore } from './images.ts';
@@ -62,7 +63,7 @@ function requireAdmin(user: PublicUser, reply: FastifyReply) {
   return true;
 }
 
-export async function registerApiRoutes(app: FastifyInstance, service: AuthService, production: boolean, filesystem: LibraryFilesystem = nodeLibraryFilesystem, scanner?: ScanCoordinator, catalog?: CatalogService, imagesDir = '/config/images', nativeLibraryPaths = false, plugins?: PluginService, pluginScheduler?: PluginScheduler, artwork?: ArtworkService) {
+export async function registerApiRoutes(app: FastifyInstance, service: AuthService, production: boolean, filesystem: LibraryFilesystem = nodeLibraryFilesystem, scanner?: ScanCoordinator, catalog?: CatalogService, imagesDir = '/config/images', nativeLibraryPaths = false, plugins?: PluginService, pluginScheduler?: PluginScheduler, artwork?: ArtworkService, subtitleStore?: SubtitleStore) {
   const imageVariants = new ImageVariantStore(imagesDir);
   app.get('/api/v1/setup/status', async () => ({ setupRequired: await service.setupRequired() }));
   app.post('/api/v1/setup', async (request, reply) => {
@@ -169,6 +170,18 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
       if (error instanceof ArtworkPathError) return reply.status(400).send({ error: 'Invalid image path' });
       throw error;
     }
+  });
+  app.get('/api/v1/subtitles/:id', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    if (!catalog || !subtitleStore) return reply.status(503).send({ error: 'Subtitles unavailable' });
+    const parsed = idParams.safeParse(request.params); if (!parsed.success) return reply.status(400).send({ error: 'Invalid subtitle id' });
+    const row = await catalog.subtitle(parsed.data.id); if (!row) return reply.status(404).send({ error: 'Subtitle not found' });
+    try {
+      const body = await subtitleStore.read(row.storageKey);
+      reply.header('Content-Type', 'text/vtt; charset=utf-8');
+      reply.header('Cache-Control', 'private, max-age=3600');
+      return reply.send(body);
+    } catch { return reply.status(404).send({ error: 'Subtitle not found' }); }
   });
   app.get('/api/v1/catalog/genres/:id', async (request, reply) => {
     const user = await requireUser(request, reply, service); if (!user) return;

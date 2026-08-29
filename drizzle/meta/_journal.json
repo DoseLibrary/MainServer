@@ -71,6 +71,13 @@
       "when": 1788014112000,
       "tag": "0009_stiff_ender_wiggin",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1788033474635,
+      "tag": "0010_pretty_jetstream",
+      "breakpoints": true
     }
   ]
 }

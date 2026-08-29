@@ -28,9 +28,11 @@ export function Watch() {
   const duration = playback.durationSeconds ?? item.files?.[0]?.durationSeconds;
   // Resume from the last saved spot; progress is a 0..1 fraction, so scale by runtime.
   const startPositionSeconds = typeof item.progress === 'number' && item.progress > 0 && item.progress < 1 && duration ? item.progress * duration : undefined;
+  const subtitles = (item.subtitles ?? []).map((track) => ({ id: track.id, label: track.label, srcLang: track.language, src: track.url }));
   return <main className="flex min-h-screen items-center bg-black"><VideoPlayer
     src={playback.stream.url}
     title={item.title}
+    subtitles={subtitles}
     meta={[item.year, playback.plan.mode === 'direct' ? 'Direct play' : playback.plan.remux ? 'Remux' : 'Optimized'].filter(Boolean).join(' · ')}
     poster={poster}
     posterSrc={cornerPoster}

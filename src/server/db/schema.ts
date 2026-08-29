@@ -239,6 +239,22 @@ export const watchlistEntries = pgTable('watchlist_entries', {
   index('watchlist_entries_user_recent_index').on(table.userId, table.createdAt),
 ]);
 
+export const mediaSubtitles = pgTable('media_subtitles', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  mediaFileId: uuid('media_file_id').notNull().references(() => mediaFiles.id, { onDelete: 'cascade' }),
+  streamIndex: integer('stream_index').notNull(),
+  language: text('language'),
+  label: text('label').notNull(),
+  forced: boolean('forced').notNull().default(false),
+  /** Filename of the extracted WebVTT file inside the subtitles store. */
+  storageKey: text('storage_key').notNull(),
+  source: text('source').notNull().default('embedded'),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex('media_subtitles_file_stream_unique').on(table.mediaFileId, table.streamIndex),
+  index('media_subtitles_file_index').on(table.mediaFileId),
+]);
+
 export const scanRuns = pgTable('scan_runs', {
   id: uuid('id').primaryKey().defaultRandom(),
   libraryId: uuid('library_id').notNull().references(() => libraries.id, { onDelete: 'cascade' }),

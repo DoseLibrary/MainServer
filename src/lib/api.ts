@@ -63,6 +63,7 @@ export interface CatalogItemDetails extends Omit<CatalogItem, 'genres' | 'collec
   recommendations?: CatalogItem[];
   files?: Array<{ id: string; relativePath: string; durationSeconds?: number }>;
   trailers?: CatalogTrailer[];
+  subtitles?: CatalogSubtitle[];
   /** Whether the current user has saved this title to their watch list. */
   inWatchlist?: boolean;
   /** Whether the current user has marked this title watched. */
@@ -70,6 +71,7 @@ export interface CatalogItemDetails extends Omit<CatalogItem, 'genres' | 'collec
 }
 
 export interface CatalogTrailer { site: string; key: string; name: string; type: string; official: boolean; preferred: boolean }
+export interface CatalogSubtitle { id: string; language?: string; label: string; forced: boolean; url: string }
 
 export interface CatalogSection { id: string; title: string; items: CatalogItem[]; layout?: 'poster' | 'card' }
 export interface CatalogHome { sections: CatalogSection[]; featured?: CatalogItem }

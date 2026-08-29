@@ -16,13 +16,18 @@ import { PluginScheduler } from './plugin-scheduler.ts';
 import { TmdbClient } from './tmdb.ts';
 import { ArtworkService } from './artwork-service.ts';
 import { ImageStore } from './images.ts';
+import { createSubtitleExtractorPlugin } from './plugins/subtitle-extractor.ts';
+import { SubtitleStore, ffmpegSubtitleTools } from './subtitles.ts';
 
 export async function buildApp(config: AppConfig) {
   const app = Fastify({ logger: config.NODE_ENV !== 'test' });
   const connection = createDatabase(config);
   const { database } = connection;
   const tmdb = new TmdbClient(config.TMDB_API_TOKEN ?? '', config.TMDB_CONCURRENCY, config.TMDB_REQUESTS_PER_SECOND, config.TMDB_TIMEOUT_MS);
-  const plugins = new PluginService(database, new PluginRegistry().register(createTrailerFetcherPlugin(database, tmdb)));
+  const subtitleStore = new SubtitleStore(join(config.CONFIG_PATH, 'subtitles'));
+  const plugins = new PluginService(database, new PluginRegistry()
+    .register(createTrailerFetcherPlugin(database, tmdb))
+    .register(createSubtitleExtractorPlugin(database, ffmpegSubtitleTools(), subtitleStore)));
   const artwork = new ArtworkService(database, tmdb, new ImageStore(join(config.CONFIG_PATH, 'images')));
   const pluginScheduler = new PluginScheduler(plugins);
   // Plugin bootstrap must never block the server from serving core routes/health.
@@ -30,7 +35,7 @@ export async function buildApp(config: AppConfig) {
   catch (error) { app.log.error(error, 'plugin bootstrap failed'); }
 
   await app.register(fastifyCookie);
-  await registerApiRoutes(app, new AuthService(database), config.NODE_ENV === 'production', undefined, new ScanCoordinator(database, config), new CatalogService(database), join(config.CONFIG_PATH, 'images'), config.NODE_ENV === 'development' && isEmbeddedDatabase(config.DATABASE_URL), plugins, pluginScheduler, artwork);
+  await registerApiRoutes(app, new AuthService(database), config.NODE_ENV === 'production', undefined, new ScanCoordinator(database, config), new CatalogService(database), join(config.CONFIG_PATH, 'images'), config.NODE_ENV === 'development' && isEmbeddedDatabase(config.DATABASE_URL), plugins, pluginScheduler, artwork, subtitleStore);
 
   app.addHook('onClose', async () => {
     await pluginScheduler.stop();

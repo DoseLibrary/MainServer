@@ -1,6 +1,6 @@
 import { and, count, desc, eq, ilike, inArray, isNull } from 'drizzle-orm';
 import type { Database } from './db/client.ts';
-import { castCredits, collectionMembers, collections, genres, libraries, mediaFiles, mediaItemGenres, mediaItems, mediaTechnicalProfiles, mediaTrailers, people, playbackProgress, recommendationEdges, watchlistEntries } from './db/schema.ts';
+import { castCredits, collectionMembers, collections, genres, libraries, mediaFiles, mediaItemGenres, mediaItems, mediaSubtitles, mediaTechnicalProfiles, mediaTrailers, people, playbackProgress, recommendationEdges, watchlistEntries } from './db/schema.ts';
 import type { Probe } from './playback.ts';
 import { imageLocalUrl } from './images.ts';
 
@@ -80,6 +80,21 @@ export class CatalogService {
       .from(castCredits).innerJoin(people, eq(people.id, castCredits.personId))
       .where(eq(castCredits.mediaItemId, itemId)).orderBy(castCredits.billingOrder).limit(CAST_LIMIT);
     return rows.map((row) => ({ id: row.id, name: row.name, character: row.character ?? undefined, profileUrl: imageLocalUrl(row.profilePath), order: row.order }));
+  }
+
+  /** Player caption tracks for a title, across its available files. */
+  async subtitlesForItem(itemId: string) {
+    const rows = await this.database.select({ id: mediaSubtitles.id, language: mediaSubtitles.language, label: mediaSubtitles.label, forced: mediaSubtitles.forced })
+      .from(mediaSubtitles).innerJoin(mediaFiles, eq(mediaFiles.id, mediaSubtitles.mediaFileId))
+      .where(and(eq(mediaFiles.mediaItemId, itemId), eq(mediaFiles.available, true)))
+      .orderBy(desc(mediaSubtitles.forced), mediaSubtitles.label);
+    return rows.map((row) => ({ id: row.id, language: row.language ?? undefined, label: row.label, forced: row.forced, url: `/api/v1/subtitles/${row.id}` }));
+  }
+
+  /** Storage key for a subtitle track, so the API can stream the WebVTT file. */
+  async subtitle(id: string) {
+    const [row] = await this.database.select({ storageKey: mediaSubtitles.storageKey }).from(mediaSubtitles).where(eq(mediaSubtitles.id, id)).limit(1);
+    return row ?? null;
   }
 
   /** Every available top-level title tagged with a genre, for genre browse pages. */
@@ -255,8 +270,8 @@ export class CatalogService {
     const childFiles = await this.database.select({ mediaItemId: mediaFiles.mediaItemId, durationSeconds: mediaFiles.durationSeconds }).from(mediaFiles).innerJoin(mediaItems, eq(mediaItems.id, mediaFiles.mediaItemId)).where(and(eq(mediaItems.parentId, id), eq(mediaFiles.available, true)));
     const children = serializeCatalogChildren(childRows, new Map(childFiles.map((file) => [file.mediaItemId, file.durationSeconds])));
     const files = await this.database.select({ id: mediaFiles.id, relativePath: mediaFiles.relativePath, durationSeconds: mediaFiles.durationSeconds }).from(mediaFiles).where(and(eq(mediaFiles.mediaItemId, id), eq(mediaFiles.available, true)));
-    const [quality, genreMap, collectionMap, cast, recommendations, inWatchlist, trailers] = await Promise.all([
-      this.qualityByItem([id]), this.genresByItem([id]), this.collectionByItem([id]), this.castForItem(id), this.recommendationsForItem(id), this.isWatchlisted(userId, id),
+    const [quality, genreMap, collectionMap, cast, recommendations, inWatchlist, subtitles, trailers] = await Promise.all([
+      this.qualityByItem([id]), this.genresByItem([id]), this.collectionByItem([id]), this.castForItem(id), this.recommendationsForItem(id), this.isWatchlisted(userId, id), this.subtitlesForItem(id),
       this.database.select({ site: mediaTrailers.site, key: mediaTrailers.key, name: mediaTrailers.name, type: mediaTrailers.type, official: mediaTrailers.official, preferred: mediaTrailers.preferred }).from(mediaTrailers).where(eq(mediaTrailers.mediaItemId, id)).orderBy(desc(mediaTrailers.preferred), desc(mediaTrailers.publishedAt)),
     ]);
     const profile = quality.get(id) ?? null;
@@ -276,6 +291,7 @@ export class CatalogService {
       cast,
       recommendations,
       trailers,
+      subtitles,
       children,
       files,
     };
