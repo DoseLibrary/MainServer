@@ -102,6 +102,14 @@ describe('CatalogService enrichment serialization', () => {
     }
   });
 
+  it('returns every available title tagged with a genre', async () => {
+    const genre = await service.genre(GENRE) as { id: string; name: string; titles: Array<{ id: string; badge?: string }> };
+    expect(genre).toMatchObject({ id: GENRE, name: 'Action' });
+    expect(genre.titles.map((title) => title.id)).toContain(MOVIE);
+    expect(genre.titles.find((title) => title.id === MOVIE)?.badge).toBe('4K HDR');
+    expect(await service.genre('00000000-0000-4000-8000-0000000000fe')).toBeNull();
+  });
+
   it('returns a person with every local title they are credited in', async () => {
     const person = await service.person(PERSON) as { id: string; name: string; profileUrl?: string; titles: Array<{ id: string; character?: string }> };
     expect(person).toMatchObject({ id: PERSON, name: 'Actor A', profileUrl: '/api/v1/images/a.jpg' });

@@ -33,14 +33,19 @@ export function CatalogDetails() {
   const episodeLabel = item?.seasonNumber != null || item?.episodeNumber != null
     ? [item.seasonNumber != null ? `Season ${item.seasonNumber}` : undefined, item.episodeNumber != null ? `Episode ${item.episodeNumber}` : undefined].filter(Boolean).join(' · ')
     : undefined;
-  // Quality and content rating read as compact chips; longer facts sit in the metadata line.
-  const badges = [item?.quality?.badge, item?.contentRating].filter((value): value is string => Boolean(value));
+  // Quality and content rating read as compact chips; genres are clickable chips into browse pages.
+  const genreChips = (item?.genres ?? []).map((genre) => (
+    <a key={genre.id} href={`/genre/${encodeURIComponent(genre.id)}`} className="hover:underline focus-visible:outline-none focus-visible:underline">{genre.name}</a>
+  ));
+  const badges = [
+    ...[item?.quality?.badge, item?.contentRating].filter((value): value is string => Boolean(value)),
+    ...genreChips,
+  ];
   const metadata = [
     item?.year != null ? String(item.year) : undefined,
     episodeLabel,
     item?.runtime,
     item?.providerRating != null ? `★ ${item.providerRating.toFixed(1)}` : undefined,
-    item?.genres?.length ? item.genres.map((genre) => genre.name).join(', ') : undefined,
     item?.collection ? `Part of ${item.collection.name}` : undefined,
   ].filter((value) => value != null).join('  ·  ') || undefined;
   const recommendations = (item?.recommendations ?? []).map((rec) => ({

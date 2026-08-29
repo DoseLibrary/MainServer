@@ -82,6 +82,20 @@ export class CatalogService {
     return rows.map((row) => ({ id: row.id, name: row.name, character: row.character ?? undefined, profileUrl: imageLocalUrl(row.profilePath), order: row.order }));
   }
 
+  /** Every available top-level title tagged with a genre, for genre browse pages. */
+  async genre(genreId: string) {
+    const [genre] = await this.database.select({ id: genres.id, name: genres.name }).from(genres).where(eq(genres.id, genreId)).limit(1);
+    if (!genre) return null;
+    const rows = await this.database.select({ item: mediaItems }).from(mediaItemGenres)
+      .innerJoin(mediaItems, eq(mediaItems.id, mediaItemGenres.mediaItemId))
+      .where(and(eq(mediaItemGenres.genreId, genreId), eq(mediaItems.available, true), isNull(mediaItems.parentId), inArray(mediaItems.kind, ['movie', 'series'])))
+      .orderBy(mediaItems.sortTitle);
+    const items = rows.map(({ item }) => item);
+    const quality = await this.qualityByItem(items.map((item) => item.id));
+    const titles = items.map((item) => ({ ...toCatalogItem(item, null), badge: qualityBadge(quality.get(item.id)) }));
+    return { id: genre.id, name: genre.name, titles };
+  }
+
   /** A person and every local title they are credited in, for actor pages. */
   async person(personId: string) {
     const [person] = await this.database.select({ id: people.id, name: people.name, profilePath: people.profilePath }).from(people).where(eq(people.id, personId)).limit(1);

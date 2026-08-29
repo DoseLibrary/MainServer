@@ -26,7 +26,8 @@ describe('CatalogDetails', () => {
     expect(await screen.findByRole('heading', { name: 'Inception' })).toBeInTheDocument();
     expect(screen.getByText('4K HDR')).toBeInTheDocument();
     expect(screen.getByText('Your mind is the scene of the crime.')).toBeInTheDocument();
-    expect(screen.getByText(/Action, Sci-Fi/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Action' })).toHaveAttribute('href', '/genre/g1');
+    expect(screen.getByRole('link', { name: 'Sci-Fi' })).toHaveAttribute('href', '/genre/g2');
     expect(screen.getByText(/Part of Nolan Collection/)).toBeInTheDocument();
     expect(screen.getByText('Leonardo DiCaprio')).toBeInTheDocument();
     expect(screen.getByText('Cobb')).toBeInTheDocument();

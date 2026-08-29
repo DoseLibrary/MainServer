@@ -4,12 +4,14 @@ import { CatalogDetails } from '@/routes/CatalogDetails';
 import { Watch } from '@/routes/Watch';
 import { Profile } from '@/routes/Profile';
 import { PersonPage } from '@/routes/PersonPage';
+import { GenrePage } from '@/routes/GenrePage';
 
 const routes: RouteObject[] = [
   { path: '/', element: <Home /> },
   { path: '/media/:id', element: <CatalogDetails /> },
   { path: '/watch/:id', element: <Watch /> },
   { path: '/person/:id', element: <PersonPage /> },
+  { path: '/genre/:id', element: <GenrePage /> },
   { path: '/profile', element: <Profile /> },
 ];
 
