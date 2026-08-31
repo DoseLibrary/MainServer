@@ -105,7 +105,7 @@ export function Home() {
   }
 
   if (state.name === 'login') {
-    return <AuthPage mode="login" brand="DOSE" brandImageSrc="/logo.svg" brandImageAlt="DOSE logo" backdropImageSrc="/login-backdrop.webp" backdropImageAlt="A dark home cinema with a wall of film stills" heading="Welcome back" description="Sign in to your local library." alternateLabel="Accounts are managed by your administrator" submitting={submitting} formError={formError} onSubmit={authenticate} />;
+    return <AuthPage mode="login" brand="DOSE" brandImageSrc="/logo.svg" brandImageAlt="DOSE logo" backdropImageSrc="/login-backdrop.webp" backdropImageAlt="A dark home cinema with a wall of film stills" heading="Welcome back" description="Sign in to your local library." alternateLabel="Accounts are managed by your administrator" secondaryAction={{ label: 'Sign in from your phone', href: '/pair' }} submitting={submitting} formError={formError} onSubmit={authenticate} />;
   }
 
   const episodeLabel = (item: CatalogHome['sections'][number]['items'][number]) => (typeof item.seasonNumber === 'number' && typeof item.episodeNumber === 'number' ? `S${String(item.seasonNumber).padStart(2, '0')}E${String(item.episodeNumber).padStart(2, '0')}` : undefined);

@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { api, type HistorySourceId, type User, type UserSettings, type WatchDataDocument, type WatchDataImportSummary } from '@/lib/api';
 import { UserMenu } from '@/components/media/UserMenu';
+import { DeviceList } from './DeviceList';
 
 export function Profile() {
   const navigate = useNavigate();
@@ -107,6 +108,14 @@ export function Profile() {
             </div>
             <Button onClick={() => void importHistory()} disabled={importing}>{importing ? 'Importing…' : 'Import history'}</Button>
           </CardContent></Card>
+        </section>
+
+        <section aria-labelledby="devices-heading" className="border-t py-8">
+          <div className="mb-4">
+            <h2 id="devices-heading" className="text-xl font-semibold">Devices</h2>
+            <p className="mt-1 text-sm text-muted-foreground">Everywhere your account is signed in. Sign a device out to end its session immediately.</p>
+          </div>
+          <DeviceList />
         </section>
 
         <section aria-labelledby="library-heading" className="border-t py-8"><div className="mb-4"><h2 id="library-heading" className="text-xl font-semibold">Your library</h2><p className="mt-1 text-sm text-muted-foreground">Collections you have put together yourself.</p></div><div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">

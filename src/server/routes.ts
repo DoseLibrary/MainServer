@@ -10,6 +10,7 @@ import { nodeLibraryFilesystem, resolveLibraryRoot, resolveNativeLibraryRoot, SE
 import type { ScanCoordinator } from './scanner.ts';
 import type { CatalogService } from './catalog-service.ts';
 import { PluginAlreadyRunningError, PluginNotRunnableError, UnknownPluginActionError, type PluginService } from './plugin-service.ts';
+import { DeviceAuthError, DEVICE_POLL_INTERVAL_MS, type DeviceAuthService } from './device-auth-service.ts';
 import type { PluginScheduler } from './plugin-scheduler.ts';
 import { UnknownPluginError } from './plugins/registry.ts';
 import { ArtworkPathError, type ArtworkService } from './artwork-service.ts';
@@ -79,6 +80,10 @@ const castStreamParams = z.object({ token: z.string().regex(/^[a-f0-9]{64}$/) })
 const IMAGE_TYPES: Record<string, string> = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif' };
 const userCreate = credentials.extend({ role: z.enum(['admin', 'member']).default('member') });
 const userUpdate = z.object({ role: z.enum(['admin', 'member']).optional(), disabled: z.boolean().optional(), password: z.string().min(10).max(256).optional() }).refine((value) => Object.keys(value).length > 0);
+const deviceStartBody = z.object({ deviceName: z.string().trim().min(1).max(64).optional() });
+const devicePollBody = z.object({ deviceCode: z.string().min(10).max(256) });
+const deviceCodeParams = z.object({ code: z.string().trim().min(4).max(32) });
+const sessionIdParams = z.object({ id: z.string().uuid() });
 const pluginIdParams = z.object({ id: z.string().min(1).max(64) });
 const pluginActionParams = pluginIdParams.extend({ actionId: z.string().min(1).max(64) });
 const pluginConfigBody = z.object({ enabled: z.boolean().optional(), schedule: z.string().trim().max(200).nullable().optional(), settings: z.record(z.string(), z.unknown()).optional() });
@@ -111,7 +116,7 @@ function requireAdmin(user: PublicUser, reply: FastifyReply) {
   return true;
 }
 
-export async function registerApiRoutes(app: FastifyInstance, service: AuthService, production: boolean, filesystem: LibraryFilesystem = nodeLibraryFilesystem, scanner?: ScanCoordinator, catalog?: CatalogService, imagesDir = '/config/images', nativeLibraryPaths = false, plugins?: PluginService, pluginScheduler?: PluginScheduler, artwork?: ArtworkService, subtitleStore?: SubtitleStore, metadataMatch?: MetadataMatchService, libraryWatcher?: Pick<LibraryWatcher, 'synchronize'>, spriteStore?: PreviewSpriteStore, settings?: UserSettingsService, userCollections?: UserCollectionsService, queue?: QueueService, watchData?: WatchDataService, historySources?: HistorySources) {
+export async function registerApiRoutes(app: FastifyInstance, service: AuthService, production: boolean, filesystem: LibraryFilesystem = nodeLibraryFilesystem, scanner?: ScanCoordinator, catalog?: CatalogService, imagesDir = '/config/images', nativeLibraryPaths = false, plugins?: PluginService, pluginScheduler?: PluginScheduler, artwork?: ArtworkService, subtitleStore?: SubtitleStore, metadataMatch?: MetadataMatchService, libraryWatcher?: Pick<LibraryWatcher, 'synchronize'>, spriteStore?: PreviewSpriteStore, settings?: UserSettingsService, userCollections?: UserCollectionsService, queue?: QueueService, watchData?: WatchDataService, historySources?: HistorySources, deviceAuth?: DeviceAuthService) {
   const imageVariants = new ImageVariantStore(imagesDir);
   const synchronizeWatchers = async () => {
     try { await libraryWatcher?.synchronize(); }
@@ -128,12 +133,71 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
   app.post('/api/v1/auth/login', async (request, reply) => {
     const parsed = loginCredentials.safeParse(request.body);
     if (!parsed.success) return reply.status(400).send({ error: 'Invalid credentials' });
-    const result = await service.login(parsed.data.username, parsed.data.password);
+    const result = await service.login(parsed.data.username, parsed.data.password, describeUserAgent(request.headers['user-agent']));
     if (!result) return reply.status(401).send({ error: 'Invalid credentials' });
     setSession(reply, result.token, production); return { user: result.user };
   });
   app.post('/api/v1/auth/logout', async (request, reply) => { await service.logout(request.cookies[SESSION_COOKIE]); reply.clearCookie(SESSION_COOKIE, { path: '/' }); return reply.status(204).send(); });
   app.get('/api/v1/auth/me', async (request, reply) => { const user = await requireUser(request, reply, service); if (user) return { user }; });
+  // Device pairing (QR flow): a device starts a request and shows its user code,
+  // the owner approves it from a signed-in phone, the device polls for a session.
+  app.post('/api/v1/auth/device/start', async (request, reply) => {
+    if (!deviceAuth) return reply.status(503).send({ error: 'Device pairing unavailable' });
+    const body = deviceStartBody.safeParse(request.body ?? {});
+    if (!body.success) return reply.status(400).send({ error: 'Invalid device name' });
+    const deviceName = body.data.deviceName ?? describeUserAgent(request.headers['user-agent']);
+    const started = await deviceAuth.start(deviceName);
+    return {
+      userCode: started.userCode, deviceCode: started.deviceCode, deviceName,
+      expiresAt: started.expiresAt.toISOString(), intervalMs: started.intervalMs,
+      verificationPath: '/link', verificationPathComplete: `/link?code=${encodeURIComponent(started.userCode)}`,
+    };
+  });
+  app.post('/api/v1/auth/device/poll', async (request, reply) => {
+    if (!deviceAuth) return reply.status(503).send({ error: 'Device pairing unavailable' });
+    const body = devicePollBody.safeParse(request.body);
+    if (!body.success) return reply.status(400).send({ error: 'Invalid device code' });
+    try {
+      const result = await deviceAuth.poll(body.data.deviceCode);
+      if (result.status !== 'approved') return { status: result.status };
+      setSession(reply, result.token, production);
+      const user = await service.authenticate(result.token);
+      return { status: 'approved', user };
+    } catch (error) { return deviceAuthError(error, reply); }
+  });
+  app.get('/api/v1/auth/device/:code', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    if (!deviceAuth) return reply.status(503).send({ error: 'Device pairing unavailable' });
+    const params = deviceCodeParams.safeParse(request.params); if (!params.success) return reply.status(400).send({ error: 'Invalid code' });
+    try { return { request: await deviceAuth.describe(params.data.code) }; }
+    catch (error) { return deviceAuthError(error, reply); }
+  });
+  app.post('/api/v1/auth/device/:code/approve', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    if (!deviceAuth) return reply.status(503).send({ error: 'Device pairing unavailable' });
+    const params = deviceCodeParams.safeParse(request.params); if (!params.success) return reply.status(400).send({ error: 'Invalid code' });
+    try { return { approved: await deviceAuth.resolve(params.data.code, user.id, 'approved') }; }
+    catch (error) { return deviceAuthError(error, reply); }
+  });
+  app.post('/api/v1/auth/device/:code/deny', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    if (!deviceAuth) return reply.status(503).send({ error: 'Device pairing unavailable' });
+    const params = deviceCodeParams.safeParse(request.params); if (!params.success) return reply.status(400).send({ error: 'Invalid code' });
+    try { await deviceAuth.resolve(params.data.code, user.id, 'denied'); return reply.status(204).send(); }
+    catch (error) { return deviceAuthError(error, reply); }
+  });
+  app.get('/api/v1/me/sessions', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    if (!deviceAuth) return reply.status(503).send({ error: 'Device pairing unavailable' });
+    return { sessions: await deviceAuth.listSessions(user.id, request.cookies[SESSION_COOKIE]) };
+  });
+  app.delete('/api/v1/me/sessions/:id', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    if (!deviceAuth) return reply.status(503).send({ error: 'Device pairing unavailable' });
+    const params = sessionIdParams.safeParse(request.params); if (!params.success) return reply.status(400).send({ error: 'Invalid session id' });
+    try { await deviceAuth.revokeSession(user.id, params.data.id); return reply.status(204).send(); }
+    catch (error) { return deviceAuthError(error, reply); }
+  });
   app.get('/api/v1/me/settings', async (request, reply) => {
     const user = await requireUser(request, reply, service); if (!user) return;
     if (!settings) return reply.status(503).send({ error: 'User settings unavailable' });
@@ -665,6 +729,27 @@ function describePlugin(entry: { plugin: import('./plugins/types.ts').Registered
     nextRunAt: cfg.nextRunAt, lastRunAt: cfg.lastRunAt, lastRunStatus: cfg.lastRunStatus,
     lastRunDurationMs: cfg.lastRunDurationMs, lastRunSummary: cfg.lastRunSummary, lastRunError: cfg.lastRunError,
   };
+}
+
+/** A short, human-readable device label derived from the browser's user agent. */
+export function describeUserAgent(userAgent?: string): string {
+  if (!userAgent) return 'Unknown device';
+  const browser = /Edg\//.test(userAgent) ? 'Edge' : /OPR\//.test(userAgent) ? 'Opera' : /Firefox\//.test(userAgent) ? 'Firefox'
+    : /Chrome\//.test(userAgent) ? 'Chrome' : /Safari\//.test(userAgent) ? 'Safari' : undefined;
+  const platform = /TV|Tizen|Web0S|SmartTV|AFT/i.test(userAgent) ? 'TV'
+    : /Android/.test(userAgent) ? 'Android' : /iPhone|iPad|iPod/.test(userAgent) ? 'iOS'
+    : /Windows/.test(userAgent) ? 'Windows' : /Mac OS X|Macintosh/.test(userAgent) ? 'macOS'
+    : /CrOS/.test(userAgent) ? 'ChromeOS' : /Linux/.test(userAgent) ? 'Linux' : undefined;
+  if (browser && platform) return `${browser} on ${platform}`;
+  return browser ?? platform ?? 'Unknown device';
+}
+
+function deviceAuthError(error: unknown, reply: FastifyReply) {
+  if (!(error instanceof DeviceAuthError)) throw error;
+  if (error.reason === 'slow_down') return reply.status(429).send({ error: 'Polling too quickly', intervalMs: DEVICE_POLL_INTERVAL_MS });
+  if (error.reason === 'expired') return reply.status(410).send({ error: 'This code has expired' });
+  if (error.reason === 'already_used') return reply.status(409).send({ error: 'This code was already used' });
+  return reply.status(404).send({ error: 'Unknown code' });
 }
 
 function pluginError(error: unknown, reply: FastifyReply) {

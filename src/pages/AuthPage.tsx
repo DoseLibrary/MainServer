@@ -26,6 +26,8 @@ interface AuthPageBaseProps {
   alternateLabel: string;
   /** When omitted, alternateLabel is rendered as explanatory text. */
   alternateHref?: string;
+  /** Extra route offered below the form, such as signing in from a phone. */
+  secondaryAction?: { label: string; href: string };
   submitLabel?: string;
   submitting?: boolean;
   fieldErrors?: AuthFieldErrors;
@@ -59,6 +61,7 @@ export function AuthPage(props: AuthPageProps) {
     description,
     alternateLabel,
     alternateHref,
+    secondaryAction,
     submitting = false,
     fieldErrors = {},
     formError,
@@ -170,6 +173,12 @@ export function AuthPage(props: AuthPageProps) {
                   </a>
                 ) : alternateLabel}
               </p>
+
+              {secondaryAction && (
+                <a href={secondaryAction.href} className="block text-center text-sm font-medium text-foreground underline-offset-4 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                  {secondaryAction.label}
+                </a>
+              )}
             </form>
           </CardContent>
         </Card>

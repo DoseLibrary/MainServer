@@ -3,6 +3,8 @@ import type { Database } from './db/client.ts';
 import { libraries, sessions, users } from './db/schema.ts';
 import { createSessionToken, DUMMY_PASSWORD_HASH, hashPassword, hashSessionToken, SESSION_TTL_MS, verifyPassword } from './security.ts';
 
+const LAST_SEEN_REFRESH_MS = 5 * 60 * 1000;
+
 export type PublicUser = { id: string; username: string; role: 'admin' | 'member' };
 export type ManagedUser = PublicUser & { disabled: boolean; createdAt: Date; updatedAt: Date };
 export class DuplicateLibraryError extends Error {}
@@ -31,20 +33,28 @@ export class AuthService {
     });
   }
 
-  async login(username: string, password: string) {
+  async login(username: string, password: string, deviceName?: string) {
     const [user] = await this.db.select().from(users).where(eq(users.username, username)).limit(1);
     const validPassword = await verifyPassword(password, user?.passwordHash ?? DUMMY_PASSWORD_HASH);
     if (!user || user.disabled || !validPassword) return null;
     const token = createSessionToken();
-    await this.db.insert(sessions).values({ userId: user.id, tokenHash: hashSessionToken(token), expiresAt: new Date(Date.now() + SESSION_TTL_MS) });
+    await this.db.insert(sessions).values({ userId: user.id, tokenHash: hashSessionToken(token), deviceName, expiresAt: new Date(Date.now() + SESSION_TTL_MS) });
     return { user: this.publicUser(user), token };
   }
 
   async authenticate(token?: string) {
     if (!token) return null;
-    const [row] = await this.db.select({ user: users, expiresAt: sessions.expiresAt }).from(sessions).innerJoin(users, eq(sessions.userId, users.id))
-      .where(eq(sessions.tokenHash, hashSessionToken(token))).limit(1);
-    return row && !row.user.disabled && row.expiresAt > new Date() ? this.publicUser(row.user) : null;
+    const tokenHash = hashSessionToken(token);
+    const [row] = await this.db.select({ user: users, id: sessions.id, expiresAt: sessions.expiresAt, lastSeenAt: sessions.lastSeenAt })
+      .from(sessions).innerJoin(users, eq(sessions.userId, users.id))
+      .where(eq(sessions.tokenHash, tokenHash)).limit(1);
+    if (!row || row.user.disabled || row.expiresAt <= new Date()) return null;
+    // Device management shows "last seen"; a write per request would be wasteful,
+    // so the stamp is refreshed at most once every few minutes.
+    if (Date.now() - row.lastSeenAt.getTime() > LAST_SEEN_REFRESH_MS) {
+      await this.db.update(sessions).set({ lastSeenAt: new Date() }).where(eq(sessions.id, row.id));
+    }
+    return this.publicUser(row.user);
   }
 
   async logout(token?: string) {

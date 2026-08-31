@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import { describe, expect, it, vi, type Mock } from 'vitest';
 import type { AuthService } from './auth-service.ts';
 import { DuplicateLibraryError } from './auth-service.ts';
-import { registerApiRoutes } from './routes.ts';
+import { describeUserAgent, registerApiRoutes } from './routes.ts';
+import type { DeviceAuthService } from './device-auth-service.ts';
 import type { LibraryFilesystem } from './security.ts';
 import type { ScanCoordinator } from './scanner.ts';
 import type { CatalogService } from './catalog-service.ts';
@@ -572,5 +573,90 @@ describe('Plugin administration API', () => {
     expect(run.json()).toMatchObject({ run: { status: 'succeeded' } });
     expect(plugins.run).toHaveBeenCalledWith('trailer-fetcher');
     await memberApp.close(); await adminApp.close();
+  });
+});
+
+describe('Device pairing API', () => {
+  function appWithDevices(auth: AuthService, deviceAuth: DeviceAuthService) {
+    const app = Fastify();
+    const filesystem: LibraryFilesystem = { realpath: async (path) => path, isDirectory: async () => true };
+    return app.register(cookie).then(async () => {
+      await registerApiRoutes(app, auth, false, filesystem, undefined, undefined, undefined, false, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, deviceAuth);
+      return app;
+    });
+  }
+
+  const anonymous = () => service({ authenticate: vi.fn(async () => null) });
+  const signedIn = () => service({ authenticate: vi.fn(async () => ({ id: 'u1', username: 'owner', role: 'member' })) });
+
+  it('starts a pairing request without a session and names the device from its user agent', async () => {
+    const deviceAuth = { start: vi.fn(async (deviceName: string) => ({ id: 'r1', userCode: 'K7QP-2M4X', deviceCode: 'secret', expiresAt: new Date('2030-01-01T00:00:00.000Z'), intervalMs: 2000, deviceName })) } as unknown as DeviceAuthService;
+    const app = await appWithDevices(anonymous(), deviceAuth);
+
+    const response = await app.inject({ method: 'POST', url: '/api/v1/auth/device/start', payload: {}, headers: { 'user-agent': 'Mozilla/5.0 (SMART-TV; Linux) Chrome/120' } });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ userCode: 'K7QP-2M4X', deviceCode: 'secret', deviceName: 'Chrome on TV', verificationPathComplete: '/link?code=K7QP-2M4X' });
+    await app.close();
+  });
+
+  it('sets the session cookie when a poll comes back approved', async () => {
+    const deviceAuth = { poll: vi.fn(async () => ({ status: 'approved', token: 'session-token', userId: 'u1' })) } as unknown as DeviceAuthService;
+    const app = await appWithDevices(signedIn(), deviceAuth);
+
+    const response = await app.inject({ method: 'POST', url: '/api/v1/auth/device/poll', payload: { deviceCode: 'secret-device-code' } });
+
+    expect(response.json()).toMatchObject({ status: 'approved' });
+    expect(response.headers['set-cookie']).toEqual(expect.stringContaining('dose_session=session-token'));
+    await app.close();
+  });
+
+  it('maps pairing failures to their own status codes', async () => {
+    const { DeviceAuthError } = await import('./device-auth-service.ts');
+    const deviceAuth = {
+      poll: vi.fn()
+        .mockRejectedValueOnce(new DeviceAuthError('slow_down'))
+        .mockRejectedValueOnce(new DeviceAuthError('expired'))
+        .mockRejectedValueOnce(new DeviceAuthError('already_used'))
+        .mockRejectedValueOnce(new DeviceAuthError('not_found')),
+    } as unknown as DeviceAuthService;
+    const app = await appWithDevices(anonymous(), deviceAuth);
+
+    const poll = () => app.inject({ method: 'POST', url: '/api/v1/auth/device/poll', payload: { deviceCode: 'secret-device-code' } });
+    expect((await poll()).statusCode).toBe(429);
+    expect((await poll()).statusCode).toBe(410);
+    expect((await poll()).statusCode).toBe(409);
+    expect((await poll()).statusCode).toBe(404);
+    await app.close();
+  });
+
+  it('requires a session to approve a code or list devices', async () => {
+    const deviceAuth = { resolve: vi.fn(), listSessions: vi.fn(async () => []) } as unknown as DeviceAuthService;
+    const app = await appWithDevices(anonymous(), deviceAuth);
+
+    expect((await app.inject({ method: 'POST', url: '/api/v1/auth/device/K7QP-2M4X/approve' })).statusCode).toBe(401);
+    expect((await app.inject({ method: 'GET', url: '/api/v1/me/sessions' })).statusCode).toBe(401);
+    expect(deviceAuth.resolve).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it('approves on behalf of the signed-in user only', async () => {
+    const deviceAuth = { resolve: vi.fn(async () => ({ id: 'r1', deviceName: 'TV' })) } as unknown as DeviceAuthService;
+    const app = await appWithDevices(signedIn(), deviceAuth);
+
+    const response = await app.inject({ method: 'POST', url: '/api/v1/auth/device/K7QP-2M4X/approve', headers: { cookie: 'dose_session=token' } });
+
+    expect(response.statusCode).toBe(200);
+    expect(deviceAuth.resolve).toHaveBeenCalledWith('K7QP-2M4X', 'u1', 'approved');
+    await app.close();
+  });
+});
+
+describe('describeUserAgent', () => {
+  it('names common clients and falls back when it cannot tell', () => {
+    expect(describeUserAgent('Mozilla/5.0 (Windows NT 10.0) Chrome/120 Safari/537')).toBe('Chrome on Windows');
+    expect(describeUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 17_0) Safari/604')).toBe('Safari on iOS');
+    expect(describeUserAgent('Mozilla/5.0 (X11; Linux) Firefox/121')).toBe('Firefox on Linux');
+    expect(describeUserAgent(undefined)).toBe('Unknown device');
   });
 });

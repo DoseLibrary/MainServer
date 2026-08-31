@@ -21,6 +21,7 @@ export const libraryKind = pgEnum('library_kind', ['movies', 'shows']);
 export const mediaKind = pgEnum('media_kind', ['movie', 'series', 'season', 'episode']);
 export const scanStatus = pgEnum('scan_status', ['queued', 'running', 'completed', 'failed']);
 export const pluginRunStatus = pgEnum('plugin_run_status', ['running', 'succeeded', 'failed']);
+export const deviceAuthStatus = pgEnum('device_auth_status', ['pending', 'approved', 'denied']);
 
 const timestamps = {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -47,11 +48,40 @@ export const sessions = pgTable('sessions', {
   userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
   tokenHash: text('token_hash').notNull(),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  /** Operator-facing label for the signed-in device, shown in device management. */
+  deviceName: text('device_name'),
+  /** How the session was created: 'password' or 'device' (QR pairing). */
+  createdVia: text('created_via').notNull().default('password'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   uniqueIndex('sessions_token_hash_unique').on(table.tokenHash),
   index('sessions_user_id_index').on(table.userId),
+]);
+
+/**
+ * Pairing requests for the QR device flow. A device polls with its secret
+ * device code while the user approves the short user code on a signed-in phone.
+ */
+export const deviceAuthRequests = pgTable('device_auth_requests', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  /** Short, human-readable code shown on the device (e.g. `K7QP-2M4X`). */
+  userCode: text('user_code').notNull(),
+  /** Hash of the device's long-lived secret; the plaintext never leaves the device. */
+  deviceCodeHash: text('device_code_hash').notNull(),
+  deviceName: text('device_name').notNull(),
+  status: deviceAuthStatus('status').notNull().default('pending'),
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  approvedAt: timestamp('approved_at', { withTimezone: true }),
+  /** Set once the device exchanges an approved request for a session. */
+  claimedAt: timestamp('claimed_at', { withTimezone: true }),
+  /** Enforces the polling interval without a separate rate limiter. */
+  lastPolledAt: timestamp('last_polled_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('device_auth_requests_user_code_unique').on(table.userCode),
+  uniqueIndex('device_auth_requests_device_code_hash_unique').on(table.deviceCodeHash),
 ]);
 
 export const libraries = pgTable('libraries', {

@@ -134,6 +134,13 @@
       "when": 1788209740299,
       "tag": "0018_flippant_justice",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1788211806794,
+      "tag": "0019_wandering_tarot",
+      "breakpoints": true
     }
   ]
 }

@@ -4,9 +4,12 @@ import type { Database } from './db/client.ts';
 
 const user = { id: 'user-id', username: 'person', passwordHash: 'hash', role: 'member' as const, disabled: false, createdAt: new Date(), updatedAt: new Date() };
 
-function authDatabase(row: unknown) {
-  const query = { from: () => query, innerJoin: () => query, where: () => query, limit: async () => row ? [row] : [] };
-  return { select: () => query } as unknown as Database;
+function authDatabase(row: Record<string, unknown> | null) {
+  // Sessions carry an id and a last-seen stamp that authenticate() refreshes.
+  const full = row ? { id: 'session-id', lastSeenAt: new Date(), ...row } : null;
+  const query = { from: () => query, innerJoin: () => query, where: () => query, limit: async () => full ? [full] : [] };
+  const update = { set: () => update, where: async () => undefined };
+  return { select: () => query, update: () => update } as unknown as Database;
 }
 
 describe('AuthService session validation', () => {
@@ -21,6 +24,11 @@ describe('AuthService session validation', () => {
   it('accepts an active session', async () => {
     const service = new AuthService(authDatabase({ user, expiresAt: new Date(Date.now() + 10_000) }));
     await expect(service.authenticate('token')).resolves.toEqual({ id: 'user-id', username: 'person', role: 'member' });
+  });
+  it('refreshes a stale last-seen stamp without failing the request', async () => {
+    const stale = new Date(Date.now() - 60 * 60 * 1000);
+    const service = new AuthService(authDatabase({ user, expiresAt: new Date(Date.now() + 10_000), lastSeenAt: stale }));
+    await expect(service.authenticate('token')).resolves.toMatchObject({ id: 'user-id' });
   });
   it('maps postgres unique violations to a domain error', async () => {
     const returning = async () => { throw Object.assign(new Error('private database detail'), { code: '23505' }); };

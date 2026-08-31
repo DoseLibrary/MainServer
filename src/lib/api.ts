@@ -106,6 +106,28 @@ export interface CatalogItemDetails extends Omit<CatalogItem, 'genres' | 'collec
 export interface CatalogTrailer { site: string; key: string; name: string; type: string; official: boolean; preferred: boolean; localAvailable?: boolean }
 export interface CatalogSubtitle { id: string; language?: string; label: string; forced: boolean; url: string }
 export interface MediaSprite { src: string; columns: number; rows: number; interval: number; tileWidth: number; tileHeight: number }
+export interface DevicePairing {
+  userCode: string;
+  deviceCode: string;
+  deviceName: string;
+  expiresAt: string;
+  intervalMs: number;
+  verificationPath: string;
+  verificationPathComplete: string;
+}
+export interface DeviceAuthRequest { id: string; deviceName: string; status: 'pending' | 'approved' | 'denied'; expiresAt: string; createdAt: string }
+export type DevicePollStatus = { status: 'pending' | 'denied' } | { status: 'approved'; user: User };
+export interface DeviceSession {
+  id: string;
+  deviceName: string | null;
+  createdVia: string;
+  createdAt: string;
+  lastSeenAt: string;
+  expiresAt: string;
+  /** True for the session making the request, which cannot be revoked from the list. */
+  current: boolean;
+}
+
 export interface IntroMarker { startSeconds: number; endSeconds: number }
 
 export interface CatalogSection { id: string; title: string; items: CatalogItem[]; layout?: 'poster' | 'card' }
@@ -200,6 +222,15 @@ export const api = {
   login: (credentials: { username: string; password: string }) =>
     request<{ user: User }>('/api/v1/auth/login', { method: 'POST', body: JSON.stringify(credentials) }),
   logout: () => request<void>('/api/v1/auth/logout', { method: 'POST' }),
+  startDevicePairing: (deviceName?: string) =>
+    request<DevicePairing>('/api/v1/auth/device/start', { method: 'POST', body: JSON.stringify(deviceName ? { deviceName } : {}) }),
+  pollDevicePairing: (deviceCode: string) =>
+    request<DevicePollStatus>('/api/v1/auth/device/poll', { method: 'POST', body: JSON.stringify({ deviceCode }) }),
+  deviceRequest: (code: string) => request<{ request: DeviceAuthRequest }>(`/api/v1/auth/device/${encodeURIComponent(code)}`),
+  approveDevice: (code: string) => request<{ approved: { id: string; deviceName: string } }>(`/api/v1/auth/device/${encodeURIComponent(code)}/approve`, { method: 'POST' }),
+  denyDevice: (code: string) => request<void>(`/api/v1/auth/device/${encodeURIComponent(code)}/deny`, { method: 'POST' }),
+  sessions: () => request<{ sessions: DeviceSession[] }>('/api/v1/me/sessions'),
+  revokeSession: (id: string) => request<void>(`/api/v1/me/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   me: () => request<{ user: User }>('/api/v1/auth/me'),
   getSettings: () => request<{ settings: UserSettings }>('/api/v1/me/settings'),
   updateSettings: (change: Partial<UserSettings>) => request<{ settings: UserSettings }>('/api/v1/me/settings', { method: 'PUT', body: JSON.stringify(change) }),
