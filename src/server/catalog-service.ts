@@ -1,9 +1,10 @@
 import { and, asc, count, desc, eq, ilike, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import type { Database } from './db/client.ts';
-import { castCredits, collectionMembers, collections, genres, libraries, mediaFiles, mediaItemGenres, mediaItems, mediaPreviewSprites, mediaSubtitles, mediaTechnicalProfiles, mediaTrailers, people, playbackProgress, recommendationEdges, watchlistEntries } from './db/schema.ts';
+import { castCredits, collectionExpectedMembers, collectionMembers, collections, genres, libraries, mediaFiles, mediaItemGenres, mediaItems, mediaIntroMarkers, mediaPreviewSprites, mediaSubtitles, mediaTechnicalProfiles, mediaTrailers, people, playbackProgress, recommendationEdges, watchlistEntries } from './db/schema.ts';
 import type { Probe } from './playback.ts';
 import { imageLocalUrl } from './images.ts';
+import type { PluginEventBus } from './plugins/events.ts';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { stat } from 'node:fs/promises';
 
@@ -42,15 +43,64 @@ export interface SearchResult {
   genres?: string[];
 }
 
+export interface RandomItemFilters {
+  kind?: 'movie' | 'series';
+  genre?: string;
+  yearMin?: number;
+  yearMax?: number;
+  ratingMin?: number;
+}
+
 export class CatalogService {
-  constructor(private readonly database: Database, private readonly trailerStorageRoot?: string) {}
+  constructor(private readonly database: Database, private readonly trailerStorageRoot?: string, private readonly events?: PluginEventBus) {}
+
+  /** Pick one uniformly random member-visible top-level title matching every filter. */
+  async randomItem(filters: RandomItemFilters = {}) {
+    const clauses = [
+      eq(mediaItems.available, true),
+      isNull(mediaItems.archivedAt),
+      isNull(mediaItems.parentId),
+      inArray(mediaItems.kind, ['movie', 'series'] as const),
+    ];
+    if (filters.kind) clauses.push(eq(mediaItems.kind, filters.kind));
+    if (filters.yearMin != null) clauses.push(sql`${mediaItems.year} >= ${filters.yearMin}`);
+    if (filters.yearMax != null) clauses.push(sql`${mediaItems.year} <= ${filters.yearMax}`);
+    if (filters.ratingMin != null) clauses.push(sql`${mediaItems.providerRating} >= ${filters.ratingMin}`);
+    if (filters.genre) {
+      const genre = filters.genre.trim().toLowerCase();
+      clauses.push(sql`exists (
+        select 1 from ${mediaItemGenres}
+        inner join ${genres} on ${genres.id} = ${mediaItemGenres.genreId}
+        where ${mediaItemGenres.mediaItemId} = ${mediaItems.id}
+          and (lower(${genres.name}) = ${genre} or ${genres.normalizedName} = ${genre})
+      )`);
+    }
+    const [item] = await this.database.select({
+      id: mediaItems.id, title: mediaItems.title, userTitle: mediaItems.userTitle,
+      year: mediaItems.year, userYear: mediaItems.userYear, kind: mediaItems.kind,
+      posterPath: mediaItems.posterPath, overview: mediaItems.overview, userOverview: mediaItems.userOverview,
+      providerRating: mediaItems.providerRating,
+    }).from(mediaItems).where(and(...clauses)).orderBy(sql`random()`).limit(1);
+    if (!item) return null;
+    return {
+      id: item.id,
+      title: item.userTitle ?? item.title,
+      year: item.userYear ?? item.year ?? undefined,
+      kind: item.kind,
+      posterUrl: item.posterPath ? imageLocalUrl(item.posterPath) : undefined,
+      overview: item.userOverview ?? item.overview ?? undefined,
+      providerRating: item.providerRating ?? undefined,
+    };
+  }
 
   /** Soft-archive an item and roll availability up through its parent hierarchy. */
   async archiveItem(itemId: string, archivedAt = new Date()): Promise<void> {
-    const [item] = await this.database.select({ id: mediaItems.id, parentId: mediaItems.parentId })
+    const [item] = await this.database.select({ id: mediaItems.id, parentId: mediaItems.parentId, archivedAt: mediaItems.archivedAt })
       .from(mediaItems).where(eq(mediaItems.id, itemId)).limit(1);
     if (!item) return;
     await this.database.update(mediaItems).set({ available: false, archivedAt, updatedAt: archivedAt }).where(eq(mediaItems.id, item.id));
+    // Only a real state change is an event; scans re-archive already archived leaves.
+    if (item.archivedAt == null) this.events?.emit('media.item.archived', { mediaItemId: item.id });
     let parentId = item.parentId;
     while (parentId) {
       const [parent] = await this.database.select({ id: mediaItems.id, parentId: mediaItems.parentId }).from(mediaItems).where(eq(mediaItems.id, parentId)).limit(1);
@@ -66,12 +116,15 @@ export class CatalogService {
   /** Restore an item and every ancestor needed to make it member-visible again. */
   async unarchiveItem(itemId: string, restoredAt = new Date()): Promise<void> {
     let currentId: string | null = itemId;
+    let restored = false;
     while (currentId) {
-      const [item] = await this.database.select({ id: mediaItems.id, parentId: mediaItems.parentId }).from(mediaItems).where(eq(mediaItems.id, currentId)).limit(1);
+      const [item] = await this.database.select({ id: mediaItems.id, parentId: mediaItems.parentId, archivedAt: mediaItems.archivedAt, available: mediaItems.available }).from(mediaItems).where(eq(mediaItems.id, currentId)).limit(1);
       if (!item) break;
+      if (currentId === itemId) restored = item.archivedAt != null || !item.available;
       await this.database.update(mediaItems).set({ available: true, archivedAt: null, updatedAt: restoredAt }).where(eq(mediaItems.id, item.id));
       currentId = item.parentId;
     }
+    if (restored) this.events?.emit('media.item.unarchived', { mediaItemId: itemId });
   }
 
   /** Admin inventory, optionally restricted to archived/active rows and sortable by archive time. */
@@ -120,6 +173,7 @@ export class CatalogService {
     const rows = await this.database.delete(mediaItems)
       .where(and(eq(mediaItems.id, id), inArray(mediaItems.kind, ['movie', 'series'] as const)))
       .returning({ id: mediaItems.id });
+    if (rows.length > 0) this.events?.emit('media.item.removed', { mediaItemId: id });
     return rows.length > 0;
   }
 
@@ -193,8 +247,12 @@ export class CatalogService {
     return row ?? null;
   }
 
-  /** A collection and its available parts in release order, for collection pages. */
-  async collection(collectionId: string) {
+  /**
+   * A collection and its available parts in release order, for collection pages.
+   * With `includeGaps`, the members TMDB lists but the library lacks are appended as
+   * `inLibrary: false` placeholders; without it no expected-member query runs at all.
+   */
+  async collection(collectionId: string, includeGaps = false) {
     const [collection] = await this.database.select({ id: collections.id, name: collections.name, posterPath: collections.posterPath }).from(collections).where(eq(collections.id, collectionId)).limit(1);
     if (!collection) return null;
     const rows = await this.database.select({ item: mediaItems }).from(collectionMembers)
@@ -204,7 +262,40 @@ export class CatalogService {
     const items = rows.map(({ item }) => item);
     const quality = await this.qualityByItem(items.map((item) => item.id));
     const titles = items.map((item) => ({ ...toCatalogItem(item, null), badge: qualityBadge(quality.get(item.id)) }));
-    return { id: collection.id, name: collection.name, posterUrl: imageLocalUrl(collection.posterPath), titles };
+    const view = { id: collection.id, name: collection.name, posterUrl: imageLocalUrl(collection.posterPath), titles };
+    if (!includeGaps) return view;
+    return { ...view, missing: await this.missingCollectionMembers(collectionId) };
+  }
+
+  /**
+   * Expected collection members with no local counterpart, oldest release first.
+   * Membership counts as present even when archived/unavailable, so a title the
+   * library owns is never mislabelled as missing.
+   */
+  private async missingCollectionMembers(collectionId: string) {
+    const present = await this.database
+      .select({ tmdbId: sql<string | null>`${mediaItems.providerIds}->>'tmdb'` })
+      .from(collectionMembers)
+      .innerJoin(mediaItems, eq(mediaItems.id, collectionMembers.mediaItemId))
+      .where(eq(collectionMembers.collectionId, collectionId));
+    const owned = new Set(present.map((row) => row.tmdbId).filter((value): value is string => Boolean(value)));
+    const expected = await this.database.select({
+      tmdbId: collectionExpectedMembers.tmdbId,
+      title: collectionExpectedMembers.title,
+      year: collectionExpectedMembers.year,
+      releaseDate: collectionExpectedMembers.releaseDate,
+      posterPath: collectionExpectedMembers.posterPath,
+    }).from(collectionExpectedMembers)
+      .where(eq(collectionExpectedMembers.collectionId, collectionId))
+      .orderBy(asc(collectionExpectedMembers.releaseDate), asc(collectionExpectedMembers.title));
+    return expected.filter((member) => !owned.has(member.tmdbId)).map((member) => ({
+      tmdbId: member.tmdbId,
+      title: member.title,
+      year: member.year ?? undefined,
+      releaseDate: member.releaseDate ?? undefined,
+      posterUrl: imageLocalUrl(member.posterPath),
+      inLibrary: false as const,
+    }));
   }
 
   /** Every available top-level title tagged with a genre, for genre browse pages. */
@@ -334,6 +425,7 @@ export class CatalogService {
     await this.database.insert(playbackProgress)
       .values({ userId, mediaItemId, positionSeconds: positionSeconds ?? 0, watched: watched ?? false, lastWatchedAt: now, updatedAt: now })
       .onConflictDoUpdate({ target: [playbackProgress.userId, playbackProgress.mediaItemId], set: { ...(positionSeconds != null ? { positionSeconds } : {}), ...(watched != null ? { watched } : {}), lastWatchedAt: now, updatedAt: now } });
+    this.events?.emit('playback.progress.updated', { userId, mediaItemId, positionSeconds: positionSeconds ?? 0, watched: watched ?? false });
     return { mediaItemId, positionSeconds: positionSeconds ?? 0, watched: watched ?? false };
   }
   async setWatchlist(userId: string, mediaItemId: string, saved: boolean) {
@@ -344,6 +436,14 @@ export class CatalogService {
   private async isWatchlisted(userId: string, mediaItemId: string) {
     const [row] = await this.database.select({ mediaItemId: watchlistEntries.mediaItemId }).from(watchlistEntries).where(and(eq(watchlistEntries.userId, userId), eq(watchlistEntries.mediaItemId, mediaItemId))).limit(1);
     return Boolean(row);
+  }
+  /** The detected intro segment for an item's playable file, if any. */
+  async introMarker(mediaItemId: string) {
+    const [row] = await this.database.select({ startSeconds: mediaIntroMarkers.startSeconds, endSeconds: mediaIntroMarkers.endSeconds })
+      .from(mediaIntroMarkers)
+      .innerJoin(mediaFiles, eq(mediaFiles.id, mediaIntroMarkers.mediaFileId))
+      .where(and(eq(mediaFiles.mediaItemId, mediaItemId), eq(mediaFiles.available, true))).limit(1);
+    return row ?? null;
   }
   /** The storyboard sprite descriptor for an item's playable file, if generated. */
   async previewSprite(mediaItemId: string) {

@@ -36,6 +36,12 @@ export const users = pgTable('users', {
   ...timestamps,
 }, (table) => [uniqueIndex('users_username_unique').on(table.username)]);
 
+export const userSettings = pgTable('user_settings', {
+  userId: uuid('user_id').primaryKey().references(() => users.id, { onDelete: 'cascade' }),
+  showCollectionGaps: boolean('show_collection_gaps').notNull().default(false),
+  ...timestamps,
+});
+
 export const sessions = pgTable('sessions', {
   id: uuid('id').primaryKey().defaultRandom(),
   userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
@@ -148,6 +154,17 @@ export const mediaPreviewSprites = pgTable('media_preview_sprites', {
   ...timestamps,
 });
 
+export const mediaIntroMarkers = pgTable('media_intro_markers', {
+  mediaFileId: uuid('media_file_id').primaryKey().references(() => mediaFiles.id, { onDelete: 'cascade' }),
+  startSeconds: real('start_seconds').notNull(),
+  endSeconds: real('end_seconds').notNull(),
+  /** How the marker was produced; manual edits can override detection later. */
+  source: text('source').notNull().default('audio-correlation'),
+  /** Fingerprint of the source file + settings so unchanged files are skipped. */
+  signature: text('signature').notNull(),
+  ...timestamps,
+});
+
 export const genres = pgTable('genres', {
   id: uuid('id').primaryKey().defaultRandom(),
   libraryId: uuid('library_id').notNull().references(() => libraries.id, { onDelete: 'cascade' }),
@@ -222,6 +239,47 @@ export const collectionMembers = pgTable('collection_members', {
   uniqueIndex('collection_members_collection_item_unique').on(table.collectionId, table.mediaItemId),
   uniqueIndex('collection_members_media_item_unique').on(table.mediaItemId),
   index('collection_members_collection_position_index').on(table.collectionId, table.position),
+]);
+
+export const collectionExpectedMembers = pgTable('collection_expected_members', {
+  collectionId: uuid('collection_id').notNull().references(() => collections.id, { onDelete: 'cascade' }),
+  tmdbId: text('tmdb_id').notNull(),
+  title: text('title').notNull(),
+  year: integer('year'),
+  releaseDate: date('release_date'),
+  posterPath: text('poster_path'),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex('collection_expected_members_collection_tmdb_unique').on(table.collectionId, table.tmdbId),
+  index('collection_expected_members_collection_release_index').on(table.collectionId, table.releaseDate),
+]);
+
+export const userCollections = pgTable('user_collections', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  overview: text('overview'),
+  ...timestamps,
+}, (table) => [index('user_collections_user_name_index').on(table.userId, table.name)]);
+
+export const userCollectionItems = pgTable('user_collection_items', {
+  userCollectionId: uuid('user_collection_id').notNull().references(() => userCollections.id, { onDelete: 'cascade' }),
+  mediaItemId: uuid('media_item_id').notNull().references(() => mediaItems.id, { onDelete: 'cascade' }),
+  position: integer('position').notNull().default(0),
+  addedAt: timestamp('added_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('user_collection_items_collection_item_unique').on(table.userCollectionId, table.mediaItemId),
+  index('user_collection_items_collection_position_index').on(table.userCollectionId, table.position),
+]);
+
+export const playbackQueue = pgTable('playback_queue', {
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  mediaItemId: uuid('media_item_id').notNull().references(() => mediaItems.id, { onDelete: 'cascade' }),
+  position: integer('position').notNull().default(0),
+  addedAt: timestamp('added_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('playback_queue_user_item_unique').on(table.userId, table.mediaItemId),
+  index('playback_queue_user_position_index').on(table.userId, table.position),
 ]);
 
 export const recommendationEdges = pgTable('recommendation_edges', {

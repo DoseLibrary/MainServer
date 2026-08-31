@@ -40,7 +40,7 @@ describe('trailer fetcher', () => {
     const { client, database, item, dir } = await fixture();
     const downloader: TrailerDownloader = { available: vi.fn(async () => true), download: vi.fn(async (_key, path) => { await writeFile(path, 'trailer'); }) };
     const plugin = createTrailerFetcherPlugin(database, tmdbWith(vi.fn(async () => [video])), downloader, dir); const signal = new AbortController().signal;
-    await plugin.run({ settings: settings(), signal }); await plugin.run({ settings: settings(), signal });
+    await plugin.run!({ settings: settings(), signal }); await plugin.run!({ settings: settings(), signal });
     expect(downloader.download).toHaveBeenCalledTimes(1);
     const result = await client.query<{ local_path: string; status: string; downloaded_at: Date }>(`select local_path,status,downloaded_at from media_trailers where media_item_id=$1 and preferred=true`, [item]);
     expect(result.rows[0]).toMatchObject({ status: 'ready' }); expect(result.rows[0]?.local_path).toMatch(new RegExp(`${item}-[a-f0-9]{16}\\.mp4$`)); expect(result.rows[0]?.downloaded_at).toBeTruthy();
@@ -50,7 +50,7 @@ describe('trailer fetcher', () => {
   it('stores metadata and reports graceful degradation when yt-dlp is unavailable', async () => {
     const { client, database, dir } = await fixture();
     const downloader: TrailerDownloader = { available: vi.fn(async () => false), download: vi.fn() };
-    const result = await createTrailerFetcherPlugin(database, tmdbWith(vi.fn(async () => [video])), downloader, dir).run({ settings: settings(), signal: new AbortController().signal });
+    const result = await createTrailerFetcherPlugin(database, tmdbWith(vi.fn(async () => [video])), downloader, dir).run!({ settings: settings(), signal: new AbortController().signal });
     expect(result?.summary).toContain('yt-dlp unavailable'); expect(downloader.download).not.toHaveBeenCalled();
     expect((await client.query<{ status: string }>(`select status from media_trailers`)).rows[0]?.status).toBe('metadata'); await client.close();
   });
@@ -58,7 +58,7 @@ describe('trailer fetcher', () => {
   it('honors an already-aborted run signal', async () => {
     const { client, database, dir } = await fixture(); const controller = new AbortController(); controller.abort(new Error('cancelled'));
     const downloader: TrailerDownloader = { available: vi.fn(async (signal) => { if (signal.aborted) throw signal.reason; return true; }), download: vi.fn() };
-    await expect(createTrailerFetcherPlugin(database, tmdbWith(vi.fn(async () => [video])), downloader, dir).run({ settings: settings(), signal: controller.signal })).rejects.toThrow('cancelled');
+    await expect(createTrailerFetcherPlugin(database, tmdbWith(vi.fn(async () => [video])), downloader, dir).run!({ settings: settings(), signal: controller.signal })).rejects.toThrow('cancelled');
     expect(downloader.download).not.toHaveBeenCalled(); await client.close();
   });
 
@@ -67,8 +67,8 @@ describe('trailer fetcher', () => {
     const next = { ...video, id: 'tmdb-video-b', key: 'youtube-key-b' }; const getVideos = vi.fn().mockResolvedValueOnce([video]).mockResolvedValueOnce([next]);
     const downloader: TrailerDownloader = { available: vi.fn(async () => true), download: vi.fn(async (_key, path) => { await writeFile(path, 'trailer'); }) };
     const plugin = createTrailerFetcherPlugin(database, tmdbWith(getVideos), downloader, dir); const context = { settings: settings(), signal: new AbortController().signal };
-    await plugin.run(context); const first = (await client.query<{ local_path: string }>(`select local_path from media_trailers where preferred=true`)).rows[0]!.local_path;
-    await plugin.run(context); const second = (await client.query<{ provider_id: string; local_path: string }>(`select provider_id,local_path from media_trailers where preferred=true`)).rows[0]!;
+    await plugin.run!(context); const first = (await client.query<{ local_path: string }>(`select local_path from media_trailers where preferred=true`)).rows[0]!.local_path;
+    await plugin.run!(context); const second = (await client.query<{ provider_id: string; local_path: string }>(`select provider_id,local_path from media_trailers where preferred=true`)).rows[0]!;
     expect(second.provider_id).toBe(next.id); expect(second.local_path).not.toBe(first); await expect(access(second.local_path)).resolves.toBeUndefined(); await expect(access(first)).rejects.toThrow(); await client.close();
   }, 15_000);
 
@@ -76,8 +76,8 @@ describe('trailer fetcher', () => {
     const { client, database, dir } = await fixture(); const getVideos = vi.fn().mockResolvedValueOnce([video]).mockResolvedValueOnce([]);
     const downloader: TrailerDownloader = { available: vi.fn(async () => true), download: vi.fn(async (_key, path) => { await writeFile(path, 'trailer'); }) };
     const plugin = createTrailerFetcherPlugin(database, tmdbWith(getVideos), downloader, dir); const context = { settings: settings(), signal: new AbortController().signal };
-    await plugin.run(context); const oldPath = (await client.query<{ local_path: string }>(`select local_path from media_trailers where preferred=true`)).rows[0]!.local_path;
-    await plugin.run(context); expect((await client.query(`select * from media_trailers`)).rows).toHaveLength(0); await expect(access(oldPath)).rejects.toThrow(); await client.close();
+    await plugin.run!(context); const oldPath = (await client.query<{ local_path: string }>(`select local_path from media_trailers where preferred=true`)).rows[0]!.local_path;
+    await plugin.run!(context); expect((await client.query(`select * from media_trailers`)).rows).toHaveLength(0); await expect(access(oldPath)).rejects.toThrow(); await client.close();
   }, 15_000);
 
   it('self-updates yt-dlp and retries once when a download fails', async () => {
@@ -89,7 +89,7 @@ describe('trailer fetcher', () => {
       .mockImplementationOnce(async (_key: string, path: string) => { await writeFile(path, 'trailer'); });
     const update = vi.fn(async () => true);
     const downloader: TrailerDownloader = { available: vi.fn(async () => true), download, update };
-    await createTrailerFetcherPlugin(database, tmdbWith(vi.fn(async () => [video])), downloader, dir).run({ settings: settings(), signal: new AbortController().signal });
+    await createTrailerFetcherPlugin(database, tmdbWith(vi.fn(async () => [video])), downloader, dir).run!({ settings: settings(), signal: new AbortController().signal });
     expect(update).toHaveBeenCalledTimes(1); expect(download).toHaveBeenCalledTimes(2);
     expect((await client.query<{ status: string }>(`select status from media_trailers where preferred=true`)).rows[0]?.status).toBe('ready');
     await client.close();
@@ -101,9 +101,9 @@ describe('trailer fetcher', () => {
     const downloader: TrailerDownloader = { available: vi.fn(async () => true), download: vi.fn(async (_key, path) => { await writeFile(path, 'trailer'); }), update };
     // No sentinel yet -> due; runs the weekly update, then does not repeat it on the next run.
     const plugin = createTrailerFetcherPlugin(database, tmdbWith(vi.fn(async () => [video])), downloader, dir); const signal = new AbortController().signal;
-    await plugin.run({ settings: settings(), signal });
+    await plugin.run!({ settings: settings(), signal });
     await access(join(dir, '.yt-dlp-updated'));
-    await plugin.run({ settings: settings(), signal });
+    await plugin.run!({ settings: settings(), signal });
     expect(update).toHaveBeenCalledTimes(1); await client.close();
   }, 15_000);
 
@@ -111,7 +111,7 @@ describe('trailer fetcher', () => {
     const { client, database, dir } = await fixture();
     const update = vi.fn(async () => true);
     const downloader: TrailerDownloader = { available: vi.fn(async () => true), download: vi.fn(async () => { throw new Error('boom'); }), update };
-    const result = await createTrailerFetcherPlugin(database, tmdbWith(vi.fn(async () => [video])), downloader, dir).run({ settings: { ...settings(), autoUpdate: false }, signal: new AbortController().signal });
+    const result = await createTrailerFetcherPlugin(database, tmdbWith(vi.fn(async () => [video])), downloader, dir).run!({ settings: { ...settings(), autoUpdate: false }, signal: new AbortController().signal });
     expect(update).not.toHaveBeenCalled(); expect(result?.summary).toContain('failed 1');
     expect((await client.query<{ status: string }>(`select status from media_trailers where preferred=true`)).rows[0]?.status).toBe('failed'); await client.close();
   }, 15_000);
@@ -122,7 +122,7 @@ describe('trailer fetcher', () => {
     expect(() => trailerFetcherSettingsSchema.parse({ storageDir: resolve(tmpdir(), 'outside') })).toThrow();
     const { client, database, item, dir } = await fixture();
     const downloader: TrailerDownloader = { available: vi.fn(async () => true), download: vi.fn(async (_key, path) => { await writeFile(path, 'trailer'); }) };
-    await createTrailerFetcherPlugin(database, tmdbWith(vi.fn(async () => [video])), downloader, dir).run({ settings: settings('language/en'), signal: new AbortController().signal });
+    await createTrailerFetcherPlugin(database, tmdbWith(vi.fn(async () => [video])), downloader, dir).run!({ settings: settings('language/en'), signal: new AbortController().signal });
     const { CatalogService } = await import('../catalog-service.ts');
     const source = await new CatalogService(database, dir).localTrailerSource(item);
     expect(source?.localPath).toContain(join('language', 'en')); await expect(access(source!.localPath)).resolves.toBeUndefined(); await client.close();

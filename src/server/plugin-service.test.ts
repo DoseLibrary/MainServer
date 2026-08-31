@@ -5,8 +5,9 @@ import { resolve } from 'node:path';
 import { z } from 'zod';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Database } from './db/client.ts';
-import { PluginAlreadyRunningError, PluginService } from './plugin-service.ts';
+import { PluginAlreadyRunningError, PluginNotRunnableError, PluginService, UnknownPluginActionError } from './plugin-service.ts';
 import { PluginRegistry, UnknownPluginError } from './plugins/registry.ts';
+import { PluginEventBus } from './plugins/events.ts';
 
 describe('PluginService', () => {
   let client: PGlite;
@@ -99,5 +100,63 @@ describe('PluginService', () => {
     expect((await service.get('example')).configuration).toMatchObject({
       lastRunStatus: 'succeeded', lastRunSummary: 'Completed work', lastRunError: null,
     });
+  });
+  it('delivers events to subscribed plugins with their current settings', async () => {
+    const handled: unknown[] = [];
+    const bus: PluginEventBus = new PluginEventBus({ log: { error: vi.fn(), warn: vi.fn() }, isEnabled: (pluginId: string): boolean => service.isEnabled(pluginId) });
+    const registry = new PluginRegistry().register({
+      id: 'reactive', metadata: { name: 'Reactive', description: 'Test', version: '1' },
+      settingsSchema: z.object({ prefix: z.string().default('a') }),
+      events: { 'media.item.removed': ({ payload, settings }) => { handled.push(`${settings.prefix}:${payload.mediaItemId}`); } },
+    });
+    const service: PluginService = new PluginService(database, registry, undefined, bus);
+    await service.initialize();
+
+    // Disabled by default: nothing is delivered until an admin enables the plugin.
+    bus.emit('media.item.removed', { mediaItemId: '1' });
+    await bus.drain();
+    expect(handled).toEqual([]);
+
+    await service.configure('reactive', { enabled: true, settings: { prefix: 'b' } });
+    bus.emit('media.item.removed', { mediaItemId: '2' });
+    await bus.drain();
+    expect(handled).toEqual(['b:2']);
+  });
+
+  it('keeps a stored secret when the form does not resend it', async () => {
+    const registry = new PluginRegistry().register({
+      id: 'secretive', metadata: { name: 'Secretive', description: 'Test', version: '1' },
+      settingsSchema: z.object({ token: z.string().default(''), verbose: z.boolean().default(false) }),
+      fields: [{ kind: 'password', key: 'token', label: 'Token' }, { kind: 'boolean', key: 'verbose', label: 'Verbose' }],
+      run: vi.fn(),
+    });
+    const service = new PluginService(database, registry);
+
+    await service.configure('secretive', { settings: { token: 'stored', verbose: false } });
+    const updated = await service.configure('secretive', { settings: { token: null, verbose: true } as never });
+    expect(updated.settings).toEqual({ token: 'stored', verbose: true });
+    expect((await service.configure('secretive', { settings: { token: 'rotated', verbose: true } })).settings).toMatchObject({ token: 'rotated' });
+  });
+
+  it('refuses to run a plugin that only reacts to events', async () => {
+    const registry = new PluginRegistry().register({
+      id: 'listener', metadata: { name: 'Listener', description: 'Test', version: '1' },
+      settingsSchema: z.object({}), events: { 'media.item.removed': () => undefined },
+    });
+    const service = new PluginService(database, registry);
+    await expect(service.run('listener')).rejects.toBeInstanceOf(PluginNotRunnableError);
+  });
+
+  it('records an action run like a scheduled run', async () => {
+    const registry = new PluginRegistry().register({
+      id: 'actionable', metadata: { name: 'Actionable', description: 'Test', version: '1' },
+      settingsSchema: z.object({}),
+      actions: [{ id: 'purge', label: 'Purge', run: async () => ({ summary: 'Purged 3 files' }) }],
+    });
+    const service = new PluginService(database, registry);
+
+    await expect(service.runAction('actionable', 'purge')).resolves.toMatchObject({ status: 'succeeded', summary: 'Purged 3 files' });
+    await expect(service.runAction('actionable', 'missing')).rejects.toBeInstanceOf(UnknownPluginActionError);
+    expect((await service.history('actionable'))[0]).toMatchObject({ summary: 'Purged 3 files' });
   });
 });

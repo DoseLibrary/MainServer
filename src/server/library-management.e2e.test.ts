@@ -85,14 +85,14 @@ describe('library-management offline end-to-end', () => {
     // Trailer plugin downloads locally (mocked binary) and the catalog serves the file.
     const downloader: TrailerDownloader = { available: vi.fn(async () => true), download: vi.fn(async (_key, path) => { await writeFile(path, 'trailer'); }), update: vi.fn(async () => true) };
     const tmdb = { getVideos: vi.fn(async () => [trailerVideo]), find: vi.fn(async () => seriesMetadata), getById: vi.fn(async () => seriesMetadata) } as unknown as TmdbClient;
-    await createTrailerFetcherPlugin(database, tmdb, downloader, trailerRoot).run({ settings: { languages: ['en'], includeClips: false, qualityCap: '1080', storageDir: 'trailers', autoUpdate: true, updateIntervalDays: 7 }, signal: new AbortController().signal });
+    await createTrailerFetcherPlugin(database, tmdb, downloader, trailerRoot).run!({ settings: { languages: ['en'], includeClips: false, qualityCap: '1080', storageDir: 'trailers', autoUpdate: true, updateIntervalDays: 7 }, signal: new AbortController().signal });
     const trailer = await catalog.localTrailerSource(MOVIE);
     expect(trailer?.localPath).toBeTruthy();
 
     // Preview-sprite plugin generates a storyboard (mocked ffmpeg) and persists a descriptor.
     const spriteTools = { generate: vi.fn(async () => {}) } as unknown as SpriteTools;
     const spriteStore = { ensureDir: vi.fn(async () => {}), pathFor: (key: string) => `/previews/${key}`, read: vi.fn() } as unknown as PreviewSpriteStore;
-    await createPreviewSpritePlugin(database, spriteTools, spriteStore).run({ settings: { interval: 10, columns: 5, tileWidth: 160, tileHeight: 90, maxTiles: 200 } as never, signal: new AbortController().signal });
+    await createPreviewSpritePlugin(database, spriteTools, spriteStore).run!({ settings: { interval: 10, columns: 5, tileWidth: 160, tileHeight: 90, maxTiles: 200 } as never, signal: new AbortController().signal });
     expect(await catalog.previewSprite(MOVIE)).toMatchObject({ columns: 5, storageKey: `${MOVIE_FILE}.jpg` });
 
     // Admin re-match reassigns TMDB identity and re-enriches offline.

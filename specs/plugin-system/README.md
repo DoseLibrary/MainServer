@@ -8,10 +8,16 @@ Internal plugin runtime with persisted configuration, schedules, run history, an
 - [x] Task 01 — persistence and plugin runtime
 
 ### Wave 2
-- [ ] Task 02 — trailer fetcher and scheduler
+- [x] Task 02 — trailer fetcher and scheduler
 
 ### Wave 3
-- [ ] Task 03 — admin API and profile UI
+- [x] Task 03 — admin API and profile UI
 
 ### Wave 4
-- [ ] Task 04 — integration, tests, and documentation
+- [x] Task 04 — integration, tests, and documentation
+
+### Wave 5
+- [x] Task 05 — plugin event bus
+- [x] Task 06 — declarative settings contract
+- [x] Task 07 — admin plugin routes
+- [x] Task 08 — intro detector plugin + skip control

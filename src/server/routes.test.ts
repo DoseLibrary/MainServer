@@ -3,7 +3,7 @@ import Fastify from 'fastify';
 import { mkdtemp, writeFile, rm, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, type Mock } from 'vitest';
 import type { AuthService } from './auth-service.ts';
 import { DuplicateLibraryError } from './auth-service.ts';
 import { registerApiRoutes } from './routes.ts';
@@ -13,6 +13,13 @@ import type { CatalogService } from './catalog-service.ts';
 import type { PluginService } from './plugin-service.ts';
 import sharp from 'sharp';
 import type { MetadataMatchService } from './metadata-match-service.ts';
+import type { UserSettingsService } from './user-settings-service.ts';
+import { UserCollectionNotFoundError, type UserCollectionsService } from './user-collections-service.ts';
+import type { QueueService } from './queue-service.ts';
+import type { WatchDataService } from './watch-data-service.ts';
+import { HistorySourceError } from './history-sources/types.ts';
+import type { HistorySources } from './routes.ts';
+import { ZodError } from 'zod';
 
 function service(overrides: Partial<Record<keyof AuthService, unknown>> = {}) {
   return {
@@ -24,12 +31,153 @@ function service(overrides: Partial<Record<keyof AuthService, unknown>> = {}) {
   } as unknown as AuthService;
 }
 
-async function appWith(auth: AuthService, scanner?: ScanCoordinator, catalog?: CatalogService, imagesDir?: string, nativeLibraryPaths = false, metadataMatch?: MetadataMatchService) {
+async function appWith(auth: AuthService, scanner?: ScanCoordinator, catalog?: CatalogService, imagesDir?: string, nativeLibraryPaths = false, metadataMatch?: MetadataMatchService, settings?: UserSettingsService, userCollections?: UserCollectionsService, queue?: QueueService, watchData?: WatchDataService, historySources?: HistorySources) {
   const filesystem: LibraryFilesystem = { realpath: async (path) => path, isDirectory: async () => true };
-  const app = Fastify(); await app.register(cookie); await registerApiRoutes(app, auth, false, filesystem, scanner, catalog, imagesDir, nativeLibraryPaths, undefined, undefined, undefined, undefined, metadataMatch); return app;
+  const app = Fastify(); await app.register(cookie); await registerApiRoutes(app, auth, false, filesystem, scanner, catalog, imagesDir, nativeLibraryPaths, undefined, undefined, undefined, undefined, metadataMatch, undefined, undefined, settings, userCollections, queue, watchData, historySources); return app;
 }
 
 describe('API authorization', () => {
+  it('reads and updates only the authenticated user settings', async () => {
+    const auth = service({ authenticate: vi.fn(async (token?: string) => token ? ({ id: 'user-id', username: 'member', role: 'member' }) : null) });
+    const settings = { get: vi.fn(async () => ({ userId: 'user-id', showCollectionGaps: false })), update: vi.fn(async (_id, patch) => ({ userId: 'user-id', ...patch })) } as unknown as UserSettingsService;
+    const app = await appWith(auth, undefined, undefined, undefined, false, undefined, settings);
+    const headers = { cookie: 'dose_session=token' };
+    expect((await app.inject({ method: 'GET', url: '/api/v1/me/settings', headers })).json().settings.showCollectionGaps).toBe(false);
+    const response = await app.inject({ method: 'PUT', url: '/api/v1/me/settings', headers, payload: { showCollectionGaps: true } });
+    expect(response.statusCode).toBe(200); expect(settings.update).toHaveBeenCalledWith('user-id', { showCollectionGaps: true });
+    expect((await app.inject({ method: 'PUT', url: '/api/v1/me/settings', headers, payload: { unknown: true } })).statusCode).toBe(400);
+    expect((await app.inject({ method: 'GET', url: '/api/v1/me/settings' })).statusCode).toBe(401);
+    await app.close();
+  });
+  it('passes the collection-gaps setting through to the catalog collection view', async () => {
+    const auth = service({ authenticate: vi.fn(async () => ({ id: 'user-id', username: 'member', role: 'member' })) });
+    const collection = vi.fn(async () => ({ id: 'c1', name: 'Saga', titles: [] }));
+    const settings = { get: vi.fn(async () => ({ userId: 'user-id', showCollectionGaps: true })) } as unknown as UserSettingsService;
+    const id = '11111111-1111-4111-8111-111111111111';
+    const headers = { cookie: 'dose_session=token' };
+
+    const gated = await appWith(auth, undefined, { collection } as unknown as CatalogService, undefined, false, undefined, settings);
+    expect((await gated.inject({ method: 'GET', url: `/api/v1/catalog/collections/${id}`, headers })).statusCode).toBe(200);
+    expect(collection).toHaveBeenLastCalledWith(id, true);
+    await gated.close();
+
+    const off = await appWith(auth, undefined, { collection } as unknown as CatalogService, undefined, false, undefined, { get: vi.fn(async () => ({ userId: 'user-id', showCollectionGaps: false })) } as unknown as UserSettingsService);
+    await off.inject({ method: 'GET', url: `/api/v1/catalog/collections/${id}`, headers });
+    expect(collection).toHaveBeenLastCalledWith(id, false);
+    await off.close();
+  });
+  it('scopes personal collection CRUD to the caller and answers 404 for foreign collections', async () => {
+    const auth = service({ authenticate: vi.fn(async (token?: string) => token ? ({ id: 'user-id', username: 'member', role: 'member' }) : null) });
+    const id = '11111111-1111-4111-8111-111111111111';
+    const itemId = '22222222-2222-4222-8222-222222222222';
+    const collections = {
+      list: vi.fn(async () => [{ id, name: 'Saga', itemCount: 1 }]),
+      create: vi.fn(async () => ({ id, name: 'Saga', itemCount: 0 })),
+      get: vi.fn(async () => ({ id, name: 'Saga', items: [] })),
+      update: vi.fn(async () => ({ id, name: 'Renamed' })),
+      remove: vi.fn(async () => undefined),
+      addItem: vi.fn(async () => ({ id, name: 'Saga', items: [] })),
+      removeItem: vi.fn(async () => ({ id, name: 'Saga', items: [] })),
+      reorder: vi.fn(async () => ({ id, name: 'Saga', items: [] })),
+    } as unknown as UserCollectionsService;
+    const app = await appWith(auth, undefined, undefined, undefined, false, undefined, undefined, collections);
+    const headers = { cookie: 'dose_session=token' };
+
+    expect((await app.inject({ method: 'GET', url: '/api/v1/me/collections', headers })).json().collections).toHaveLength(1);
+    expect(collections.list).toHaveBeenCalledWith('user-id');
+    const created = await app.inject({ method: 'POST', url: '/api/v1/me/collections', headers, payload: { name: 'Saga' } });
+    expect(created.statusCode).toBe(201);
+    expect((await app.inject({ method: 'POST', url: '/api/v1/me/collections', headers, payload: { name: '' } })).statusCode).toBe(400);
+    expect((await app.inject({ method: 'PATCH', url: `/api/v1/me/collections/${id}`, headers, payload: { name: 'Renamed' } })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'POST', url: `/api/v1/me/collections/${id}/items`, headers, payload: { mediaItemId: itemId } })).statusCode).toBe(200);
+    expect(collections.addItem).toHaveBeenCalledWith('user-id', id, itemId);
+    expect((await app.inject({ method: 'PUT', url: `/api/v1/me/collections/${id}/items`, headers, payload: { mediaItemIds: [itemId] } })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'DELETE', url: `/api/v1/me/collections/${id}/items/${itemId}`, headers })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'DELETE', url: `/api/v1/me/collections/${id}`, headers })).statusCode).toBe(204);
+    expect((await app.inject({ method: 'GET', url: '/api/v1/me/collections' })).statusCode).toBe(401);
+    await app.close();
+
+    const foreign = await appWith(auth, undefined, undefined, undefined, false, undefined, undefined, {
+      get: vi.fn(async () => { throw new UserCollectionNotFoundError(); }),
+    } as unknown as UserCollectionsService);
+    expect((await foreign.inject({ method: 'GET', url: `/api/v1/me/collections/${id}`, headers })).statusCode).toBe(404);
+    await foreign.close();
+  });
+  it('serves the marathon queue for the caller only', async () => {
+    const auth = service({ authenticate: vi.fn(async (token?: string) => token ? ({ id: 'user-id', username: 'member', role: 'member' }) : null) });
+    const itemId = '22222222-2222-4222-8222-222222222222';
+    const queue = {
+      list: vi.fn(async () => [{ id: itemId, title: 'One', unavailable: false }]),
+      add: vi.fn(async () => [{ id: itemId, title: 'One', unavailable: false }]),
+      remove: vi.fn(async () => []),
+      clear: vi.fn(async () => []),
+      reorder: vi.fn(async () => [{ id: itemId, title: 'One', unavailable: false }]),
+      next: vi.fn(async () => ({ id: itemId, title: 'One' })),
+    } as unknown as QueueService;
+    const app = await appWith(auth, undefined, undefined, undefined, false, undefined, undefined, undefined, queue);
+    const headers = { cookie: 'dose_session=token' };
+
+    expect((await app.inject({ method: 'GET', url: '/api/v1/me/queue', headers })).json().items).toHaveLength(1);
+    expect(queue.list).toHaveBeenCalledWith('user-id');
+    expect((await app.inject({ method: 'POST', url: '/api/v1/me/queue', headers, payload: { mediaItemId: itemId } })).statusCode).toBe(200);
+    expect(queue.add).toHaveBeenCalledWith('user-id', itemId);
+    expect((await app.inject({ method: 'POST', url: '/api/v1/me/queue', headers, payload: { mediaItemId: 'nope' } })).statusCode).toBe(400);
+    expect((await app.inject({ method: 'PUT', url: '/api/v1/me/queue', headers, payload: { mediaItemIds: [itemId] } })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'DELETE', url: `/api/v1/me/queue/${itemId}`, headers })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'DELETE', url: '/api/v1/me/queue', headers })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'GET', url: `/api/v1/me/queue/next?after=${itemId}`, headers })).json().item).toMatchObject({ id: itemId });
+    expect(queue.next).toHaveBeenCalledWith('user-id', itemId);
+    expect((await app.inject({ method: 'GET', url: '/api/v1/me/queue' })).statusCode).toBe(401);
+    await app.close();
+  });
+  it('exports and imports the caller watch data', async () => {
+    const auth = service({ authenticate: vi.fn(async (token?: string) => token ? ({ id: 'user-id', username: 'member', role: 'member' }) : null) });
+    const document = { version: 1 as const, progress: [{ match: { tmdbId: '100', title: 'One', kind: 'movie' as const }, positionSeconds: 12, watched: false }], watchlist: [], collections: [] };
+    const watchData = {
+      exportFor: vi.fn(async () => document),
+      importDocument: vi.fn(async () => ({ matched: 1, written: 1, unmatched: [] })),
+    } as unknown as WatchDataService;
+    const app = await appWith(auth, undefined, undefined, undefined, false, undefined, undefined, undefined, undefined, watchData);
+    const headers = { cookie: 'dose_session=token' };
+
+    const exported = await app.inject({ method: 'GET', url: '/api/v1/me/watch-data/export', headers });
+    expect(exported.statusCode).toBe(200);
+    expect(exported.headers['content-disposition']).toContain('dose-watch-data.json');
+    expect(exported.json().progress).toHaveLength(1);
+    expect(watchData.exportFor).toHaveBeenCalledWith('user-id');
+
+    const imported = await app.inject({ method: 'POST', url: '/api/v1/me/watch-data/import', headers, payload: document });
+    expect(imported.statusCode).toBe(200);
+    expect(imported.json().summary).toMatchObject({ matched: 1, written: 1 });
+    expect((await app.inject({ method: 'POST', url: '/api/v1/me/watch-data/import', headers, payload: { version: 2 } })).statusCode).toBe(400);
+    expect((await app.inject({ method: 'GET', url: '/api/v1/me/watch-data/export' })).statusCode).toBe(401);
+    await app.close();
+  });
+  it('imports external history through the selected source', async () => {
+    const auth = service({ authenticate: vi.fn(async (token?: string) => token ? ({ id: 'user-id', username: 'member', role: 'member' }) : null) });
+    const entries = [{ match: { tmdbId: '100', title: 'One', kind: 'movie' as const }, positionSeconds: 12, watched: true }];
+    const watchData = { importProgress: vi.fn(async () => ({ matched: 1, written: 1, unmatched: [{ title: 'Ghost', kind: 'movie' as const }] })) } as unknown as WatchDataService;
+    const plex = { id: 'plex', read: vi.fn(async () => ({ entries, errors: ['Shows: unreadable'] })) };
+    const trakt = { id: 'trakt', read: vi.fn(async () => { throw new HistorySourceError('Trakt rejected the credentials', 401); }) };
+    const app = await appWith(auth, undefined, undefined, undefined, false, undefined, undefined, undefined, undefined, watchData, { plex, trakt });
+    const headers = { cookie: 'dose_session=token' };
+
+    const imported = await app.inject({ method: 'POST', url: '/api/v1/me/watch-data/import/plex', headers, payload: { baseUrl: 'http://plex.local:32400', token: 'secret' } });
+    expect(imported.statusCode).toBe(200);
+    expect(imported.json().summary).toMatchObject({ matched: 1, written: 1, skipped: 1, errors: ['Shows: unreadable'] });
+    expect(watchData.importProgress).toHaveBeenCalledWith('user-id', entries);
+
+    // A credential failure is a clean 4xx and nothing is written.
+    const rejected = await app.inject({ method: 'POST', url: '/api/v1/me/watch-data/import/trakt', headers, payload: { clientId: 'c', accessToken: 'bad' } });
+    expect(rejected.statusCode).toBe(401);
+    expect(watchData.importProgress).toHaveBeenCalledTimes(1);
+
+    expect((await app.inject({ method: 'POST', url: '/api/v1/me/watch-data/import/plex', headers, payload: { baseUrl: 'not-a-url', token: 'x' } })).statusCode).toBe(400);
+    expect((await app.inject({ method: 'POST', url: '/api/v1/me/watch-data/import/kodi', headers, payload: {} })).statusCode).toBe(400);
+    expect((await app.inject({ method: 'POST', url: '/api/v1/me/watch-data/import/tautulli', headers, payload: { baseUrl: 'http://t.local', apiKey: 'k' } })).statusCode).toBe(503);
+    expect((await app.inject({ method: 'POST', url: '/api/v1/me/watch-data/import/plex', payload: {} })).statusCode).toBe(401);
+    await app.close();
+  });
   it('streams a local trailer with ranges and returns 404 when unavailable', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'dose-trailer-route-')); const file = join(dir, 'trailer.mp4'); await writeFile(file, '0123456789');
     try {
@@ -205,6 +353,22 @@ describe('API authorization', () => {
     await app.close(); await anonymous.close();
   });
 
+  it('validates random filters, returns a pick, and reports an empty pool', async () => {
+    const randomItem = vi.fn().mockResolvedValueOnce({ id: 'm1', title: 'Arrival', kind: 'movie', year: 2016 }).mockResolvedValueOnce(null);
+    const member = service({ authenticate: vi.fn(async () => ({ id: 'user-id', username: 'member', role: 'member' })) });
+    const app = await appWith(member, undefined, { randomItem } as unknown as CatalogService);
+    const headers = { cookie: 'dose_session=token' };
+    const picked = await app.inject({ method: 'GET', url: '/api/v1/catalog/random?kind=movie&genre=Sci-Fi&yearMin=2000&yearMax=2020&ratingMin=7.5', headers });
+    expect(picked.statusCode).toBe(200); expect(picked.json().item.id).toBe('m1');
+    expect(randomItem).toHaveBeenCalledWith({ kind: 'movie', genre: 'Sci-Fi', yearMin: 2000, yearMax: 2020, ratingMin: 7.5 });
+    expect((await app.inject({ method: 'GET', url: '/api/v1/catalog/random?yearMin=2025&yearMax=2020', headers })).statusCode).toBe(400);
+    expect((await app.inject({ method: 'GET', url: '/api/v1/catalog/random?ratingMin=11', headers })).statusCode).toBe(400);
+    expect((await app.inject({ method: 'GET', url: '/api/v1/catalog/random', headers })).statusCode).toBe(404);
+    const anonymous = await appWith(service(), undefined, { randomItem } as unknown as CatalogService);
+    expect((await anonymous.inject({ method: 'GET', url: '/api/v1/catalog/random' })).statusCode).toBe(401);
+    await app.close(); await anonymous.close();
+  });
+
   it('lists categories and opens one for authenticated users', async () => {
     const categories = vi.fn(async () => [{ key: 'action', name: 'Action', count: 3 }]);
     const category = vi.fn(async (key: string) => key === 'action' ? { key: 'action', name: 'Action', titles: [] } : null);
@@ -322,12 +486,29 @@ describe('API authorization', () => {
 
 describe('Plugin administration API', () => {
   const entry = {
-    plugin: { id: 'trailer-fetcher', metadata: { name: 'Trailer Fetcher', description: 'Fetch trailers', version: '1.0.0' }, settingsSchema: { parse: () => ({ languages: ['en'], includeClips: false }) }, settings: { languages: { label: 'Preferred languages' }, includeClips: { label: 'Include clips' } } },
-    configuration: { pluginId: 'trailer-fetcher', enabled: true, schedule: null, settings: { languages: ['en'], includeClips: false }, nextRunAt: null, lastRunAt: null, lastRunStatus: null, lastRunDurationMs: null, lastRunSummary: null, lastRunError: null, createdAt: new Date(), updatedAt: new Date() },
+    plugin: {
+      id: 'trailer-fetcher', metadata: { name: 'Trailer Fetcher', description: 'Fetch trailers', version: '1.0.0' },
+      settingsSchema: { parse: () => ({ languages: ['en'], includeClips: false, apiKey: '' }) },
+      fields: [
+        { kind: 'list', key: 'languages', label: 'Preferred languages' },
+        { kind: 'boolean', key: 'includeClips', label: 'Include clips' },
+        { kind: 'password', key: 'apiKey', label: 'API key' },
+      ],
+      actions: [{ id: 'purge', label: 'Purge downloads' }],
+      events: { 'media.item.enriched': () => undefined },
+      run: () => undefined,
+    },
+    configuration: { pluginId: 'trailer-fetcher', enabled: true, schedule: null, settings: { languages: ['en'], includeClips: false, apiKey: 'super-secret' }, nextRunAt: null, lastRunAt: null, lastRunStatus: null, lastRunDurationMs: null, lastRunSummary: null, lastRunError: null, createdAt: new Date(), updatedAt: new Date() },
   };
   function pluginsStub() {
-    return { list: vi.fn(async () => [entry]), get: vi.fn(async () => entry), configure: vi.fn(async () => entry.configuration), run: vi.fn(async () => ({ id: 'r1', status: 'succeeded', durationMs: 5, summary: 'ok' })), history: vi.fn(async () => []) } as unknown as PluginService;
+    return {
+      list: vi.fn(async () => [entry]), get: vi.fn(async () => entry), configure: vi.fn(async () => entry.configuration),
+      run: vi.fn(async () => ({ id: 'r1', status: 'succeeded', durationMs: 5, summary: 'ok' })),
+      runAction: vi.fn(async () => ({ id: 'r2', status: 'succeeded', durationMs: 5, summary: 'purged' })),
+      history: vi.fn(async () => []),
+    } as unknown as PluginService & { run: Mock; runAction: Mock };
   }
+
   async function appWithPlugins(auth: AuthService, plugins: PluginService) {
     const filesystem: LibraryFilesystem = { realpath: async (path) => path, isDirectory: async () => true };
     const app = Fastify(); await app.register(cookie);
@@ -335,17 +516,45 @@ describe('Plugin administration API', () => {
     return app;
   }
 
-  it('lists plugins with derived setting fields for admins', async () => {
+  it('lists plugins with their declared fields and never echoes secrets', async () => {
     const admin = service({ authenticate: vi.fn(async () => ({ id: 'a', username: 'admin', role: 'admin' })) });
     const app = await appWithPlugins(admin, pluginsStub());
     const response = await app.inject({ method: 'GET', url: '/api/v1/plugins', headers: { cookie: 'dose_session=token' } });
     expect(response.statusCode).toBe(200);
-    const body = response.json() as { plugins: Array<{ id: string; enabled: boolean; fields: Array<{ key: string; type: string }> }> };
-    expect(body.plugins[0]).toMatchObject({ id: 'trailer-fetcher', enabled: true });
+    const body = response.json() as { plugins: Array<{ id: string; enabled: boolean; runnable: boolean; events: string[]; secretsSet: string[]; settings: Record<string, unknown>; fields: Array<{ key: string; kind: string }>; actions: Array<{ id: string }> }> };
+    expect(body.plugins[0]).toMatchObject({ id: 'trailer-fetcher', enabled: true, runnable: true, secretsSet: ['apiKey'], events: ['media.item.enriched'] });
     expect(body.plugins[0].fields).toEqual(expect.arrayContaining([
-      expect.objectContaining({ key: 'languages', type: 'list' }),
-      expect.objectContaining({ key: 'includeClips', type: 'boolean' }),
+      expect.objectContaining({ key: 'languages', kind: 'list' }),
+      expect.objectContaining({ key: 'includeClips', kind: 'boolean' }),
     ]));
+    expect(body.plugins[0].actions).toEqual([expect.objectContaining({ id: 'purge' })]);
+    expect(body.plugins[0].settings.apiKey).toBeNull();
+    await app.close();
+  });
+
+  it('serves a single plugin and runs a declared action', async () => {
+    const plugins = pluginsStub();
+    const admin = service({ authenticate: vi.fn(async () => ({ id: 'a', username: 'admin', role: 'admin' })) });
+    const app = await appWithPlugins(admin, plugins);
+
+    const single = await app.inject({ method: 'GET', url: '/api/v1/plugins/trailer-fetcher', headers: { cookie: 'dose_session=token' } });
+    expect(single.statusCode).toBe(200);
+    expect(single.json()).toMatchObject({ plugin: { id: 'trailer-fetcher' } });
+
+    const action = await app.inject({ method: 'POST', url: '/api/v1/plugins/trailer-fetcher/actions/purge', headers: { cookie: 'dose_session=token' } });
+    expect(action.statusCode).toBe(200);
+    expect(plugins.runAction).toHaveBeenCalledWith('trailer-fetcher', 'purge');
+    await app.close();
+  });
+
+  it('reports invalid settings as a per-field 400', async () => {
+    const plugins = pluginsStub();
+    plugins.configure = vi.fn(async () => { throw new ZodError([{ code: 'custom', path: ['updateIntervalDays'], message: 'Too large' }]); }) as never;
+    const admin = service({ authenticate: vi.fn(async () => ({ id: 'a', username: 'admin', role: 'admin' })) });
+    const app = await appWithPlugins(admin, plugins);
+    const response = await app.inject({ method: 'PATCH', url: '/api/v1/plugins/trailer-fetcher', headers: { cookie: 'dose_session=token' }, payload: { settings: { updateIntervalDays: 400 } } });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ errors: { updateIntervalDays: 'Too large' } });
     await app.close();
   });
 

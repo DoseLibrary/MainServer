@@ -4,7 +4,8 @@ import type { PluginService } from './plugin-service.ts';
 export class PluginScheduler {
   private jobs = new Map<string, Cron>();
   constructor(private readonly service: PluginService) {}
-  async start() { await this.stop(); for (const entry of await this.service.list()) if (entry.configuration.enabled && entry.configuration.schedule) await this.schedule(entry.plugin.id, entry.configuration.schedule); }
+  // Event-only plugins have no run(); they are never scheduled.
+  async start() { await this.stop(); for (const entry of await this.service.list()) if (entry.plugin.run && entry.configuration.enabled && entry.configuration.schedule) await this.schedule(entry.plugin.id, entry.configuration.schedule); }
   async reload() { await this.start(); }
   async stop() { for (const job of this.jobs.values()) job.stop(); this.jobs.clear(); }
   private async schedule(pluginId: string, pattern: string) {

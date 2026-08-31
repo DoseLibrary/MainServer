@@ -10,3 +10,15 @@
 - Only admins may mutate plugin state or start runs. Settings secrets must not be echoed when marked secret.
 - PostgreSQL and PGlite use the same migration/schema.
 
+## Events
+
+Core publishes typed domain events that plugins subscribe to by declaring handlers on `events`:
+`library.scan.started`, `library.scan.completed`, `media.file.ingested`, `media.item.enriched`,
+`media.item.archived`, `media.item.unarchived`, `media.item.removed`, `playback.progress.updated`.
+
+- Delivery is in-memory and fire-and-forget. Events are not persisted and are lost on restart, so a
+  plugin that reacts to events must keep a scheduled sweep as its reconciliation backstop.
+- `emit` is synchronous, never throws, and is only called after the owning transaction commits.
+- A disabled plugin receives nothing. Handler failures are logged, never propagated.
+- Handlers of one plugin run serially in emit order; a full per-plugin backlog drops events rather
+  than buffering without bound.

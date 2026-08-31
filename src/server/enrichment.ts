@@ -1,8 +1,9 @@
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, notInArray, sql } from 'drizzle-orm';
 import type { Database } from './db/client.ts';
-import { castCredits, collectionMembers, collections, genres, mediaItemGenres, mediaItems, people, recommendationEdges } from './db/schema.ts';
-import type { TmdbClient, TmdbMetadata } from './tmdb.ts';
+import { castCredits, collectionExpectedMembers, collectionMembers, collections, genres, mediaItemGenres, mediaItems, people, recommendationEdges } from './db/schema.ts';
+import type { TmdbClient, TmdbCollectionMetadata, TmdbMetadata } from './tmdb.ts';
 import type { ImageStore } from './images.ts';
+import type { PluginEventBus } from './plugins/events.ts';
 
 /** Bump when the enrichment model changes so unchanged files can be backfilled. */
 export const ENRICHMENT_VERSION = 1;
@@ -23,7 +24,7 @@ function normalizeGenre(name: string): string {
  * sets are replaced idempotently so repeated scans never accumulate duplicates.
  */
 export class EnrichmentService {
-  constructor(private readonly database: Database, private readonly tmdb: TmdbClient, private readonly images: ImageStore) {}
+  constructor(private readonly database: Database, private readonly tmdb: TmdbClient, private readonly images: ImageStore, private readonly events?: PluginEventBus) {}
 
   async enrich(libraryId: string, itemId: string, kind: 'movie' | 'series', title: string, year?: number, providerId?: number, userMatched = false): Promise<boolean> {
     const attemptAt = new Date();
@@ -42,6 +43,13 @@ export class EnrichmentService {
       // Record the attempt but preserve any previously valid metadata.
       await this.database.update(mediaItems).set({ enrichmentLastAttemptAt: attemptAt, updatedAt: new Date() }).where(eq(mediaItems.id, itemId));
       return false;
+    }
+    // The full TMDB collection powers the "missing from collection" view. Fetched
+    // outside the transaction and best-effort: a provider hiccup leaves the previously
+    // recorded membership untouched instead of aborting enrichment.
+    let expected: TmdbCollectionMetadata['parts'] | null = null;
+    if (metadata.collection) {
+      try { expected = (await this.tmdb.getCollection(metadata.collection.id))?.parts ?? null; } catch { expected = null; }
     }
     await this.database.transaction(async (tx) => {
       await tx.update(mediaItems).set({
@@ -65,11 +73,14 @@ export class EnrichmentService {
 
       await this.replaceGenres(tx, libraryId, itemId, metadata);
       await this.replaceCast(tx, libraryId, itemId, metadata);
-      await this.applyCollection(tx, libraryId, itemId, metadata);
+      await this.applyCollection(tx, libraryId, itemId, metadata, expected);
       await this.replaceRecommendations(tx, libraryId, itemId, metadata);
     });
 
-    await this.cacheArtwork(metadata);
+    // Emitted after the transaction commits so a handler that reads the item sees it.
+    this.events?.emit('media.item.enriched', { libraryId, mediaItemId: itemId, kind, providerIds: { tmdb: String(metadata.id), ...metadata.externalIds } });
+
+    await this.cacheArtwork(metadata, expected);
     return true;
   }
 
@@ -87,7 +98,7 @@ export class EnrichmentService {
     seasonNumber: number,
     episodeNumber: number,
   ): Promise<void> {
-    const [series] = await this.database.select({ providerIds: mediaItems.providerIds }).from(mediaItems).where(eq(mediaItems.id, seriesItemId)).limit(1);
+    const [series] = await this.database.select({ providerIds: mediaItems.providerIds, libraryId: mediaItems.libraryId }).from(mediaItems).where(eq(mediaItems.id, seriesItemId)).limit(1);
     const seriesTmdb = Number(series?.providerIds.tmdb);
     if (!Number.isInteger(seriesTmdb) || seriesTmdb < 1) return;
 
@@ -132,6 +143,8 @@ export class EnrichmentService {
       await this.database.update(mediaItems).set({ enrichmentLastAttemptAt: attemptAt, updatedAt: new Date() }).where(eq(mediaItems.id, episodeItemId));
     }
 
+    if (episode) this.events?.emit('media.item.enriched', { libraryId: series!.libraryId, mediaItemId: episodeItemId, kind: 'episode', providerIds: { tmdb: String(episode.id) } });
+
     for (const path of [season?.posterPath, episode?.stillPath]) {
       if (!path) continue;
       try { await this.images.cache(path); } catch { /* offline-first best effort */ }
@@ -166,7 +179,7 @@ export class EnrichmentService {
     if (credits.length > 0) await tx.insert(castCredits).values(credits.map((credit) => ({ mediaItemId: itemId, personId: credit.personId, character: credit.character, billingOrder: credit.billingOrder })));
   }
 
-  private async applyCollection(tx: Tx, libraryId: string, itemId: string, metadata: TmdbMetadata) {
+  private async applyCollection(tx: Tx, libraryId: string, itemId: string, metadata: TmdbMetadata, expected: TmdbCollectionMetadata['parts'] | null = null) {
     if (!metadata.collection) {
       await tx.delete(collectionMembers).where(eq(collectionMembers.mediaItemId, itemId));
       return;
@@ -180,6 +193,27 @@ export class EnrichmentService {
     await tx.insert(collectionMembers)
       .values({ collectionId: row.id, mediaItemId: itemId, position: metadata.year ?? 0 })
       .onConflictDoUpdate({ target: [collectionMembers.mediaItemId], set: { collectionId: row.id, position: metadata.year ?? 0, updatedAt: new Date() } });
+    await this.replaceExpectedMembers(tx, row.id, expected);
+  }
+
+  /** Records every member TMDB lists for a collection so absent ones are still known offline. */
+  private async replaceExpectedMembers(tx: Tx, collectionId: string, expected: TmdbCollectionMetadata['parts'] | null) {
+    if (!expected || expected.length === 0) return;
+    await tx.insert(collectionExpectedMembers)
+      .values(expected.map((part) => ({ collectionId, tmdbId: String(part.id), title: part.title, year: part.year ?? null, releaseDate: part.releaseDate ?? null, posterPath: part.posterPath ?? null })))
+      .onConflictDoUpdate({
+        target: [collectionExpectedMembers.collectionId, collectionExpectedMembers.tmdbId],
+        set: {
+          title: sql`excluded.title`,
+          year: sql`excluded.year`,
+          releaseDate: sql`excluded.release_date`,
+          posterPath: sql`excluded.poster_path`,
+          updatedAt: new Date(),
+        },
+      });
+    const keep = expected.map((part) => String(part.id));
+    await tx.delete(collectionExpectedMembers)
+      .where(and(eq(collectionExpectedMembers.collectionId, collectionId), notInArray(collectionExpectedMembers.tmdbId, keep)));
   }
 
   private async replaceRecommendations(tx: Tx, libraryId: string, itemId: string, metadata: TmdbMetadata) {
@@ -198,8 +232,9 @@ export class EnrichmentService {
     if (edges.length > 0) await tx.insert(recommendationEdges).values(edges).onConflictDoNothing();
   }
 
-  private async cacheArtwork(metadata: TmdbMetadata) {
-    const paths = [metadata.posterPath, metadata.backdropPath, metadata.logoPath, metadata.collection?.posterPath, metadata.collection?.backdropPath, ...metadata.cast.slice(0, CAST_LIMIT).map((credit) => credit.profilePath)];
+  private async cacheArtwork(metadata: TmdbMetadata, expected: TmdbCollectionMetadata['parts'] | null = null) {
+    // Expected-member posters are cached now so the offline "missing" placeholders still have art.
+    const paths = [metadata.posterPath, metadata.backdropPath, metadata.logoPath, metadata.collection?.posterPath, metadata.collection?.backdropPath, ...metadata.cast.slice(0, CAST_LIMIT).map((credit) => credit.profilePath), ...(expected ?? []).map((part) => part.posterPath)];
     for (const path of paths) {
       try { await this.images.cache(path); } catch { /* offline-first best effort; a failed download never aborts the scan */ }
     }

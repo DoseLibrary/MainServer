@@ -52,7 +52,17 @@ export function ytDlpDownloader(binary = 'yt-dlp'): TrailerDownloader {
 export function createTrailerFetcherPlugin(database: Database, tmdb: TmdbClient, downloader: TrailerDownloader = ytDlpDownloader(), managedStorageRoot = 'trailers'): PluginDefinition<z.infer<typeof trailerFetcherSettingsSchema>> {
   return {
     id: 'trailer-fetcher', metadata: { name: 'Trailer Fetcher', description: 'Refreshes trailers for matched TMDB titles.', version: '1.0.0' },
-    settingsSchema: trailerFetcherSettingsSchema, settings: { languages: { label: 'Preferred languages' }, includeClips: { label: 'Include clips' }, qualityCap: { label: 'Maximum quality' }, storageDir: { label: 'Storage subdirectory', description: `Relative folder under managed trailer storage (default root: ${managedStorageRoot})` }, autoUpdate: { label: 'Auto-update yt-dlp', description: 'Self-update yt-dlp on the cadence below and after a failed download.' }, updateIntervalDays: { label: 'Update interval (days)', description: 'How often to refresh yt-dlp before a run (default 7).' } },
+    settingsSchema: trailerFetcherSettingsSchema,
+    fields: [
+      { kind: 'list', key: 'languages', label: 'Preferred languages', placeholder: 'en, sv', itemLabel: 'language', group: 'Selection' },
+      { kind: 'boolean', key: 'includeClips', label: 'Include clips', description: 'Accept clips and featurettes when no trailer is published.', group: 'Selection' },
+      { kind: 'select', key: 'qualityCap', label: 'Maximum quality', options: [
+        { value: '720', label: '720p' }, { value: '1080', label: '1080p' }, { value: '1440', label: '1440p' }, { value: '2160', label: '2160p' },
+      ], group: 'Selection' },
+      { kind: 'path', key: 'storageDir', label: 'Storage subdirectory', description: `Relative folder under managed trailer storage (default root: ${managedStorageRoot})`, required: true, group: 'Storage' },
+      { kind: 'boolean', key: 'autoUpdate', label: 'Auto-update yt-dlp', description: 'Self-update yt-dlp on the cadence below and after a failed download.', group: 'Downloader' },
+      { kind: 'number', key: 'updateIntervalDays', label: 'Update interval (days)', description: 'How often to refresh yt-dlp before a run (default 7).', min: 1, max: 90, group: 'Downloader' },
+    ],
     async run({ settings, signal }) {
       const parsedSettings = trailerFetcherSettingsSchema.parse(settings);
       // "trailers" is retained as the legacy/default value meaning the managed

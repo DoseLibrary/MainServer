@@ -2,27 +2,68 @@ import { desc, eq, sql } from 'drizzle-orm';
 import type { Database } from './db/client.ts';
 import { pluginConfigurations, pluginRuns } from './db/schema.ts';
 import type { PluginRegistry } from './plugins/registry.ts';
+import type { PluginEventBus, PluginEventName } from './plugins/events.ts';
+import type { PluginRunContext, PluginRunResult } from './plugins/types.ts';
 
 const DEFAULT_HISTORY_LIMIT = 50;
 
 export class PluginAlreadyRunningError extends Error {}
+export class PluginNotRunnableError extends Error {}
+export class UnknownPluginActionError extends Error {}
+
+type Configuration = typeof pluginConfigurations.$inferSelect;
 
 export class PluginService {
-  private readonly running = new Set<string>();
+  private readonly running = new Map<string, AbortController>();
+  /** Event delivery resolves settings/enabled from here; a DB read per event would not scale. */
+  private readonly configurations = new Map<string, Configuration>();
+  private readonly shutdown = new AbortController();
+  private subscribed = false;
 
   constructor(
     private readonly db: Database,
     private readonly registry: PluginRegistry,
     private readonly historyLimit = DEFAULT_HISTORY_LIMIT,
+    private readonly events?: PluginEventBus,
   ) {}
 
   async initialize() {
     for (const plugin of this.registry.list()) await this.ensureConfiguration(plugin.id);
+    this.subscribe();
+  }
+
+  /** Wire event handlers once. Settings are read at delivery time, so saving a
+   * configuration takes effect on the next event without re-subscribing. */
+  private subscribe() {
+    if (this.subscribed || !this.events) return;
+    this.subscribed = true;
+    for (const plugin of this.registry.list()) {
+      const handlers = plugin.events;
+      if (!handlers) continue;
+      for (const name of Object.keys(handlers) as PluginEventName[]) {
+        const handler = handlers[name];
+        if (!handler) continue;
+        this.events.subscribe(plugin.id, name, async (event, payload) => {
+          const configuration = this.configurations.get(plugin.id) ?? await this.ensureConfiguration(plugin.id);
+          const settings = plugin.settingsSchema.parse(configuration.settings);
+          await (handler as (context: unknown) => Promise<void> | void)({ event, payload, settings, signal: this.shutdown.signal });
+        });
+      }
+    }
+  }
+
+  isEnabled(pluginId: string) { return this.configurations.get(pluginId)?.enabled ?? false; }
+
+  /** Abort in-flight runs and event handlers so shutdown is not blocked. */
+  abortAll() {
+    this.shutdown.abort();
+    for (const controller of this.running.values()) controller.abort();
   }
 
   async list() {
     await this.initialize();
     const configurations = await this.db.select().from(pluginConfigurations);
+    for (const configuration of configurations) this.configurations.set(configuration.pluginId, configuration);
     const byId = new Map(configurations.map((value) => [value.pluginId, value]));
     return this.registry.list().map((plugin) => ({ plugin, configuration: byId.get(plugin.id)! }));
   }
@@ -36,7 +77,8 @@ export class PluginService {
   async configure(pluginId: string, change: { enabled?: boolean; schedule?: string | null; settings?: Record<string, unknown>; nextRunAt?: Date | null }) {
     const plugin = this.registry.get(pluginId);
     const current = await this.ensureConfiguration(pluginId);
-    const settings = plugin.settingsSchema.parse(change.settings ?? current.settings);
+    const merged = change.settings ? this.mergeSecrets(pluginId, current.settings, change.settings) : current.settings;
+    const settings = plugin.settingsSchema.parse(merged);
     const [configuration] = await this.db.update(pluginConfigurations).set({
       enabled: change.enabled ?? current.enabled,
       schedule: change.schedule === undefined ? current.schedule : change.schedule,
@@ -44,7 +86,22 @@ export class PluginService {
       nextRunAt: change.nextRunAt === undefined ? current.nextRunAt : change.nextRunAt,
       updatedAt: new Date(),
     }).where(eq(pluginConfigurations.pluginId, pluginId)).returning();
+    this.configurations.set(pluginId, configuration);
     return configuration;
+  }
+
+  /** A password field the admin form did not resend keeps its stored value; the
+   * form never receives the secret, so it cannot send it back. */
+  private mergeSecrets(pluginId: string, current: Record<string, unknown>, incoming: Record<string, unknown>) {
+    const secretKeys = (this.registry.get(pluginId).fields ?? []).filter((field) => field.kind === 'password').map((field) => field.key);
+    const merged: Record<string, unknown> = { ...incoming };
+    for (const key of secretKeys) {
+      const value = merged[key];
+      if (value !== undefined && value !== null && value !== '') continue;
+      if (current[key] !== undefined) merged[key] = current[key];
+      else delete merged[key];
+    }
+    return merged;
   }
 
   async history(pluginId: string, limit = this.historyLimit) {
@@ -55,8 +112,22 @@ export class PluginService {
 
   async run(pluginId: string) {
     const plugin = this.registry.get(pluginId);
+    if (!plugin.run) throw new PluginNotRunnableError(`Plugin has no scheduled run: ${pluginId}`);
+    return this.execute(pluginId, (context) => plugin.run!(context));
+  }
+
+  async runAction(pluginId: string, actionId: string) {
+    const plugin = this.registry.get(pluginId);
+    const action = (plugin.actions ?? []).find((entry) => entry.id === actionId);
+    if (!action) throw new UnknownPluginActionError(`Unknown plugin action: ${pluginId}/${actionId}`);
+    return this.execute(pluginId, (context) => action.run(context));
+  }
+
+  private async execute(pluginId: string, invoke: (context: PluginRunContext<Record<string, unknown>>) => Promise<PluginRunResult | void>) {
+    const plugin = this.registry.get(pluginId);
     if (this.running.has(pluginId)) throw new PluginAlreadyRunningError(`Plugin is already running: ${pluginId}`);
-    this.running.add(pluginId);
+    const controller = new AbortController();
+    this.running.set(pluginId, controller);
     const startedAt = new Date();
     let runId: string | undefined;
     let outcome:
@@ -73,7 +144,7 @@ export class PluginService {
         throw cause;
       }
       runId = run.id;
-      const result = await plugin.run({ settings, signal: new AbortController().signal });
+      const result = await invoke({ settings, signal: controller.signal });
       const finishedAt = new Date();
       const durationMs = Math.max(0, finishedAt.getTime() - startedAt.getTime());
       const summary = result?.summary ?? null;
@@ -107,11 +178,13 @@ export class PluginService {
   private async ensureConfiguration(pluginId: string) {
     const plugin = this.registry.get(pluginId);
     const [existing] = await this.db.select().from(pluginConfigurations).where(eq(pluginConfigurations.pluginId, pluginId)).limit(1);
-    if (existing) return existing;
+    if (existing) { this.configurations.set(pluginId, existing); return existing; }
     const settings = plugin.settingsSchema.parse({});
     const [created] = await this.db.insert(pluginConfigurations).values({ pluginId, settings }).onConflictDoNothing().returning();
-    if (created) return created;
-    return (await this.db.select().from(pluginConfigurations).where(eq(pluginConfigurations.pluginId, pluginId)).limit(1))[0]!;
+    if (created) { this.configurations.set(pluginId, created); return created; }
+    const [fallback] = await this.db.select().from(pluginConfigurations).where(eq(pluginConfigurations.pluginId, pluginId)).limit(1);
+    this.configurations.set(pluginId, fallback!);
+    return fallback!;
   }
 
   private async pruneHistory(pluginId: string) {

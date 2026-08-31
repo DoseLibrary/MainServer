@@ -4,12 +4,12 @@ import { stat } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { z } from 'zod';
+import { z, ZodError } from 'zod';
 import { DuplicateLibraryError, DuplicateUsernameError, UserInvariantError, UserNotFoundError, type AuthService, type PublicUser } from './auth-service.ts';
 import { nodeLibraryFilesystem, resolveLibraryRoot, resolveNativeLibraryRoot, SESSION_COOKIE, SESSION_TTL_MS, type LibraryFilesystem } from './security.ts';
 import type { ScanCoordinator } from './scanner.ts';
 import type { CatalogService } from './catalog-service.ts';
-import { PluginAlreadyRunningError, type PluginService } from './plugin-service.ts';
+import { PluginAlreadyRunningError, PluginNotRunnableError, UnknownPluginActionError, type PluginService } from './plugin-service.ts';
 import type { PluginScheduler } from './plugin-scheduler.ts';
 import { UnknownPluginError } from './plugins/registry.ts';
 import { ArtworkPathError, type ArtworkService } from './artwork-service.ts';
@@ -20,12 +20,34 @@ import { buildTranscodeArgs, contentTypeFor, decodePlaybackPlan, encodePlaybackP
 import { ImageVariantStore } from './images.ts';
 import { MatchItemNotFoundError, MatchUnsupportedKindError, TmdbMatchNotFoundError, type MetadataMatchService } from './metadata-match-service.ts';
 import type { LibraryWatcher } from './library-watcher.ts';
+import { userSettingsPatch, type UserSettingsService } from './user-settings-service.ts';
+import { UserCollectionNotFoundError, userCollectionInput, userCollectionOrder, userCollectionPatch, type UserCollectionsService } from './user-collections-service.ts';
+import { queueItemBody, queueOrder, type QueueService } from './queue-service.ts';
+import { watchDataDocument, type WatchDataService } from './watch-data-service.ts';
+import { HistorySourceError, type HistorySource } from './history-sources/types.ts';
+import { plexConfig } from './history-sources/plex.ts';
+import { traktConfig } from './history-sources/trakt.ts';
+import { tautulliConfig } from './history-sources/tautulli.ts';
 
 const credentials = z.object({ username: z.string().trim().min(1).max(64), password: z.string().min(10).max(256) });
 const loginCredentials = credentials.extend({ password: z.string().min(1).max(256) });
 const libraryInput = z.object({ name: z.string().trim().min(1).max(128), kind: z.enum(['movies', 'shows']), rootPath: z.string().min(1), enabled: z.boolean().optional() });
+const libraryKindInput = z.object({ kind: z.enum(['movies', 'shows']) });
 const idParams = z.object({ id: z.string().uuid() });
+const collectionItemParams = z.object({ id: z.string().uuid(), itemId: z.string().uuid() });
+const collectionItemBody = z.object({ mediaItemId: z.string().uuid() });
+const queueNextQuery = z.object({ after: z.string().uuid().optional() });
+const historySourceParams = z.object({ source: z.enum(['plex', 'trakt', 'tautulli']) });
+const historySourceConfig = { plex: plexConfig, trakt: traktConfig, tautulli: tautulliConfig } as const;
+export type HistorySources = Partial<Record<'plex' | 'trakt' | 'tautulli', HistorySource<unknown>>>;
 const homeQuery = z.object({ libraryId: z.string().uuid().optional() });
+const randomQuery = z.object({
+  kind: z.enum(['movie', 'series']).optional(),
+  genre: z.string().trim().min(1).max(120).optional(),
+  yearMin: z.coerce.number().int().min(1888).max(2200).optional(),
+  yearMax: z.coerce.number().int().min(1888).max(2200).optional(),
+  ratingMin: z.coerce.number().min(0).max(10).optional(),
+}).refine((value) => value.yearMin == null || value.yearMax == null || value.yearMin <= value.yearMax, { message: 'yearMin must not exceed yearMax' });
 const progressBody = z.object({ positionSeconds: z.number().int().min(0).max(86_400).optional(), watched: z.boolean().optional() }).refine((value) => value.positionSeconds != null || value.watched != null, { message: 'positionSeconds or watched is required' });
 const searchQuery = z.object({ libraryId: z.string().uuid().optional(), q: z.string().trim().min(1).max(128) });
 const categoryParams = z.object({ key: z.string().trim().min(1).max(120) });
@@ -58,6 +80,7 @@ const IMAGE_TYPES: Record<string, string> = { jpg: 'image/jpeg', jpeg: 'image/jp
 const userCreate = credentials.extend({ role: z.enum(['admin', 'member']).default('member') });
 const userUpdate = z.object({ role: z.enum(['admin', 'member']).optional(), disabled: z.boolean().optional(), password: z.string().min(10).max(256).optional() }).refine((value) => Object.keys(value).length > 0);
 const pluginIdParams = z.object({ id: z.string().min(1).max(64) });
+const pluginActionParams = pluginIdParams.extend({ actionId: z.string().min(1).max(64) });
 const pluginConfigBody = z.object({ enabled: z.boolean().optional(), schedule: z.string().trim().max(200).nullable().optional(), settings: z.record(z.string(), z.unknown()).optional() });
 const tmdbImagePath = z.string().regex(/^\/[A-Za-z0-9._/-]{1,255}$/);
 const artworkBody = z.object({ posterPath: tmdbImagePath.nullable().optional(), backdropPath: tmdbImagePath.nullable().optional() }).refine((value) => value.posterPath !== undefined || value.backdropPath !== undefined, { message: 'posterPath or backdropPath is required' });
@@ -74,12 +97,21 @@ async function requireUser(request: FastifyRequest, reply: FastifyReply, service
   return user;
 }
 
+/** Turns an ownership miss into a 404 so one user never learns another's collection exists. */
+async function withUserCollection<T>(reply: FastifyReply, run: () => Promise<T>) {
+  try { return await run(); }
+  catch (error) {
+    if (error instanceof UserCollectionNotFoundError) return reply.status(404).send({ error: 'Collection not found' });
+    throw error;
+  }
+}
+
 function requireAdmin(user: PublicUser, reply: FastifyReply) {
   if (user.role !== 'admin') { void reply.status(403).send({ error: 'Administrator access required' }); return false; }
   return true;
 }
 
-export async function registerApiRoutes(app: FastifyInstance, service: AuthService, production: boolean, filesystem: LibraryFilesystem = nodeLibraryFilesystem, scanner?: ScanCoordinator, catalog?: CatalogService, imagesDir = '/config/images', nativeLibraryPaths = false, plugins?: PluginService, pluginScheduler?: PluginScheduler, artwork?: ArtworkService, subtitleStore?: SubtitleStore, metadataMatch?: MetadataMatchService, libraryWatcher?: Pick<LibraryWatcher, 'synchronize'>, spriteStore?: PreviewSpriteStore) {
+export async function registerApiRoutes(app: FastifyInstance, service: AuthService, production: boolean, filesystem: LibraryFilesystem = nodeLibraryFilesystem, scanner?: ScanCoordinator, catalog?: CatalogService, imagesDir = '/config/images', nativeLibraryPaths = false, plugins?: PluginService, pluginScheduler?: PluginScheduler, artwork?: ArtworkService, subtitleStore?: SubtitleStore, metadataMatch?: MetadataMatchService, libraryWatcher?: Pick<LibraryWatcher, 'synchronize'>, spriteStore?: PreviewSpriteStore, settings?: UserSettingsService, userCollections?: UserCollectionsService, queue?: QueueService, watchData?: WatchDataService, historySources?: HistorySources) {
   const imageVariants = new ImageVariantStore(imagesDir);
   const synchronizeWatchers = async () => {
     try { await libraryWatcher?.synchronize(); }
@@ -102,6 +134,132 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
   });
   app.post('/api/v1/auth/logout', async (request, reply) => { await service.logout(request.cookies[SESSION_COOKIE]); reply.clearCookie(SESSION_COOKIE, { path: '/' }); return reply.status(204).send(); });
   app.get('/api/v1/auth/me', async (request, reply) => { const user = await requireUser(request, reply, service); if (user) return { user }; });
+  app.get('/api/v1/me/settings', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    if (!settings) return reply.status(503).send({ error: 'User settings unavailable' });
+    return { settings: await settings.get(user.id) };
+  });
+  app.put('/api/v1/me/settings', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    const parsed = userSettingsPatch.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'Invalid settings' });
+    if (!settings) return reply.status(503).send({ error: 'User settings unavailable' });
+    return { settings: await settings.update(user.id, parsed.data) };
+  });
+  app.get('/api/v1/me/collections', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    if (!userCollections) return reply.status(503).send({ error: 'User collections unavailable' });
+    return { collections: await userCollections.list(user.id) };
+  });
+  app.post('/api/v1/me/collections', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    const parsed = userCollectionInput.safeParse(request.body); if (!parsed.success) return reply.status(400).send({ error: 'Invalid collection' });
+    if (!userCollections) return reply.status(503).send({ error: 'User collections unavailable' });
+    return reply.status(201).send({ collection: await userCollections.create(user.id, parsed.data) });
+  });
+  app.get('/api/v1/me/collections/:id', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    const params = idParams.safeParse(request.params); if (!params.success) return reply.status(400).send({ error: 'Invalid collection id' });
+    if (!userCollections) return reply.status(503).send({ error: 'User collections unavailable' });
+    return withUserCollection(reply, async () => ({ collection: await userCollections.get(user.id, params.data.id) }));
+  });
+  app.patch('/api/v1/me/collections/:id', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    const params = idParams.safeParse(request.params); if (!params.success) return reply.status(400).send({ error: 'Invalid collection id' });
+    const parsed = userCollectionPatch.safeParse(request.body); if (!parsed.success) return reply.status(400).send({ error: 'Invalid collection' });
+    if (!userCollections) return reply.status(503).send({ error: 'User collections unavailable' });
+    return withUserCollection(reply, async () => ({ collection: await userCollections.update(user.id, params.data.id, parsed.data) }));
+  });
+  app.delete('/api/v1/me/collections/:id', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    const params = idParams.safeParse(request.params); if (!params.success) return reply.status(400).send({ error: 'Invalid collection id' });
+    if (!userCollections) return reply.status(503).send({ error: 'User collections unavailable' });
+    return withUserCollection(reply, async () => { await userCollections.remove(user.id, params.data.id); return reply.status(204).send(); });
+  });
+  app.post('/api/v1/me/collections/:id/items', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    const params = idParams.safeParse(request.params); if (!params.success) return reply.status(400).send({ error: 'Invalid collection id' });
+    const body = collectionItemBody.safeParse(request.body); if (!body.success) return reply.status(400).send({ error: 'Invalid item id' });
+    if (!userCollections) return reply.status(503).send({ error: 'User collections unavailable' });
+    return withUserCollection(reply, async () => ({ collection: await userCollections.addItem(user.id, params.data.id, body.data.mediaItemId) }));
+  });
+  app.delete('/api/v1/me/collections/:id/items/:itemId', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    const params = collectionItemParams.safeParse(request.params); if (!params.success) return reply.status(400).send({ error: 'Invalid item id' });
+    if (!userCollections) return reply.status(503).send({ error: 'User collections unavailable' });
+    return withUserCollection(reply, async () => ({ collection: await userCollections.removeItem(user.id, params.data.id, params.data.itemId) }));
+  });
+  app.put('/api/v1/me/collections/:id/items', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    const params = idParams.safeParse(request.params); if (!params.success) return reply.status(400).send({ error: 'Invalid collection id' });
+    const body = userCollectionOrder.safeParse(request.body); if (!body.success) return reply.status(400).send({ error: 'Invalid order' });
+    if (!userCollections) return reply.status(503).send({ error: 'User collections unavailable' });
+    return withUserCollection(reply, async () => ({ collection: await userCollections.reorder(user.id, params.data.id, body.data.mediaItemIds) }));
+  });
+  app.get('/api/v1/me/queue', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    if (!queue) return reply.status(503).send({ error: 'Queue unavailable' });
+    return { items: await queue.list(user.id) };
+  });
+  app.post('/api/v1/me/queue', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    const body = queueItemBody.safeParse(request.body); if (!body.success) return reply.status(400).send({ error: 'Invalid item id' });
+    if (!queue) return reply.status(503).send({ error: 'Queue unavailable' });
+    return { items: await queue.add(user.id, body.data.mediaItemId) };
+  });
+  app.delete('/api/v1/me/queue/:id', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    const params = idParams.safeParse(request.params); if (!params.success) return reply.status(400).send({ error: 'Invalid item id' });
+    if (!queue) return reply.status(503).send({ error: 'Queue unavailable' });
+    return { items: await queue.remove(user.id, params.data.id) };
+  });
+  app.delete('/api/v1/me/queue', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    if (!queue) return reply.status(503).send({ error: 'Queue unavailable' });
+    return { items: await queue.clear(user.id) };
+  });
+  app.put('/api/v1/me/queue', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    const body = queueOrder.safeParse(request.body); if (!body.success) return reply.status(400).send({ error: 'Invalid order' });
+    if (!queue) return reply.status(503).send({ error: 'Queue unavailable' });
+    return { items: await queue.reorder(user.id, body.data.mediaItemIds) };
+  });
+  app.get('/api/v1/me/queue/next', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    const parsed = queueNextQuery.safeParse(request.query); if (!parsed.success) return reply.status(400).send({ error: 'Invalid item id' });
+    if (!queue) return reply.status(503).send({ error: 'Queue unavailable' });
+    return { item: await queue.next(user.id, parsed.data.after) };
+  });
+  app.get('/api/v1/me/watch-data/export', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    if (!watchData) return reply.status(503).send({ error: 'Watch data unavailable' });
+    reply.header('Content-Disposition', 'attachment; filename="dose-watch-data.json"');
+    return watchData.exportFor(user.id);
+  });
+  app.post('/api/v1/me/watch-data/import', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    const parsed = watchDataDocument.safeParse(request.body); if (!parsed.success) return reply.status(400).send({ error: 'Invalid watch data document' });
+    if (!watchData) return reply.status(503).send({ error: 'Watch data unavailable' });
+    return { summary: await watchData.importDocument(user.id, parsed.data) };
+  });
+  app.post('/api/v1/me/watch-data/import/:source', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    const params = historySourceParams.safeParse(request.params); if (!params.success) return reply.status(400).send({ error: 'Unknown history source' });
+    const config = historySourceConfig[params.data.source].safeParse(request.body);
+    if (!config.success) return reply.status(400).send({ error: 'Invalid source configuration' });
+    const historySource = historySources?.[params.data.source];
+    if (!watchData || !historySource) return reply.status(503).send({ error: 'History import unavailable' });
+    try {
+      // The source is read in full before anything is written, so a mid-read failure
+      // leaves the caller's watch data untouched.
+      const { entries, errors } = await historySource.read(config.data as never);
+      const summary = await watchData.importProgress(user.id, entries);
+      return { summary: { matched: summary.matched, written: summary.written, skipped: summary.unmatched.length, unmatched: summary.unmatched, errors } };
+    } catch (error) {
+      if (error instanceof HistorySourceError) return reply.status(error.status).send({ error: error.message });
+      throw error;
+    }
+  });
   app.get('/api/v1/admin/tmdb/search', async (request, reply) => {
     const user = await requireUser(request, reply, service); if (!user || !requireAdmin(user, reply)) return;
     const parsed = tmdbSearchQuery.safeParse(request.query); if (!parsed.success) return reply.status(400).send({ error: 'Invalid TMDB search' });
@@ -149,6 +307,15 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
       throw error;
     }
   });
+  app.patch('/api/v1/libraries/:id/kind', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user || !requireAdmin(user, reply)) return;
+    const params = idParams.safeParse(request.params); const body = libraryKindInput.safeParse(request.body);
+    if (!params.success || !body.success) return reply.status(400).send({ error: 'Invalid library type' });
+    const library = await service.updateLibraryKind(params.data.id, body.data.kind);
+    if (!library) return reply.status(404).send({ error: 'Library not found' });
+    await synchronizeWatchers();
+    return { library };
+  });
   app.delete('/api/v1/libraries/:id', async (request, reply) => {
     const user = await requireUser(request, reply, service); if (!user || !requireAdmin(user, reply)) return;
     const parsed = idParams.safeParse(request.params); if (!parsed.success) return reply.status(400).send({ error: 'Invalid library id' });
@@ -182,6 +349,13 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
     const user = await requireUser(request, reply, service); if (!user) return;
     const parsed = homeQuery.safeParse(request.query); if (!parsed.success) return reply.status(400).send({ error: 'Invalid library id' });
     if (!catalog) return reply.status(503).send({ error: 'Catalog unavailable' }); return catalog.home(parsed.data.libraryId, user.id);
+  });
+  app.get('/api/v1/catalog/random', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    const parsed = randomQuery.safeParse(request.query); if (!parsed.success) return reply.status(400).send({ error: 'Invalid random picker filters' });
+    if (!catalog) return reply.status(503).send({ error: 'Catalog unavailable' });
+    const item = await catalog.randomItem(parsed.data); if (!item) return reply.status(404).send({ error: 'No titles match these filters' });
+    return { item };
   });
   app.get('/api/v1/catalog/items/:id', async (request, reply) => {
     const user = await requireUser(request, reply, service); if (!user) return;
@@ -245,7 +419,8 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
     const user = await requireUser(request, reply, service); if (!user) return;
     const parsed = idParams.safeParse(request.params); if (!parsed.success) return reply.status(400).send({ error: 'Invalid collection id' });
     if (!catalog) return reply.status(503).send({ error: 'Catalog unavailable' });
-    const collection = await catalog.collection(parsed.data.id); if (!collection) return reply.status(404).send({ error: 'Collection not found' });
+    const showGaps = settings ? (await settings.get(user.id)).showCollectionGaps : false;
+    const collection = await catalog.collection(parsed.data.id, showGaps); if (!collection) return reply.status(404).send({ error: 'Collection not found' });
     return { collection };
   });
   app.get('/api/v1/catalog/genres/:id', async (request, reply) => {
@@ -360,6 +535,12 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
     const sprite = await catalog.previewSprite(params.data.id); if (!sprite) return reply.status(404).send({ error: 'Preview sprite not found' });
     return { sprite: { src: `/api/v1/media/${encodeURIComponent(params.data.id)}/sprites/sheet`, columns: sprite.columns, rows: sprite.rows, interval: sprite.interval, tileWidth: sprite.tileWidth, tileHeight: sprite.tileHeight } };
   });
+  app.get('/api/v1/media/:id/intro', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    if (!catalog) return reply.status(503).send({ error: 'Catalog unavailable' });
+    const params = idParams.safeParse(request.params); if (!params.success) return reply.status(400).send({ error: 'Invalid media id' });
+    return { intro: await catalog.introMarker(params.data.id) };
+  });
   app.get('/api/v1/media/:id/sprites/sheet', async (request, reply) => {
     const user = await requireUser(request, reply, service); if (!user) return;
     const params = idParams.safeParse(request.params); if (!params.success) return reply.status(400).send({ error: 'Invalid item id' });
@@ -418,6 +599,13 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
     if (!plugins) return reply.status(503).send({ error: 'Plugins unavailable' });
     return { plugins: (await plugins.list()).map(describePlugin) };
   });
+  app.get('/api/v1/plugins/:id', async (request, reply) => {
+    const actor = await requireUser(request, reply, service); if (!actor || !requireAdmin(actor, reply)) return;
+    if (!plugins) return reply.status(503).send({ error: 'Plugins unavailable' });
+    const params = pluginIdParams.safeParse(request.params); if (!params.success) return reply.status(400).send({ error: 'Invalid plugin id' });
+    try { return { plugin: describePlugin(await plugins.get(params.data.id)) }; }
+    catch (error) { return pluginError(error, reply); }
+  });
   app.get('/api/v1/plugins/:id/runs', async (request, reply) => {
     const actor = await requireUser(request, reply, service); if (!actor || !requireAdmin(actor, reply)) return;
     if (!plugins) return reply.status(503).send({ error: 'Plugins unavailable' });
@@ -444,21 +632,36 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
     try { return { run: await plugins.run(params.data.id) }; }
     catch (error) { return pluginError(error, reply); }
   });
+  app.post('/api/v1/plugins/:id/actions/:actionId', async (request, reply) => {
+    const actor = await requireUser(request, reply, service); if (!actor || !requireAdmin(actor, reply)) return;
+    if (!plugins) return reply.status(503).send({ error: 'Plugins unavailable' });
+    const params = pluginActionParams.safeParse(request.params); if (!params.success) return reply.status(400).send({ error: 'Invalid plugin action' });
+    try { return { run: await plugins.runAction(params.data.id, params.data.actionId) }; }
+    catch (error) { return pluginError(error, reply); }
+  });
 }
 
-/** Shape a plugin definition + its stored configuration for the admin UI, deriving a
- * simple field descriptor list from the settings metadata and parsed defaults. */
+/** Shape a plugin definition + its stored configuration for the admin UI. Field
+ * descriptors are declared by the plugin; secrets are reported as set, never echoed. */
 function describePlugin(entry: { plugin: import('./plugins/types.ts').RegisteredPlugin; configuration: typeof import('./db/schema.ts').pluginConfigurations.$inferSelect }) {
   const defaults = entry.plugin.settingsSchema.parse({}) as Record<string, unknown>;
-  const fields = Object.entries(entry.plugin.settings ?? {}).map(([key, meta]) => {
-    const value = defaults[key];
-    const type = typeof value === 'boolean' ? 'boolean' : Array.isArray(value) ? 'list' : typeof value === 'number' ? 'number' : 'text';
-    return { key, label: meta.label, description: meta.description, secret: meta.secret ?? false, type, default: value };
-  });
+  const fields = entry.plugin.fields ?? [];
   const cfg = entry.configuration;
+  const secretKeys = fields.filter((field) => field.kind === 'password').map((field) => field.key);
+  const settings = { ...cfg.settings };
+  const secretsSet: string[] = [];
+  for (const key of secretKeys) {
+    const value = settings[key];
+    if (typeof value === 'string' && value.length > 0) secretsSet.push(key);
+    settings[key] = null;
+  }
   return {
     id: entry.plugin.id, name: entry.plugin.metadata.name, description: entry.plugin.metadata.description, version: entry.plugin.metadata.version,
-    fields, enabled: cfg.enabled, schedule: cfg.schedule, settings: cfg.settings,
+    fields, defaults, secretsSet,
+    actions: (entry.plugin.actions ?? []).map(({ id, label, description, confirm }) => ({ id, label, description, confirm })),
+    events: Object.keys(entry.plugin.events ?? {}),
+    runnable: Boolean(entry.plugin.run),
+    enabled: cfg.enabled, schedule: cfg.schedule, settings,
     nextRunAt: cfg.nextRunAt, lastRunAt: cfg.lastRunAt, lastRunStatus: cfg.lastRunStatus,
     lastRunDurationMs: cfg.lastRunDurationMs, lastRunSummary: cfg.lastRunSummary, lastRunError: cfg.lastRunError,
   };
@@ -466,7 +669,15 @@ function describePlugin(entry: { plugin: import('./plugins/types.ts').Registered
 
 function pluginError(error: unknown, reply: FastifyReply) {
   if (error instanceof UnknownPluginError) return reply.status(404).send({ error: 'Unknown plugin' });
+  if (error instanceof UnknownPluginActionError) return reply.status(404).send({ error: 'Unknown plugin action' });
+  if (error instanceof PluginNotRunnableError) return reply.status(400).send({ error: 'Plugin has no scheduled run' });
   if (error instanceof PluginAlreadyRunningError) return reply.status(409).send({ error: 'Plugin is already running' });
+  // Settings that fail the plugin schema are an operator mistake, not a server fault.
+  if (error instanceof ZodError) {
+    const errors: Record<string, string> = {};
+    for (const issue of error.issues) errors[issue.path.join('.') || '_'] = issue.message;
+    return reply.status(400).send({ error: 'Invalid plugin settings', errors });
+  }
   throw error;
 }
 

@@ -10,6 +10,10 @@ export interface ManagedUser extends Required<User> {
   updatedAt: string;
 }
 
+export interface UserSettings {
+  showCollectionGaps: boolean;
+}
+
 export interface Library {
   id: string;
   name: string;
@@ -48,7 +52,26 @@ export interface CatalogPerson { id: string; name: string; profileUrl?: string; 
 export interface CatalogGenreView { id: string; name: string; titles: CatalogItem[] }
 export interface CatalogCategorySummary { key: string; name: string; count: number }
 export interface CatalogCategoryView { key: string; name: string; titles: CatalogItem[] }
-export interface CatalogCollectionView { id: string; name: string; posterUrl?: string; titles: CatalogItem[] }
+export interface WatchDataMatch { tmdbId?: string; imdbId?: string; title: string; year?: number; kind: string }
+export interface WatchDataDocument {
+  version: 1;
+  exportedAt?: string;
+  progress: Array<{ match: WatchDataMatch; positionSeconds: number; watched: boolean; lastWatchedAt?: string }>;
+  watchlist: Array<{ match: WatchDataMatch }>;
+  collections: Array<{ name: string; overview?: string; items: WatchDataMatch[] }>;
+}
+export interface WatchDataImportSummary { matched: number; written: number; unmatched: WatchDataMatch[] }
+export type HistorySourceId = 'plex' | 'trakt' | 'tautulli';
+export type HistorySourceConfig =
+  | { baseUrl: string; token: string; sections?: string[] }
+  | { clientId: string; accessToken: string }
+  | { baseUrl: string; apiKey: string; userId?: string };
+export interface HistoryImportSummary extends WatchDataImportSummary { skipped: number; errors: string[] }
+export interface QueueItem extends CatalogItem { unavailable?: boolean }
+export interface UserCollectionSummary { id: string; name: string; overview?: string; itemCount: number }
+export interface UserCollectionView { id: string; name: string; overview?: string; items: CatalogItem[] }
+export interface CatalogCollectionGap { tmdbId: string; title: string; year?: number; releaseDate?: string; posterUrl?: string; inLibrary: false }
+export interface CatalogCollectionView { id: string; name: string; posterUrl?: string; titles: CatalogItem[]; missing?: CatalogCollectionGap[] }
 export interface ArtworkOption { path: string; previewUrl: string }
 export interface ArtworkOptions { posters: ArtworkOption[]; backdrops: ArtworkOption[] }
 export interface TmdbTitleCandidate { id: number; title: string; year?: number; overview?: string; posterPath?: string }
@@ -83,9 +106,11 @@ export interface CatalogItemDetails extends Omit<CatalogItem, 'genres' | 'collec
 export interface CatalogTrailer { site: string; key: string; name: string; type: string; official: boolean; preferred: boolean; localAvailable?: boolean }
 export interface CatalogSubtitle { id: string; language?: string; label: string; forced: boolean; url: string }
 export interface MediaSprite { src: string; columns: number; rows: number; interval: number; tileWidth: number; tileHeight: number }
+export interface IntroMarker { startSeconds: number; endSeconds: number }
 
 export interface CatalogSection { id: string; title: string; items: CatalogItem[]; layout?: 'poster' | 'card' }
 export interface CatalogHome { sections: CatalogSection[]; featured?: CatalogItem }
+export interface RandomItemFilters { kind?: 'movie' | 'series'; genre?: string; yearMin?: number; yearMax?: number; ratingMin?: number }
 export interface CatalogSearchItem { id: string; title: string; year?: number; posterUrl?: string; kind: string; meta?: string; badge?: string; genres?: string[] }
 export interface CatalogSearch { query: string; groups: Array<{ id: string; label: string; items: CatalogSearchItem[] }> }
 export interface ClientCapabilities { containers: string[]; videoCodecs: string[]; audioCodecs: string[]; maxHeight?: number; maxBitrate?: number }
@@ -102,10 +127,23 @@ export interface LibraryScan {
 }
 
 export type PluginRunStatus = 'running' | 'succeeded' | 'failed';
-export interface PluginField { key: string; label: string; description?: string; secret: boolean; type: 'boolean' | 'number' | 'text' | 'list'; default: unknown }
+/** Mirrors PluginFieldDescriptor on the server; the plugin declares it, the admin form renders it. */
+export type PluginField =
+  | { kind: 'text' | 'password' | 'path'; key: string; label: string; description?: string; placeholder?: string; required?: boolean; group?: string }
+  | { kind: 'number'; key: string; label: string; description?: string; min?: number; max?: number; step?: number; required?: boolean; group?: string }
+  | { kind: 'boolean'; key: string; label: string; description?: string; group?: string }
+  | { kind: 'select' | 'multiselect'; key: string; label: string; description?: string; options: { value: string; label: string }[]; group?: string }
+  | { kind: 'list'; key: string; label: string; description?: string; placeholder?: string; itemLabel?: string; group?: string };
+export interface PluginAction { id: string; label: string; description?: string; confirm?: string }
 export interface PluginSummary {
   id: string; name: string; description: string; version: string;
   fields: PluginField[];
+  defaults: Record<string, unknown>;
+  /** Password fields that already hold a stored value; the value itself is never sent. */
+  secretsSet: string[];
+  actions: PluginAction[];
+  events: string[];
+  runnable: boolean;
   enabled: boolean; schedule: string | null; settings: Record<string, unknown>;
   nextRunAt: string | null; lastRunAt: string | null; lastRunStatus: PluginRunStatus | null;
   lastRunDurationMs: number | null; lastRunSummary: string | null; lastRunError: string | null;
@@ -116,6 +154,8 @@ export class ApiError extends Error {
   constructor(
     message: string,
     public readonly status: number,
+    /** Per-field messages when the server rejects a payload field by field. */
+    public readonly fieldErrors?: Record<string, string>,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -134,13 +174,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     let message = `Request failed (${response.status})`;
+    let fieldErrors: Record<string, string> | undefined;
     try {
-      const body = await response.json() as { message?: string; error?: string };
+      const body = await response.json() as { message?: string; error?: string; errors?: Record<string, string> };
       message = body.message ?? body.error ?? message;
+      fieldErrors = body.errors;
     } catch {
       // The status remains useful when the server returns an empty/non-JSON error.
     }
-    throw new ApiError(message, response.status);
+    throw new ApiError(message, response.status, fieldErrors);
   }
 
   if (response.status === 204) return undefined as T;
@@ -150,6 +192,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   trailerUrl: (id: string) => `/api/v1/media/${encodeURIComponent(id)}/trailer`,
   mediaSprites: (id: string) => request<{ sprite: MediaSprite }>(`/api/v1/media/${encodeURIComponent(id)}/sprites`),
+  mediaIntro: (id: string) => request<{ intro: IntroMarker | null }>(`/api/v1/media/${encodeURIComponent(id)}/intro`),
   health: () => request<HealthStatus>('/api/v1/health'),
   setupStatus: () => request<{ setupRequired: boolean }>('/api/v1/setup/status'),
   setup: (credentials: { username: string; password: string }) =>
@@ -158,6 +201,8 @@ export const api = {
     request<{ user: User }>('/api/v1/auth/login', { method: 'POST', body: JSON.stringify(credentials) }),
   logout: () => request<void>('/api/v1/auth/logout', { method: 'POST' }),
   me: () => request<{ user: User }>('/api/v1/auth/me'),
+  getSettings: () => request<{ settings: UserSettings }>('/api/v1/me/settings'),
+  updateSettings: (change: Partial<UserSettings>) => request<{ settings: UserSettings }>('/api/v1/me/settings', { method: 'PUT', body: JSON.stringify(change) }),
   libraries: () => request<{ libraries: Library[] }>('/api/v1/libraries'),
   createLibrary: (library: { name: string; kind: 'movies' | 'shows'; rootPath: string }) =>
     request<{ library: Library }>('/api/v1/libraries', { method: 'POST', body: JSON.stringify(library) }),
@@ -177,6 +222,39 @@ export const api = {
   },
   deleteItem: (id: string) => request<void>(`/api/v1/admin/items/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   catalogHome: (libraryId?: string) => request<CatalogHome>(`/api/v1/catalog/home${libraryId ? `?libraryId=${encodeURIComponent(libraryId)}` : ''}`),
+  randomItem: (filters: RandomItemFilters = {}) => {
+    const query = new URLSearchParams();
+    if (filters.kind) query.set('kind', filters.kind);
+    if (filters.genre) query.set('genre', filters.genre);
+    if (filters.yearMin != null) query.set('yearMin', String(filters.yearMin));
+    if (filters.yearMax != null) query.set('yearMax', String(filters.yearMax));
+    if (filters.ratingMin != null) query.set('ratingMin', String(filters.ratingMin));
+    const suffix = query.toString();
+    return request<{ item: CatalogItem & { providerRating?: number } }>(`/api/v1/catalog/random${suffix ? `?${suffix}` : ''}`);
+  },
+  exportWatchData: () => request<WatchDataDocument>('/api/v1/me/watch-data/export'),
+  importWatchData: (document: WatchDataDocument) => request<{ summary: WatchDataImportSummary }>('/api/v1/me/watch-data/import', { method: 'POST', body: JSON.stringify(document) }),
+  importHistory: (source: HistorySourceId, config: HistorySourceConfig) =>
+    request<{ summary: HistoryImportSummary }>(`/api/v1/me/watch-data/import/${source}`, { method: 'POST', body: JSON.stringify(config) }),
+  queue: () => request<{ items: QueueItem[] }>('/api/v1/me/queue'),
+  addToQueue: (mediaItemId: string) => request<{ items: QueueItem[] }>('/api/v1/me/queue', { method: 'POST', body: JSON.stringify({ mediaItemId }) }),
+  removeFromQueue: (mediaItemId: string) => request<{ items: QueueItem[] }>(`/api/v1/me/queue/${encodeURIComponent(mediaItemId)}`, { method: 'DELETE' }),
+  clearQueue: () => request<{ items: QueueItem[] }>('/api/v1/me/queue', { method: 'DELETE' }),
+  reorderQueue: (mediaItemIds: string[]) => request<{ items: QueueItem[] }>('/api/v1/me/queue', { method: 'PUT', body: JSON.stringify({ mediaItemIds }) }),
+  nextInQueue: (after?: string) => request<{ item: CatalogItem | null }>(`/api/v1/me/queue/next${after ? `?after=${encodeURIComponent(after)}` : ''}`),
+  userCollections: () => request<{ collections: UserCollectionSummary[] }>('/api/v1/me/collections'),
+  userCollection: (id: string) => request<{ collection: UserCollectionView }>(`/api/v1/me/collections/${encodeURIComponent(id)}`),
+  createUserCollection: (collection: { name: string; overview?: string }) =>
+    request<{ collection: UserCollectionSummary }>('/api/v1/me/collections', { method: 'POST', body: JSON.stringify(collection) }),
+  updateUserCollection: (id: string, patch: { name?: string; overview?: string | null }) =>
+    request<{ collection: UserCollectionSummary }>(`/api/v1/me/collections/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  deleteUserCollection: (id: string) => request<void>(`/api/v1/me/collections/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  addToUserCollection: (id: string, mediaItemId: string) =>
+    request<{ collection: UserCollectionView }>(`/api/v1/me/collections/${encodeURIComponent(id)}/items`, { method: 'POST', body: JSON.stringify({ mediaItemId }) }),
+  removeFromUserCollection: (id: string, mediaItemId: string) =>
+    request<{ collection: UserCollectionView }>(`/api/v1/me/collections/${encodeURIComponent(id)}/items/${encodeURIComponent(mediaItemId)}`, { method: 'DELETE' }),
+  reorderUserCollection: (id: string, mediaItemIds: string[]) =>
+    request<{ collection: UserCollectionView }>(`/api/v1/me/collections/${encodeURIComponent(id)}/items`, { method: 'PUT', body: JSON.stringify({ mediaItemIds }) }),
   catalogItem: (id: string) => request<{ item: CatalogItemDetails }>(`/api/v1/catalog/items/${encodeURIComponent(id)}`),
   catalogPerson: (id: string) => request<{ person: CatalogPerson }>(`/api/v1/catalog/people/${encodeURIComponent(id)}`),
   catalogGenre: (id: string) => request<{ genre: CatalogGenreView }>(`/api/v1/catalog/genres/${encodeURIComponent(id)}`),
@@ -201,6 +279,9 @@ export const api = {
     request<{ user: ManagedUser }>(`/api/v1/users/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(change) }),
   deleteUser: (id: string) => request<void>(`/api/v1/users/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   plugins: () => request<{ plugins: PluginSummary[] }>('/api/v1/plugins'),
+  plugin: (id: string) => request<{ plugin: PluginSummary }>(`/api/v1/plugins/${encodeURIComponent(id)}`),
+  runPluginAction: (id: string, actionId: string) =>
+    request<{ run: { id: string; status: PluginRunStatus; durationMs: number; summary?: string | null; error?: string } }>(`/api/v1/plugins/${encodeURIComponent(id)}/actions/${encodeURIComponent(actionId)}`, { method: 'POST' }),
   pluginRuns: (id: string) => request<{ runs: PluginRun[] }>(`/api/v1/plugins/${encodeURIComponent(id)}/runs`),
   configurePlugin: (id: string, change: { enabled?: boolean; schedule?: string | null; settings?: Record<string, unknown> }) =>
     request<{ plugin: PluginSummary }>(`/api/v1/plugins/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(change) }),

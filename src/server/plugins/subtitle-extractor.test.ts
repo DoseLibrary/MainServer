@@ -39,7 +39,7 @@ describe('subtitle extractor plugin', () => {
 
   it('extracts only text subtitle streams and records them', async () => {
     const plugin = createSubtitleExtractorPlugin(database, { probe, extract } as unknown as SubtitleTools, store);
-    const result = await plugin.run({ settings: { languages: [], includeForced: true }, signal: idle });
+    const result = await plugin.run!({ settings: { languages: [], includeForced: true }, signal: idle });
 
     const absolute = join('/media', 'One.mkv');
     expect(probe).toHaveBeenCalledWith(absolute);
@@ -53,7 +53,7 @@ describe('subtitle extractor plugin', () => {
 
   it('honours the language filter', async () => {
     const plugin = createSubtitleExtractorPlugin(database, { probe, extract } as unknown as SubtitleTools, store);
-    await plugin.run({ settings: { languages: ['swe'], includeForced: true }, signal: idle });
+    await plugin.run!({ settings: { languages: ['swe'], includeForced: true }, signal: idle });
     expect(extract).not.toHaveBeenCalled();
     const { rows } = await client.query(`select 1 from media_subtitles where media_file_id = $1`, [FILE]);
     expect(rows).toHaveLength(0);

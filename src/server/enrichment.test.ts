@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EnrichmentService } from './enrichment.ts';
 import type { Database } from './db/client.ts';
 import type { ImageStore } from './images.ts';
+import { PluginEventBus } from './plugins/events.ts';
 import type { TmdbClient, TmdbMetadata } from './tmdb.ts';
 
 const LIBRARY = '10000000-0000-4000-8000-000000000001';
@@ -65,6 +66,23 @@ describe('EnrichmentService', () => {
     expect(cached).toEqual(expect.arrayContaining(['/p.jpg', '/b.jpg', '/c.jpg', '/a.jpg']));
   });
 
+  it('emits an enrichment event once the metadata transaction has committed', async () => {
+    const seen: Array<{ mediaItemId: string; kind: string }> = [];
+    const bus = new PluginEventBus({ log: { error: vi.fn(), warn: vi.fn() } });
+    bus.subscribe('spy', 'media.item.enriched', async (_event, payload) => {
+      // A handler reading the item must see the committed row, not the pre-write state.
+      const row = (await client.query<{ tagline: string }>(`select tagline from media_items where id = $1`, [payload.mediaItemId])).rows[0];
+      expect(row?.tagline).toBe('Tagline');
+      seen.push({ mediaItemId: payload.mediaItemId, kind: payload.kind });
+    });
+    const withEvents = new EnrichmentService(database, { find: vi.fn(async () => metadata) } as unknown as TmdbClient, { cache: vi.fn(async () => undefined) } as unknown as ImageStore, bus);
+
+    await withEvents.enrich(LIBRARY, MOVIE, 'movie', 'One', 2020);
+    await bus.drain();
+
+    expect(seen).toEqual([{ mediaItemId: MOVIE, kind: 'movie' }]);
+  });
+
   it('is idempotent across repeated enrichment', async () => {
     await service.enrich(LIBRARY, MOVIE, 'movie', 'One', 2020);
     await service.enrich(LIBRARY, MOVIE, 'movie', 'One', 2020);
@@ -75,6 +93,38 @@ describe('EnrichmentService', () => {
     expect(await count('cast_credits', 'media_item_id = $1', [MOVIE])).toBe(2);
     expect(await count('collection_members', 'media_item_id = $1', [MOVIE])).toBe(1);
     expect(await count('recommendation_edges', 'source_media_item_id = $1', [MOVIE])).toBe(1);
+  });
+
+  it('records the full TMDB collection membership and prunes members the provider dropped', async () => {
+    const images = { cache: vi.fn(async (path?: string | null) => { cached.push(path ?? undefined); }) } as unknown as ImageStore;
+    const parts = [
+      { id: 100, title: 'One', releaseDate: '2020-05-01', year: 2020, posterPath: '/p.jpg' },
+      { id: 101, title: 'Two', releaseDate: '2022-05-01', year: 2022, posterPath: '/two.jpg' },
+      { id: 102, title: 'Three', releaseDate: '2024-05-01', year: 2024 },
+    ];
+    const getCollection = vi.fn(async () => ({ id: 7, name: 'Saga', parts }));
+    const withCollection = new EnrichmentService(database, { find: vi.fn(async () => metadata), getCollection } as unknown as TmdbClient, images);
+
+    await withCollection.enrich(LIBRARY, MOVIE, 'movie', 'One', 2020);
+    expect(getCollection).toHaveBeenCalledWith(7);
+    const rows = (await client.query<{ tmdb_id: string; title: string; year: number | null; release_date: string | null; poster_path: string | null }>(
+      `select tmdb_id, title, year, to_char(release_date, 'YYYY-MM-DD') as release_date, poster_path from collection_expected_members order by release_date`)).rows;
+    expect(rows.map((row) => row.tmdb_id)).toEqual(['100', '101', '102']);
+    expect(rows[1]).toMatchObject({ title: 'Two', year: 2022, release_date: '2022-05-01', poster_path: '/two.jpg' });
+    expect(cached).toEqual(expect.arrayContaining(['/two.jpg']));
+
+    // A later pass with a shorter membership replaces rather than accumulates.
+    const shrunk = new EnrichmentService(database, { find: vi.fn(async () => metadata), getCollection: vi.fn(async () => ({ id: 7, name: 'Saga', parts: parts.slice(0, 2) })) } as unknown as TmdbClient, images);
+    await shrunk.enrich(LIBRARY, MOVIE, 'movie', 'One', 2020);
+    const after = (await client.query<{ tmdb_id: string }>(`select tmdb_id from collection_expected_members order by tmdb_id`)).rows;
+    expect(after.map((row) => row.tmdb_id)).toEqual(['100', '101']);
+  });
+
+  it('keeps enriching when the collection detail fetch fails', async () => {
+    const failing = new EnrichmentService(database, { find: vi.fn(async () => metadata), getCollection: vi.fn(async () => { throw new Error('offline'); }) } as unknown as TmdbClient, { cache: vi.fn(async () => undefined) } as unknown as ImageStore);
+    await expect(failing.enrich(LIBRARY, MOVIE, 'movie', 'One', 2020)).resolves.toBe(true);
+    expect(await count('collection_members', 'media_item_id = $1', [MOVIE])).toBe(1);
+    expect(await count('collection_expected_members', 'true', [])).toBe(0);
   });
 
   it('explicit matching marks the provider and clears stale metadata and relationships', async () => {

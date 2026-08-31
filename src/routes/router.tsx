@@ -1,4 +1,4 @@
-import { createBrowserRouter, type RouteObject } from 'react-router-dom';
+import { Navigate, createBrowserRouter, type RouteObject } from 'react-router-dom';
 import { Home } from '@/routes/Home';
 import { CatalogDetails } from '@/routes/CatalogDetails';
 import { Watch } from '@/routes/Watch';
@@ -9,6 +9,14 @@ import { CategoriesPage } from '@/routes/CategoriesPage';
 import { CategoryPage } from '@/routes/CategoryPage';
 import { CollectionPage } from '@/routes/CollectionPage';
 import { PluginsPage } from '@/routes/PluginsPage';
+import { PluginDetailPage } from '@/routes/PluginDetailPage';
+import { AdminRoute } from '@/routes/AdminRoute';
+import { AdminHome } from '@/routes/AdminHome';
+import { LibrariesAdminPage } from '@/routes/LibrariesAdminPage';
+import { FamilyAdminPage } from '@/routes/FamilyAdminPage';
+import { MediaAdminPage } from '@/routes/MediaAdminPage';
+import { UserCollections } from '@/routes/UserCollections';
+import { Queue } from '@/routes/Queue';
 import { TrailerWatch } from '@/routes/TrailerWatch';
 
 const routes: RouteObject[] = [
@@ -22,7 +30,16 @@ const routes: RouteObject[] = [
   { path: '/category/:key', element: <CategoryPage /> },
   { path: '/collection/:id', element: <CollectionPage /> },
   { path: '/profile', element: <Profile /> },
-  { path: '/profile/plugins', element: <PluginsPage /> },
+  // Plugin administration moved under /admin; the old path stays as a redirect.
+  { path: '/profile/plugins', element: <Navigate to="/admin/plugins" replace /> },
+  { path: '/admin', element: <AdminRoute><AdminHome /></AdminRoute> },
+  { path: '/admin/libraries', element: <AdminRoute><LibrariesAdminPage /></AdminRoute> },
+  { path: '/admin/users', element: <AdminRoute><FamilyAdminPage /></AdminRoute> },
+  { path: '/admin/media', element: <AdminRoute><MediaAdminPage /></AdminRoute> },
+  { path: '/admin/plugins', element: <AdminRoute><PluginsPage /></AdminRoute> },
+  { path: '/admin/plugins/:id', element: <AdminRoute><PluginDetailPage /></AdminRoute> },
+  { path: '/profile/collections', element: <UserCollections /> },
+  { path: '/profile/queue', element: <Queue /> },
 ];
 
 // The component gallery is a dev-only tool. Gating the route registration and

@@ -37,7 +37,7 @@ describe('preview-sprites plugin', () => {
 
   afterEach(async () => { await client.close(); });
 
-  const run = (settings: Record<string, unknown>) => plugin.run({ settings: settings as never, signal: new AbortController().signal });
+  const run = (settings: Record<string, unknown>) => plugin.run!({ settings: settings as never, signal: new AbortController().signal });
 
   it('generates a sprite sheet and persists the descriptor, skipping too-short files', async () => {
     await run({ interval: 10, columns: 5, tileWidth: 160, tileHeight: 90, maxTiles: 200 });

@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readdir, stat } from 'node:fs/promises';
 import { join, relative, sep } from 'node:path';
-import { and, desc, eq, inArray, isNull, lt, ne, or, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, lt, ne, or } from 'drizzle-orm';
 import type { Database } from './db/client.ts';
 import { libraries, mediaFiles, mediaItems, mediaTechnicalProfiles, scanRuns } from './db/schema.ts';
 import { deriveTechnicalProfile, type Probe } from './media-profile.ts';
@@ -13,6 +13,7 @@ import { TmdbClient } from './tmdb.ts';
 import { ImageStore } from './images.ts';
 import { EnrichmentService, ENRICHMENT_VERSION } from './enrichment.ts';
 import { CatalogService } from './catalog-service.ts';
+import type { PluginEventBus } from './plugins/events.ts';
 
 const execFileAsync = promisify(execFile);
 type Scan = typeof scanRuns.$inferSelect;
@@ -21,10 +22,13 @@ export const missingFilePredicate = (libraryId: string, scanId: string) => and(e
 export class ScanCoordinator {
   private readonly active = new Map<string, Promise<void>>();
   private readonly probeLimit: Semaphore; private readonly tmdb?: TmdbClient; private readonly images: ImageStore; private readonly enrichment?: EnrichmentService;
-  constructor(private readonly database: Database, private readonly config: AppConfig) {
+  // One catalog instance so availability changes carry the event bus.
+  private readonly catalog: CatalogService;
+  constructor(private readonly database: Database, private readonly config: AppConfig, private readonly events?: PluginEventBus) {
     this.probeLimit = new Semaphore(config.FFPROBE_CONCURRENCY ?? 3);
     this.images = new ImageStore(join(config.CONFIG_PATH, 'images'));
-    if (config.TMDB_API_TOKEN) { this.tmdb = new TmdbClient(config.TMDB_API_TOKEN, config.TMDB_CONCURRENCY ?? 4, config.TMDB_REQUESTS_PER_SECOND ?? 8, config.TMDB_TIMEOUT_MS ?? 8000); this.enrichment = new EnrichmentService(database, this.tmdb, this.images); }
+    this.catalog = new CatalogService(database, undefined, events);
+    if (config.TMDB_API_TOKEN) { this.tmdb = new TmdbClient(config.TMDB_API_TOKEN, config.TMDB_CONCURRENCY ?? 4, config.TMDB_REQUESTS_PER_SECOND ?? 8, config.TMDB_TIMEOUT_MS ?? 8000); this.enrichment = new EnrichmentService(database, this.tmdb, this.images, events); }
   }
   async start(libraryId: string): Promise<{ scan: Scan; coalesced: boolean } | null> {
     const library = await this.database.query.libraries.findFirst({ where: eq(libraries.id, libraryId) }); if (!library) return null;
@@ -67,6 +71,7 @@ export class ScanCoordinator {
   }
   private async run(scanId: string, library: typeof libraries.$inferSelect) {
     await this.database.update(scanRuns).set({ status: 'running', startedAt: new Date(), heartbeatAt: new Date() }).where(eq(scanRuns.id, scanId));
+    this.events?.emit('library.scan.started', { libraryId: library.id, scanId });
     try {
       const paths = await this.discover(library.rootPath, scanId);
       await this.database.update(scanRuns).set({ discoveredFiles: paths.length, heartbeatAt: new Date() }).where(eq(scanRuns.id, scanId));
@@ -81,17 +86,24 @@ export class ScanCoordinator {
       await Promise.all(Array.from({ length: Math.min(this.config.SCAN_INGEST_CONCURRENCY ?? 8, paths.length) }, worker));
       await this.cacheLibraryArtwork(library.id);
       await this.database.update(mediaFiles).set({ available: false, updatedAt: new Date() }).where(missingFilePredicate(library.id, scanId));
-      const leaves = await this.database.select({ id: mediaItems.id, availableFile: sql<boolean>`exists (select 1 from ${mediaFiles} f where f.media_item_id = ${mediaItems.id} and f.available = true)` })
+      const leaves = await this.database.select({ id: mediaItems.id })
         .from(mediaItems).where(and(eq(mediaItems.libraryId, library.id), inArray(mediaItems.kind, ['movie', 'episode'])));
-      const catalog = new CatalogService(this.database);
+      // Resolve availability with a real join. The previous correlated raw-SQL
+      // projection was interpreted incorrectly by PGlite and returned false even
+      // for files that had just been marked available by this scan.
+      const availableLeaves = new Set((await this.database.selectDistinct({ id: mediaItems.id })
+        .from(mediaItems).innerJoin(mediaFiles, and(eq(mediaFiles.mediaItemId, mediaItems.id), eq(mediaFiles.available, true)))
+        .where(and(eq(mediaItems.libraryId, library.id), inArray(mediaItems.kind, ['movie', 'episode'])))).map((row) => row.id));
       for (const leaf of leaves) {
-        if (leaf.availableFile) await catalog.unarchiveItem(leaf.id);
-        else await catalog.archiveItem(leaf.id);
+        if (availableLeaves.has(leaf.id)) await this.catalog.unarchiveItem(leaf.id);
+        else await this.catalog.archiveItem(leaf.id);
       }
       await this.database.transaction(async (tx) => {
         await tx.update(libraries).set({ lastScannedAt: new Date(), updatedAt: new Date() }).where(eq(libraries.id, library.id));
         await tx.update(scanRuns).set({ status: 'completed', processedFiles: processed, failedFiles: failed, heartbeatAt: new Date(), finishedAt: new Date() }).where(eq(scanRuns.id, scanId));
       });
+      // After commit: a handler that queries the scan or its files sees the final state.
+      this.events?.emit('library.scan.completed', { libraryId: library.id, scanId, processed, failed });
     } catch (error) { await this.database.update(scanRuns).set({ status: 'failed', error: error instanceof Error ? error.message.slice(0, 1000) : 'Scan failed', finishedAt: new Date() }).where(eq(scanRuns.id, scanId)); }
   }
   private async cacheLibraryArtwork(libraryId: string) {
@@ -125,7 +137,7 @@ export class ScanCoordinator {
     const unchanged = existing && existing.sizeBytes === fileStat.size && existing.modifiedAt.getTime() === fileStat.mtime.getTime();
     if (existing && unchanged) {
       await this.database.update(mediaFiles).set({ available: true, lastSeenScanId: scanId, updatedAt: new Date() }).where(eq(mediaFiles.id, existing.id));
-      await new CatalogService(this.database).unarchiveItem(existing.mediaItemId);
+      await this.catalog.unarchiveItem(existing.mediaItemId);
       if (!this.tmdb) return;
       probe = existing.probe as Record<string, unknown>; durationSeconds = existing.durationSeconds ?? undefined;
     }
@@ -138,6 +150,7 @@ export class ScanCoordinator {
     }
     const item = await this.upsertItem(library.id, itemKey, { kind: parsed.type === 'movie' ? 'movie' : 'episode', title: parsed.title, sortTitle: parsed.title.toLowerCase(), year: parsed.type === 'movie' ? parsed.year : undefined, seasonNumber: parsed.type === 'episode' ? parsed.season : undefined, episodeNumber: parsed.type === 'episode' ? parsed.episode : undefined, parentId });
     const [mediaFile] = await this.database.insert(mediaFiles).values({ mediaItemId: item.id, libraryId: library.id, relativePath, sizeBytes: fileStat.size, modifiedAt: fileStat.mtime, durationSeconds, probe, available: true, lastSeenScanId: scanId }).onConflictDoUpdate({ target: [mediaFiles.libraryId, mediaFiles.relativePath], set: { mediaItemId: item.id, sizeBytes: fileStat.size, modifiedAt: fileStat.mtime, durationSeconds, probe, available: true, lastSeenScanId: scanId, updatedAt: new Date() } }).returning({ id: mediaFiles.id });
+    if (mediaFile) this.events?.emit('media.file.ingested', { libraryId: library.id, mediaItemId: item.id, mediaFileId: mediaFile.id, relativePath, created: !existing });
     if (mediaFile) { const profile = deriveTechnicalProfile(probe as Probe); await this.database.insert(mediaTechnicalProfiles).values({ mediaFileId: mediaFile.id, ...profile }).onConflictDoUpdate({ target: [mediaTechnicalProfiles.mediaFileId], set: { ...profile, updatedAt: new Date() } }); }
     if (this.enrichment) {
       // Enrichment failures are isolated per item and never abort unrelated files.

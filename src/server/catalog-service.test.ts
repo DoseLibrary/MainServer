@@ -8,6 +8,8 @@ import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { CatalogService, managedTrailerPath } from './catalog-service.ts';
 import type { Database } from './db/client.ts';
+import { PluginEventBus } from './plugins/events.ts';
+import { vi } from 'vitest';
 
 const LIB = '10000000-0000-4000-8000-000000000001';
 const MOVIE = '20000000-0000-4000-8000-000000000001';
@@ -63,6 +65,18 @@ describe('CatalogService enrichment serialization', () => {
     const { groups } = await service.search(LIB, 'One');
     const item = groups.flatMap((group) => group.items).find((entry) => entry.id === MOVIE);
     expect(item).toMatchObject({ badge: '4K HDR', genres: ['Action'] });
+  });
+
+  it('randomly selects only visible top-level titles matching every filter', async () => {
+    const SERIES = '20000000-0000-4000-8000-000000000010';
+    const ARCHIVED = '20000000-0000-4000-8000-000000000011';
+    await client.query(`insert into media_items (id, library_id, kind, natural_key, title, sort_title, year, provider_rating) values ($1, $2, 'series', 'series:ten:2022', 'Ten', 'ten', 2022, 8.6)`, [SERIES, LIB]);
+    await client.query(`insert into media_items (id, library_id, kind, natural_key, title, sort_title, year, provider_rating, available, archived_at) values ($1, $2, 'movie', 'movie:hidden:2022', 'Hidden', 'hidden', 2022, 9.9, false, now())`, [ARCHIVED, LIB]);
+    await client.query(`insert into media_item_genres (media_item_id, genre_id, position) values ($1, $2, 0)`, [SERIES, GENRE]);
+
+    await expect(service.randomItem({ kind: 'series', genre: 'action', yearMin: 2020, yearMax: 2023, ratingMin: 8 })).resolves.toMatchObject({ id: SERIES, title: 'Ten', kind: 'series' });
+    await expect(service.randomItem({ kind: 'movie', yearMin: 2022, ratingMin: 9 })).resolves.toBeNull();
+    await expect(service.randomItem()).resolves.toEqual(expect.objectContaining({ id: expect.stringMatching(/.+/) }));
   });
 
   it('includes matching people in search results', async () => {
@@ -257,6 +271,22 @@ describe('CatalogService enrichment serialization', () => {
     expect(showsWatchlist?.items.map((entry) => entry.id)).toContain(SERIES);
   });
 
+  it('returns collection gaps only when the caller opted in', async () => {
+    await client.query(`update media_items set provider_ids = '{"tmdb":"100"}' where id = $1`, [MOVIE]);
+    await client.query(`insert into collection_expected_members (collection_id, tmdb_id, title, year, release_date, poster_path) values
+      ($1, '100', 'One', 2020, '2020-05-01', '/p.jpg'),
+      ($1, '101', 'Two', 2022, '2022-05-01', '/two.jpg'),
+      ($1, '102', 'Three', 2024, '2024-05-01', null)`, [COLLECTION]);
+
+    const withoutGaps = await service.collection(COLLECTION) as Record<string, unknown>;
+    expect(withoutGaps.missing).toBeUndefined();
+
+    const withGaps = await service.collection(COLLECTION, true) as { missing: Array<{ tmdbId: string; title: string; year?: number; posterUrl?: string; inLibrary: false }> };
+    expect(withGaps.missing.map((gap) => gap.tmdbId)).toEqual(['101', '102']);
+    expect(withGaps.missing[0]).toMatchObject({ title: 'Two', year: 2022, posterUrl: '/api/v1/images/two.jpg', inLibrary: false });
+    expect(withGaps.missing[1]?.posterUrl).toBeUndefined();
+  });
+
   it('returns a collection with its available parts', async () => {
     const collection = await service.collection(COLLECTION) as { id: string; name: string; posterUrl?: string; titles: Array<{ id: string; badge?: string }> };
     expect(collection).toMatchObject({ id: COLLECTION, name: 'Saga', posterUrl: '/api/v1/images/c.jpg' });
@@ -311,6 +341,60 @@ describe('CatalogService enrichment serialization', () => {
       await client.query(`update media_trailers set local_path=$1 where media_item_id=$2`, [outside, MOVIE]); expect(await trailerService.localTrailerSource(MOVIE)).toBeNull();
       await client.query(`update media_trailers set local_path=$1 where media_item_id=$2`, [valid, MOVIE]); expect(await trailerService.localTrailerSource(MOVIE)).toEqual({ localPath: resolve(valid) });
     } finally { await rm(root, { recursive: true, force: true }); await rm(`${root}-outside.mp4`, { force: true }); }
+  });
+});
+
+describe('CatalogService plugin events', () => {
+  let client: PGlite;
+  let database: Database;
+  let bus: PluginEventBus;
+  let service: CatalogService;
+  const seen: Array<{ event: string; payload: Record<string, unknown> }> = [];
+
+  beforeEach(async () => {
+    client = new PGlite('memory://');
+    database = drizzle(client) as unknown as Database;
+    await migrate(database as never, { migrationsFolder: resolve(process.cwd(), 'drizzle') });
+    seen.length = 0;
+    bus = new PluginEventBus({ log: { error: vi.fn(), warn: vi.fn() } });
+    for (const event of ['media.item.archived', 'media.item.unarchived', 'media.item.removed', 'playback.progress.updated'] as const) {
+      bus.subscribe('spy', event, (name, payload) => { seen.push({ event: name, payload: payload as Record<string, unknown> }); });
+    }
+    service = new CatalogService(database, undefined, bus);
+    await client.query(`insert into libraries (id, name, kind, root_path) values ($1, 'Movies', 'movies', '/media')`, [LIB]);
+    await client.query(`insert into media_items (id, library_id, kind, natural_key, title, sort_title) values ($1, $2, 'movie', 'movie:one:2020', 'One', 'one')`, [MOVIE, LIB]);
+    await client.query(`insert into users (id, username, password_hash, role) values ($1, 'viewer', 'x', 'member')`, [USER]);
+  });
+
+  afterEach(async () => { await client.close(); });
+
+  it('emits availability changes only when the state actually changes', async () => {
+    await service.archiveItem(MOVIE);
+    await service.archiveItem(MOVIE);
+    await service.unarchiveItem(MOVIE);
+    await service.unarchiveItem(MOVIE);
+    await bus.drain();
+
+    expect(seen.map((entry) => entry.event)).toEqual(['media.item.archived', 'media.item.unarchived']);
+  });
+
+  it('serves the intro marker for an item through its available file', async () => {
+    await client.query(`insert into media_files (id, media_item_id, library_id, relative_path, size_bytes, modified_at) values ($1, $2, $3, 'One.mkv', 1, now())`, [FILE, MOVIE, LIB]);
+    await client.query(`insert into media_intro_markers (media_file_id, start_seconds, end_seconds, signature) values ($1, 12.5, 71, 'sig')`, [FILE]);
+
+    expect(await service.introMarker(MOVIE)).toMatchObject({ startSeconds: 12.5, endSeconds: 71 });
+    expect(await service.introMarker(REC)).toBeNull();
+  });
+
+  it('emits progress updates and removals', async () => {
+    await service.saveProgress(USER, MOVIE, 120, false);
+    await service.removeItem(MOVIE);
+    await bus.drain();
+
+    expect(seen).toEqual([
+      { event: 'playback.progress.updated', payload: { userId: USER, mediaItemId: MOVIE, positionSeconds: 120, watched: false } },
+      { event: 'media.item.removed', payload: { mediaItemId: MOVIE } },
+    ]);
   });
 });
 
