@@ -79,6 +79,8 @@ export interface VideoPlayerProps {
   onEnded?: () => void;
   /** When set, a "Next episode" control is shown to skip to the next item. */
   onNext?: () => void;
+  /** Detected intro segment; a "Skip intro" button appears while inside it. */
+  intro?: { startSeconds: number; endSeconds: number };
   autoPlay?: boolean;
   className?: string;
 }
@@ -131,6 +133,7 @@ export function VideoPlayer({
   onProgress,
   onEnded,
   onNext,
+  intro,
   autoPlay = false,
   className,
 }: VideoPlayerProps) {
@@ -452,6 +455,16 @@ export function VideoPlayer({
             )}
           </div>
         </div>
+      )}
+
+      {intro && current >= intro.startSeconds + 1 && current < intro.endSeconds - 1 && (
+        <button
+          type="button"
+          onClick={() => seekTo(intro.endSeconds)}
+          className="absolute bottom-24 right-6 z-20 rounded-md border border-white/30 bg-black/60 px-4 py-2 text-sm font-semibold text-white backdrop-blur-sm transition-colors hover:bg-white hover:text-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
+        >
+          Skip intro
+        </button>
       )}
 
       {waiting && (

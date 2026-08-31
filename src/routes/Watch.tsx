@@ -1,24 +1,30 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { VideoPlayer } from '@/components/media/VideoPlayer';
 import { Button } from '@/components/ui/button';
-import { api, imageVariant, type CatalogItemDetails, type MediaSprite, type PlaybackResponse } from '@/lib/api';
+import { api, imageVariant, type CatalogItemDetails, type IntroMarker, type MediaSprite, type PlaybackResponse } from '@/lib/api';
 import { detectMediaCapabilities } from '@/lib/media-capabilities';
 
 export function Watch() {
   const { id = '' } = useParams();
   const navigate = useNavigate();
+  const [search] = useSearchParams();
+  // Marathon mode keeps advancing through the user's queue instead of stopping.
+  const marathon = search.get('queue') === '1';
   const [item, setItem] = useState<CatalogItemDetails>();
   const [playback, setPlayback] = useState<PlaybackResponse>();
   const [thumbnails, setThumbnails] = useState<MediaSprite>();
+  const [intro, setIntro] = useState<IntroMarker>();
   const [error, setError] = useState<string>();
   const load = useCallback(async () => {
-    setError(undefined); setPlayback(undefined); setThumbnails(undefined);
+    setError(undefined); setPlayback(undefined); setThumbnails(undefined); setIntro(undefined);
     try {
       const [{ item: nextItem }, nextPlayback] = await Promise.all([api.catalogItem(id), api.playback(id, detectMediaCapabilities())]);
       setItem(nextItem); setPlayback(nextPlayback);
       // Scrubber previews are optional; a title without a generated sprite just omits them.
       void api.mediaSprites(id).then(({ sprite }) => setThumbnails(sprite)).catch(() => setThumbnails(undefined));
+      // Intro markers are optional; a title without one simply hides Skip intro.
+      void api.mediaIntro(id).then(({ intro: marker }) => setIntro(marker ?? undefined)).catch(() => setIntro(undefined));
     } catch (caught) { setError(caught instanceof Error ? caught.message : 'Playback could not be started.'); }
   }, [id]);
   useEffect(() => { queueMicrotask(() => { void load(); }); }, [load]);
@@ -33,6 +39,13 @@ export function Watch() {
   const startPositionSeconds = typeof item.progress === 'number' && item.progress > 0 && item.progress < 1 && duration ? item.progress * duration : undefined;
   const subtitles = (item.subtitles ?? []).map((track) => ({ id: track.id, label: track.label, srcLang: track.language, src: track.url }));
   const nextHref = item.nextEpisodeId ? `/watch/${encodeURIComponent(item.nextEpisodeId)}` : undefined;
+  // In marathon mode the queue decides what plays next; an exhausted queue ends quietly.
+  const advanceQueue = async () => {
+    try {
+      const { item: next } = await api.nextInQueue(id);
+      if (next) navigate(`/watch/${encodeURIComponent(next.id)}?queue=1`);
+    } catch { /* a failed lookup simply ends the marathon */ }
+  };
   return <main className="flex min-h-screen items-center bg-black"><VideoPlayer
     src={playback.stream.url}
     castSrc={playback.stream.castUrl ? new URL(playback.stream.castUrl, window.location.href).href : undefined}
@@ -49,9 +62,11 @@ export function Watch() {
     onEnded={() => {
       void api.saveProgress(id, duration ?? 0, true).catch(() => {});
       // Autoplay the next episode when one exists; the fresh /watch route auto-plays.
-      if (nextHref) navigate(nextHref);
+      if (marathon) void advanceQueue();
+      else if (nextHref) navigate(nextHref);
     }}
-    onNext={nextHref ? () => navigate(nextHref) : undefined}
+    onNext={marathon ? () => void advanceQueue() : nextHref ? () => navigate(nextHref) : undefined}
+    intro={intro}
     autoPlay
     className="mx-auto max-h-screen max-w-[min(100vw,177.78vh)] rounded-none"
   /></main>;
