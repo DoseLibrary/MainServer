@@ -243,17 +243,27 @@ export class CatalogService {
   }
 
   /** The next episode to play after this one, in season/episode order across the series. */
-  private async nextEpisodeId(episode: typeof mediaItems.$inferSelect): Promise<string | undefined> {
+  /** The episode that follows this one within its series, in broadcast order. */
+  private async nextEpisode(episode: typeof mediaItems.$inferSelect) {
     if (episode.kind !== 'episode' || !episode.parentId) return undefined;
     const [season] = await this.database.select({ seriesId: mediaItems.parentId }).from(mediaItems).where(eq(mediaItems.id, episode.parentId)).limit(1);
     if (!season?.seriesId) return undefined;
     const seasons = alias(mediaItems, 'season_scope');
-    const rows = await this.database.select({ id: mediaItems.id, seasonNumber: mediaItems.seasonNumber, episodeNumber: mediaItems.episodeNumber })
+    const rows = await this.database.select({ id: mediaItems.id, title: mediaItems.title, userTitle: mediaItems.userTitle, backdropPath: mediaItems.backdropPath, posterPath: mediaItems.posterPath, seasonNumber: mediaItems.seasonNumber, episodeNumber: mediaItems.episodeNumber })
       .from(mediaItems).innerJoin(seasons, eq(seasons.id, mediaItems.parentId))
-      .where(and(eq(seasons.parentId, season.seriesId), eq(mediaItems.kind, 'episode'), eq(mediaItems.available, true), isNull(mediaItems.archivedAt)))
+      .where(and(eq(seasons.parentId, season.seriesId), eq(mediaItems.kind, 'episode'), eq(mediaItems.available, true), this.withinMaturity, isNull(mediaItems.archivedAt)))
       .orderBy(mediaItems.seasonNumber, mediaItems.episodeNumber);
     const index = rows.findIndex((row) => row.id === episode.id);
-    return index >= 0 && index + 1 < rows.length ? rows[index + 1].id : undefined;
+    const next = index >= 0 ? rows[index + 1] : undefined;
+    if (!next) return undefined;
+    return {
+      id: next.id,
+      title: next.userTitle ?? next.title,
+      seasonNumber: next.seasonNumber ?? undefined,
+      episodeNumber: next.episodeNumber ?? undefined,
+      // Episode stills live on the backdrop; the season poster is the fallback.
+      posterUrl: imageLocalUrl(next.backdropPath) ?? imageLocalUrl(next.posterPath),
+    };
   }
 
   /** Player caption tracks for a title, across its available files. */
@@ -574,8 +584,8 @@ export class CatalogService {
     const childFiles = await this.database.select({ mediaItemId: mediaFiles.mediaItemId, durationSeconds: mediaFiles.durationSeconds }).from(mediaFiles).innerJoin(mediaItems, eq(mediaItems.id, mediaFiles.mediaItemId)).where(and(eq(mediaItems.parentId, id), eq(mediaFiles.available, true)));
     const children = serializeCatalogChildren(childRows, new Map(childFiles.map((file) => [file.mediaItemId, file.durationSeconds])));
     const files = await this.database.select({ id: mediaFiles.id, relativePath: mediaFiles.relativePath, durationSeconds: mediaFiles.durationSeconds }).from(mediaFiles).where(and(eq(mediaFiles.mediaItemId, id), eq(mediaFiles.available, true)));
-    const [quality, genreMap, collectionMap, cast, recommendations, inWatchlist, subtitles, nextEpisodeId, trailers, localTrailer] = await Promise.all([
-      this.qualityByItem([id]), this.genresByItem([id]), this.collectionByItem([id]), this.castForItem(id), this.recommendationsForItem(id), this.isWatchlisted(userId, id), this.subtitlesForItem(id), this.nextEpisodeId(row.item),
+    const [quality, genreMap, collectionMap, cast, recommendations, inWatchlist, subtitles, nextEpisode, trailers, localTrailer] = await Promise.all([
+      this.qualityByItem([id]), this.genresByItem([id]), this.collectionByItem([id]), this.castForItem(id), this.recommendationsForItem(id), this.isWatchlisted(userId, id), this.subtitlesForItem(id), this.nextEpisode(row.item),
       this.database.select({ site: mediaTrailers.site, key: mediaTrailers.key, name: mediaTrailers.name, type: mediaTrailers.type, official: mediaTrailers.official, preferred: mediaTrailers.preferred, localAvailable: sql<boolean>`${mediaTrailers.status} = 'ready' and ${mediaTrailers.localPath} is not null` }).from(mediaTrailers).where(eq(mediaTrailers.mediaItemId, id)).orderBy(desc(mediaTrailers.preferred), desc(mediaTrailers.publishedAt)),
       this.localTrailerSource(id),
     ]);
@@ -598,7 +608,8 @@ export class CatalogService {
       hasLocalTrailer: localTrailer != null,
       trailers: trailers.map((trailer) => ({ ...trailer, localAvailable: trailer.preferred && localTrailer != null })),
       subtitles,
-      nextEpisodeId,
+      nextEpisodeId: nextEpisode?.id,
+      nextEpisode,
       children,
       files,
     };

@@ -100,6 +100,8 @@ export interface CatalogItemDetails extends Omit<CatalogItem, 'genres' | 'collec
   subtitles?: CatalogSubtitle[];
   /** Next episode in the series, for autoplay when this one ends. */
   nextEpisodeId?: string;
+  /** Details for the next episode, used by the player's up-next card. */
+  nextEpisode?: { id: string; title: string; seasonNumber?: number; episodeNumber?: number; posterUrl?: string };
   /** Whether the current user has saved this title to their watch list. */
   inWatchlist?: boolean;
   /** Whether the current user has marked this title watched. */

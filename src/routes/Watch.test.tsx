@@ -18,6 +18,18 @@ function mockPlayback(next: unknown) {
   });
 }
 
+/** An episode whose series has another episode queued behind it. */
+function mockEpisodeWithNext() {
+  return vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes('/playback')) return json({ plan: { mode: 'direct', container: 'mp4', remux: false, reasons: [] }, durationSeconds: 100, stream: { url: '/stream.mp4', direct: true } });
+    if (url.includes('/sprites')) return json({ sprite: null });
+    if (url.includes('/intro')) return json({ intro: null });
+    if (url.startsWith('/api/v1/me/queue/next')) return json({ item: null });
+    return json({ item: { id: ONE, title: 'One', kind: 'episode', nextEpisodeId: TWO, nextEpisode: { id: TWO, title: 'The Target', seasonNumber: 1, episodeNumber: 2 } } });
+  });
+}
+
 function renderWatch(search: string) {
   render(
     <MemoryRouter initialEntries={[`/watch/${ONE}${search}`]}>
@@ -108,5 +120,52 @@ describe('Skip intro', () => {
     Object.defineProperty(video, 'currentTime', { value: 20, writable: true });
     fireEvent(video, new Event('timeupdate'));
     expect(screen.queryByRole('button', { name: 'Skip intro' })).not.toBeInTheDocument();
+  });
+});
+
+describe('Up next countdown', () => {
+  const originalFetch = globalThis.fetch;
+  afterEach(() => { globalThis.fetch = originalFetch; });
+
+  /** Drive the player's clock: it reads currentTime/duration on timeupdate. */
+  function seek(video: HTMLVideoElement, currentTime: number, duration = 100) {
+    Object.defineProperty(video, 'duration', { value: duration, configurable: true });
+    Object.defineProperty(video, 'currentTime', { value: currentTime, writable: true, configurable: true });
+    fireEvent(video, new Event('durationchange'));
+    fireEvent(video, new Event('timeupdate'));
+  }
+
+  it('shows the next episode in the closing seconds and plays it on demand', async () => {
+    const fetchMock = mockEpisodeWithNext();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    renderWatch('');
+    const video = await findVideo();
+
+    seek(video, 50);
+    expect(screen.queryByText('Up next')).not.toBeInTheDocument();
+
+    seek(video, 92);
+    expect(await screen.findByText('Up next')).toBeInTheDocument();
+    expect(screen.getByText('The Target')).toBeInTheDocument();
+    expect(screen.getByText('Playing in 8s')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Play now' }));
+    // Routing to the next episode makes the player load that item.
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).includes(TWO))).toBe(true));
+  });
+
+  it('cancelling the countdown stops the automatic advance', async () => {
+    globalThis.fetch = mockEpisodeWithNext() as unknown as typeof fetch;
+    renderWatch('');
+    const video = await findVideo();
+
+    seek(video, 92);
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByText('Up next')).not.toBeInTheDocument();
+
+    // Ending after a cancel must not load the next episode.
+    fireEvent(video, new Event('ended'));
+    await waitFor(() => expect(screen.queryByText('Up next')).not.toBeInTheDocument());
+    expect((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.some(([url]) => String(url).includes(TWO))).toBe(false);
   });
 });

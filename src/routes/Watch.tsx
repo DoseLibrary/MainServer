@@ -39,6 +39,12 @@ export function Watch() {
   const startPositionSeconds = typeof item.progress === 'number' && item.progress > 0 && item.progress < 1 && duration ? item.progress * duration : undefined;
   const subtitles = (item.subtitles ?? []).map((track) => ({ id: track.id, label: track.label, srcLang: track.language, src: track.url }));
   const nextHref = item.nextEpisodeId ? `/watch/${encodeURIComponent(item.nextEpisodeId)}` : undefined;
+  const nextUp = item.nextEpisode ? {
+    title: item.nextEpisode.title,
+    subtitle: [item.nextEpisode.seasonNumber != null ? `S${item.nextEpisode.seasonNumber}` : undefined,
+      item.nextEpisode.episodeNumber != null ? `E${item.nextEpisode.episodeNumber}` : undefined].filter(Boolean).join(' · ') || undefined,
+    posterSrc: imageVariant(item.nextEpisode.posterUrl, { width: 176, height: 256, fit: 'cover', format: 'webp' }),
+  } : undefined;
   // In marathon mode the queue decides what plays next; an exhausted queue ends quietly.
   const advanceQueue = async () => {
     try {
@@ -59,12 +65,14 @@ export function Watch() {
     onBack={(event) => { event.preventDefault(); navigate(detailsHref); }}
     startPositionSeconds={startPositionSeconds}
     onProgress={(positionSeconds) => { void api.saveProgress(id, positionSeconds).catch(() => {}); }}
-    onEnded={() => {
+    onEnded={({ autoAdvanceCancelled }) => {
       void api.saveProgress(id, duration ?? 0, true).catch(() => {});
-      // Autoplay the next episode when one exists; the fresh /watch route auto-plays.
+      // Stopping the countdown means the viewer wants playback to end here.
+      if (autoAdvanceCancelled) return;
       if (marathon) void advanceQueue();
       else if (nextHref) navigate(nextHref);
     }}
+    nextUp={nextUp}
     onNext={marathon ? () => void advanceQueue() : nextHref ? () => navigate(nextHref) : undefined}
     intro={intro}
     autoPlay

@@ -76,7 +76,12 @@ export interface VideoPlayerProps {
   startPositionSeconds?: number;
   /** Fired periodically with the current position for progress persistence. */
   onProgress?: (positionSeconds: number, durationSeconds: number) => void;
-  onEnded?: () => void;
+  /** `cancelled` is true when the viewer stopped the auto-advance countdown. */
+  onEnded?: (info: { autoAdvanceCancelled: boolean }) => void;
+  /** Shown in the closing seconds so the next episode can be skipped to or stopped. */
+  nextUp?: { title: string; subtitle?: string; posterSrc?: string };
+  /** Seconds before the end at which the next-episode card appears. */
+  autoAdvanceSeconds?: number;
   /** When set, a "Next episode" control is shown to skip to the next item. */
   onNext?: () => void;
   /** Detected intro segment; a "Skip intro" button appears while inside it. */
@@ -133,6 +138,8 @@ export function VideoPlayer({
   onProgress,
   onEnded,
   onNext,
+  nextUp,
+  autoAdvanceSeconds = 15,
   intro,
   autoPlay = false,
   className,
@@ -145,6 +152,8 @@ export function VideoPlayer({
   // Keep the latest callbacks in refs so the media-event listeners never resubscribe.
   const onProgressRef = useRef(onProgress);
   const onEndedRef = useRef(onEnded);
+  // Cancelling the countdown must also stop the advance that would fire on 'ended'.
+  const autoAdvanceCancelled = useRef(false);
   const lastReportRef = useRef(0);
   const resumeAppliedRef = useRef(false);
   useEffect(() => { onProgressRef.current = onProgress; onEndedRef.current = onEnded; });
@@ -153,6 +162,11 @@ export function VideoPlayer({
   const [waiting, setWaiting] = useState(false);
   const [duration, setDuration] = useState(0);
   const [current, setCurrent] = useState(0);
+  // Remembering which source was cancelled means a new episode starts fresh
+  // without an effect that resets state on every source change.
+  const [cancelledSrc, setCancelledSrc] = useState<string>();
+  const countdownCancelled = cancelledSrc === src;
+  useEffect(() => { autoAdvanceCancelled.current = countdownCancelled; }, [countdownCancelled]);
   const [buffered, setBuffered] = useState(0);
   const [volume, setVolume] = useState(1);
   const [muted, setMuted] = useState(false);
@@ -300,7 +314,7 @@ export function VideoPlayer({
     const onTime = () => {
       if (Math.abs(video.currentTime - lastReportRef.current) >= 10) report();
     };
-    const onEnded = () => { report(); onEndedRef.current?.(); };
+    const onEnded = () => { report(); onEndedRef.current?.({ autoAdvanceCancelled: autoAdvanceCancelled.current }); };
 
     video.addEventListener('loadedmetadata', onLoaded);
     video.addEventListener('timeupdate', onTime);
@@ -465,6 +479,30 @@ export function VideoPlayer({
         >
           Skip intro
         </button>
+      )}
+
+      {nextUp && onNext && !countdownCancelled && duration > 0 && duration - current <= autoAdvanceSeconds && duration - current > 0 && (
+        <div className="absolute bottom-24 right-6 z-20 w-72 rounded-lg border border-white/20 bg-black/80 p-4 text-white backdrop-blur-sm">
+          <p className="text-xs uppercase tracking-widest text-white/60">Up next</p>
+          <div className="mt-2 flex items-center gap-3">
+            {nextUp.posterSrc && <img src={nextUp.posterSrc} alt="" className="h-16 w-11 shrink-0 rounded object-cover" />}
+            <div className="min-w-0">
+              <p className="truncate font-semibold">{nextUp.title}</p>
+              {nextUp.subtitle && <p className="truncate text-xs text-white/60">{nextUp.subtitle}</p>}
+            </div>
+          </div>
+          <p className="mt-3 text-sm text-white/70">Playing in {Math.max(0, Math.ceil(duration - current))}s</p>
+          <div className="mt-3 flex gap-2">
+            <button type="button" onClick={onNext}
+              className="rounded-md bg-white px-3 py-1.5 text-sm font-semibold text-black transition-colors hover:bg-white/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70">
+              Play now
+            </button>
+            <button type="button" onClick={() => setCancelledSrc(src)}
+              className="rounded-md border border-white/30 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70">
+              Cancel
+            </button>
+          </div>
+        </div>
       )}
 
       {waiting && (
