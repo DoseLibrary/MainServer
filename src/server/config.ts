@@ -18,6 +18,7 @@ const environmentSchema = z.object({
   TMDB_CONCURRENCY: z.coerce.number().int().min(1).max(16).default(4),
   TMDB_REQUESTS_PER_SECOND: z.coerce.number().int().min(1).max(50).default(8),
   TMDB_TIMEOUT_MS: z.coerce.number().int().min(500).max(60_000).default(8_000),
+  YT_DLP_PATH: z.string().min(1).default('yt-dlp'),
 });
 
 type ParsedConfig = z.infer<typeof environmentSchema>;

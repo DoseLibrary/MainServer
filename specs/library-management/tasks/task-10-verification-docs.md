@@ -1,6 +1,6 @@
 # Task 10: End-to-end offline verification and docs
 
-Status: not started
+Status: done
 
 Wave: 5
 

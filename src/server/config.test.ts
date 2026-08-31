@@ -20,7 +20,12 @@ describe('loadConfig', () => {
       TMDB_CONCURRENCY: 4,
       TMDB_REQUESTS_PER_SECOND: 8,
       TMDB_TIMEOUT_MS: 8000,
+      YT_DLP_PATH: 'yt-dlp',
     });
+  });
+
+  it('allows overriding the yt-dlp binary path', () => {
+    expect(loadConfig({ DATABASE_URL: 'pglite://.dose/database', YT_DLP_PATH: '/opt/dose/bin/yt-dlp' }).YT_DLP_PATH).toBe('/opt/dose/bin/yt-dlp');
   });
 
   it('rejects missing database configuration', () => {

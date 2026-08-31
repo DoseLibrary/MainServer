@@ -53,5 +53,5 @@ Tasks in the same wave own non-overlapping files and may run in parallel. A wave
 - [x] Task 07: Scrubber preview sprite plugin
 - [x] Task 08: Admin media table (archive review, remove, re-match)
 - [x] Task 09: Local trailer hero playback
-- [ ] Task 10: End-to-end offline verification and docs
+- [x] Task 10: End-to-end offline verification and docs
 - [x] Profile navbar entry (shipped ahead of the spec)

@@ -10,7 +10,7 @@ import { registerApiRoutes } from './routes.ts';
 import { ScanCoordinator } from './scanner.ts';
 import { CatalogService } from './catalog-service.ts';
 import { PluginRegistry } from './plugins/registry.ts';
-import { createTrailerFetcherPlugin } from './plugins/trailer-fetcher.ts';
+import { createTrailerFetcherPlugin, ytDlpDownloader } from './plugins/trailer-fetcher.ts';
 import { PluginService } from './plugin-service.ts';
 import { PluginScheduler } from './plugin-scheduler.ts';
 import { TmdbClient } from './tmdb.ts';
@@ -32,7 +32,7 @@ export async function buildApp(config: AppConfig) {
   const subtitleStore = new SubtitleStore(join(config.CONFIG_PATH, 'subtitles'));
   const spriteStore = new PreviewSpriteStore(join(config.CONFIG_PATH, 'previews'));
   const plugins = new PluginService(database, new PluginRegistry()
-    .register(createTrailerFetcherPlugin(database, tmdb, undefined, join(config.CONFIG_PATH, 'trailers')))
+    .register(createTrailerFetcherPlugin(database, tmdb, ytDlpDownloader(config.YT_DLP_PATH), join(config.CONFIG_PATH, 'trailers')))
     .register(createSubtitleExtractorPlugin(database, ffmpegSubtitleTools(), subtitleStore))
     .register(createPreviewSpritePlugin(database, ffmpegSpriteTools(), spriteStore)));
   const imageStore = new ImageStore(join(config.CONFIG_PATH, 'images'));

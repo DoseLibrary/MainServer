@@ -16,6 +16,7 @@ const config = {
   DATABASE_URL: 'postgresql://dose:secret@localhost:5432/dose',
   CONFIG_PATH: '/config',
   TRANSCODE_PATH: '/transcode',
+  YT_DLP_PATH: 'yt-dlp',
 };
 
 afterEach(() => {

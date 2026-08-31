@@ -1,7 +1,7 @@
 import { and, asc, eq, inArray } from 'drizzle-orm';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { access, mkdir, rm } from 'node:fs/promises';
+import { access, mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { z } from 'zod';
 import type { Database } from '../db/client.ts';
@@ -19,11 +19,17 @@ export const trailerFetcherSettingsSchema = z.object({
   languages: z.array(z.string().min(2).max(10)).default(['en']), includeClips: z.boolean().default(false),
   qualityCap: z.enum(['720', '1080', '1440', '2160']).default('1080'),
   storageDir: storageSubdirectory.default('trailers'),
+  // yt-dlp breaks whenever YouTube shifts; keep the binary fresh on a cadence and
+  // recover a failed download by self-updating before giving up.
+  autoUpdate: z.boolean().default(true),
+  updateIntervalDays: z.coerce.number().int().min(1).max(90).default(7),
 });
 
 export interface TrailerDownloader {
   available(signal: AbortSignal): Promise<boolean>;
   download(key: string, destination: string, qualityCap: string, signal: AbortSignal): Promise<void>;
+  /** Self-update the downloader binary (e.g. `yt-dlp -U`). Resolves true when updated. */
+  update?(signal: AbortSignal): Promise<boolean>;
 }
 
 export function ytDlpDownloader(binary = 'yt-dlp'): TrailerDownloader {
@@ -37,13 +43,16 @@ export function ytDlpDownloader(binary = 'yt-dlp'): TrailerDownloader {
   return {
     async available(signal) { try { await execute(['--version'], signal); return true; } catch (error) { if (signal.aborted) throw error; return false; } },
     download: (key, destination, qualityCap, signal) => execute(['--no-playlist', '--no-part', '--restrict-filenames', '-f', `bestvideo[height<=${qualityCap}][ext=mp4]+bestaudio[ext=m4a]/best[height<=${qualityCap}][ext=mp4]`, '--merge-output-format', 'mp4', '-o', destination, `https://www.youtube.com/watch?v=${key}`], signal),
+    // `-U` only works for a standalone binary; a pip/package install fails here,
+    // which we swallow so update attempts never break a trailer run.
+    async update(signal) { try { await execute(['-U'], signal); return true; } catch (error) { if (signal.aborted) throw error; return false; } },
   };
 }
 
 export function createTrailerFetcherPlugin(database: Database, tmdb: TmdbClient, downloader: TrailerDownloader = ytDlpDownloader(), managedStorageRoot = 'trailers'): PluginDefinition<z.infer<typeof trailerFetcherSettingsSchema>> {
   return {
     id: 'trailer-fetcher', metadata: { name: 'Trailer Fetcher', description: 'Refreshes trailers for matched TMDB titles.', version: '1.0.0' },
-    settingsSchema: trailerFetcherSettingsSchema, settings: { languages: { label: 'Preferred languages' }, includeClips: { label: 'Include clips' }, qualityCap: { label: 'Maximum quality' }, storageDir: { label: 'Storage subdirectory', description: `Relative folder under managed trailer storage (default root: ${managedStorageRoot})` } },
+    settingsSchema: trailerFetcherSettingsSchema, settings: { languages: { label: 'Preferred languages' }, includeClips: { label: 'Include clips' }, qualityCap: { label: 'Maximum quality' }, storageDir: { label: 'Storage subdirectory', description: `Relative folder under managed trailer storage (default root: ${managedStorageRoot})` }, autoUpdate: { label: 'Auto-update yt-dlp', description: 'Self-update yt-dlp on the cadence below and after a failed download.' }, updateIntervalDays: { label: 'Update interval (days)', description: 'How often to refresh yt-dlp before a run (default 7).' } },
     async run({ settings, signal }) {
       const parsedSettings = trailerFetcherSettingsSchema.parse(settings);
       // "trailers" is retained as the legacy/default value meaning the managed
@@ -52,6 +61,20 @@ export function createTrailerFetcherPlugin(database: Database, tmdb: TmdbClient,
       if (!managedTrailerDirectory(managedStorageRoot, storageDir)) throw new Error('Storage directory escapes managed trailer storage');
       const canDownload = await downloader.available(signal);
       if (canDownload) await mkdir(storageDir, { recursive: true });
+
+      // yt-dlp self-update: throttled to once per updateIntervalDays via a sentinel
+      // in the managed root, plus an on-demand refresh after a download fails.
+      const updateSentinel = resolve(managedStorageRoot, '.yt-dlp-updated');
+      let didUpdate = false;
+      const runUpdate = async () => {
+        if (didUpdate || !parsedSettings.autoUpdate || !downloader.update) return false;
+        try {
+          const ok = await downloader.update(signal);
+          if (ok) { didUpdate = true; await mkdir(managedStorageRoot, { recursive: true }); await writeFile(updateSentinel, new Date().toISOString()); }
+          return ok;
+        } catch (error) { if (signal.aborted) throw error; return false; }
+      };
+      if (canDownload && parsedSettings.autoUpdate && downloader.update && await updateDue(updateSentinel, parsedSettings.updateIntervalDays)) await runUpdate();
       const items = await database.select({ id: mediaItems.id, kind: mediaItems.kind, providerIds: mediaItems.providerIds }).from(mediaItems)
         .where(inArray(mediaItems.kind, ['movie', 'series'])).orderBy(asc(mediaItems.id));
       let refreshed = 0; let skipped = 0; let trailers = 0; let downloaded = 0; let current = 0; let failed = 0;
@@ -76,15 +99,26 @@ export function createTrailerFetcherPlugin(database: Database, tmdb: TmdbClient,
         if (canDownload && preferred && !localPath) {
           const providerSuffix = createHash('sha256').update(preferred.id).digest('hex').slice(0, 16);
           const destination = resolve(storageDir, `${item.id}-${providerSuffix}.mp4`);
-          try {
+          const attempt = async () => {
             await downloader.download(preferred.key, destination, settings.qualityCap, signal);
             if (signal.aborted) throw signal.reason ?? new Error('Trailer fetch cancelled');
+          };
+          let ok = false;
+          try { await attempt(); ok = true; }
+          catch (error) {
+            await rm(destination, { force: true }).catch(() => undefined);
+            if (signal.aborted) throw error;
+            // Most download failures are a stale yt-dlp; refresh once and retry.
+            if (await runUpdate()) {
+              try { await attempt(); ok = true; }
+              catch (retryError) { await rm(destination, { force: true }).catch(() => undefined); if (signal.aborted) throw retryError; }
+            }
+          }
+          if (ok) {
             await database.update(mediaTrailers).set({ localPath: destination, downloadedAt: new Date(), status: 'ready', updatedAt: new Date() }).where(and(eq(mediaTrailers.mediaItemId, item.id), eq(mediaTrailers.providerId, preferred.id)));
             if (previous?.localPath !== destination) await removeManaged(previous?.localPath, storageDir);
             downloaded++;
-          } catch (error) {
-            await rm(destination, { force: true }).catch(() => undefined);
-            if (signal.aborted) throw error;
+          } else {
             await database.update(mediaTrailers).set({ status: 'failed', updatedAt: new Date() }).where(and(eq(mediaTrailers.mediaItemId, item.id), eq(mediaTrailers.providerId, preferred.id))); failed++;
           }
         }
@@ -93,6 +127,11 @@ export function createTrailerFetcherPlugin(database: Database, tmdb: TmdbClient,
       return { summary: `Refreshed ${refreshed} titles, stored ${trailers} trailers, downloaded ${downloaded}, current ${current}, failed ${failed}, skipped ${skipped} without TMDB IDs${canDownload ? '' : '; yt-dlp unavailable (metadata only)'}` };
     },
   };
+}
+
+async function updateDue(sentinelPath: string, intervalDays: number) {
+  try { const info = await stat(sentinelPath); return Date.now() - info.mtimeMs >= intervalDays * 86_400_000; }
+  catch { return true; } // No sentinel yet — treat as due.
 }
 
 function managedTrailerDirectory(root: string, directory: string) {

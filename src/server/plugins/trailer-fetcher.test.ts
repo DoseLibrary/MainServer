@@ -24,7 +24,7 @@ afterEach(async () => { await Promise.all(cleanup.splice(0).map((path) => rm(pat
 
 const video: TmdbVideo = { id: 'tmdb-video', key: 'youtube-key', site: 'YouTube', name: 'Trailer', type: 'Trailer', official: true, language: 'en' };
 const tmdbWith = (getVideos: ReturnType<typeof vi.fn>) => ({ getVideos } as unknown as TmdbClient);
-const settings = (storageDir = 'trailers') => ({ languages: ['en'], includeClips: false, qualityCap: '1080' as const, storageDir });
+const settings = (storageDir = 'trailers') => ({ languages: ['en'], includeClips: false, qualityCap: '1080' as const, storageDir, autoUpdate: true, updateIntervalDays: 7 });
 
 describe('trailer fetcher', () => {
   it('deterministically prefers official YouTube trailers in preferred language', () => {
@@ -78,6 +78,42 @@ describe('trailer fetcher', () => {
     const plugin = createTrailerFetcherPlugin(database, tmdbWith(getVideos), downloader, dir); const context = { settings: settings(), signal: new AbortController().signal };
     await plugin.run(context); const oldPath = (await client.query<{ local_path: string }>(`select local_path from media_trailers where preferred=true`)).rows[0]!.local_path;
     await plugin.run(context); expect((await client.query(`select * from media_trailers`)).rows).toHaveLength(0); await expect(access(oldPath)).rejects.toThrow(); await client.close();
+  }, 15_000);
+
+  it('self-updates yt-dlp and retries once when a download fails', async () => {
+    const { client, database, dir } = await fixture();
+    // Fresh sentinel so the weekly pre-check is skipped; only the failure path updates.
+    await writeFile(join(dir, '.yt-dlp-updated'), new Date().toISOString());
+    const download = vi.fn()
+      .mockRejectedValueOnce(new Error('yt-dlp exited with code 1'))
+      .mockImplementationOnce(async (_key: string, path: string) => { await writeFile(path, 'trailer'); });
+    const update = vi.fn(async () => true);
+    const downloader: TrailerDownloader = { available: vi.fn(async () => true), download, update };
+    await createTrailerFetcherPlugin(database, tmdbWith(vi.fn(async () => [video])), downloader, dir).run({ settings: settings(), signal: new AbortController().signal });
+    expect(update).toHaveBeenCalledTimes(1); expect(download).toHaveBeenCalledTimes(2);
+    expect((await client.query<{ status: string }>(`select status from media_trailers where preferred=true`)).rows[0]?.status).toBe('ready');
+    await client.close();
+  }, 15_000);
+
+  it('refreshes yt-dlp before a run when the update interval has elapsed', async () => {
+    const { client, database, dir } = await fixture();
+    const update = vi.fn(async () => true);
+    const downloader: TrailerDownloader = { available: vi.fn(async () => true), download: vi.fn(async (_key, path) => { await writeFile(path, 'trailer'); }), update };
+    // No sentinel yet -> due; runs the weekly update, then does not repeat it on the next run.
+    const plugin = createTrailerFetcherPlugin(database, tmdbWith(vi.fn(async () => [video])), downloader, dir); const signal = new AbortController().signal;
+    await plugin.run({ settings: settings(), signal });
+    await access(join(dir, '.yt-dlp-updated'));
+    await plugin.run({ settings: settings(), signal });
+    expect(update).toHaveBeenCalledTimes(1); await client.close();
+  }, 15_000);
+
+  it('never self-updates when autoUpdate is disabled', async () => {
+    const { client, database, dir } = await fixture();
+    const update = vi.fn(async () => true);
+    const downloader: TrailerDownloader = { available: vi.fn(async () => true), download: vi.fn(async () => { throw new Error('boom'); }), update };
+    const result = await createTrailerFetcherPlugin(database, tmdbWith(vi.fn(async () => [video])), downloader, dir).run({ settings: { ...settings(), autoUpdate: false }, signal: new AbortController().signal });
+    expect(update).not.toHaveBeenCalled(); expect(result?.summary).toContain('failed 1');
+    expect((await client.query<{ status: string }>(`select status from media_trailers where preferred=true`)).rows[0]?.status).toBe('failed'); await client.close();
   }, 15_000);
 
   it('accepts safe managed subdirectories and rejects absolute or escaping settings', async () => {
