@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils';
 
 const SECTIONS = [
   { to: '/admin', label: 'Overview', end: true },
+  { to: '/admin/activity', label: 'Activity' },
   { to: '/admin/libraries', label: 'Libraries' },
   { to: '/admin/users', label: 'Family' },
   { to: '/admin/media', label: 'Media' },

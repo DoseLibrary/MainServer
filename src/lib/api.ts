@@ -133,6 +133,19 @@ export interface DeviceSession {
   current: boolean;
 }
 
+export interface ActivitySession {
+  id: string;
+  username: string;
+  deviceName: string | null;
+  playMethod: 'direct' | 'remux' | 'transcode';
+  positionSeconds: number;
+  durationSeconds: number | null;
+  paused: boolean;
+  startedAt: string;
+  lastReportedAt: string;
+  item: { id: string; title: string; kind: string; seasonNumber?: number; episodeNumber?: number; posterUrl?: string; backdropUrl?: string };
+}
+
 export interface IntroMarker { startSeconds: number; endSeconds: number }
 
 export interface CatalogSection { id: string; title: string; items: CatalogItem[]; layout?: 'poster' | 'card' }
@@ -235,6 +248,12 @@ export const api = {
   approveDevice: (code: string) => request<{ approved: { id: string; deviceName: string } }>(`/api/v1/auth/device/${encodeURIComponent(code)}/approve`, { method: 'POST' }),
   denyDevice: (code: string) => request<void>(`/api/v1/auth/device/${encodeURIComponent(code)}/deny`, { method: 'POST' }),
   sessions: () => request<{ sessions: DeviceSession[] }>('/api/v1/me/sessions'),
+  startPlaybackSession: (input: { mediaItemId: string; playMethod?: 'direct' | 'remux' | 'transcode'; positionSeconds?: number; durationSeconds?: number }) =>
+    request<{ session: { id: string } }>('/api/v1/playback/sessions', { method: 'POST', body: JSON.stringify(input) }),
+  reportPlayback: (id: string, update: { positionSeconds?: number; paused?: boolean }) =>
+    request<{ session: { id: string } }>(`/api/v1/playback/sessions/${encodeURIComponent(id)}`, { method: 'POST', body: JSON.stringify(update) }),
+  endPlaybackSession: (id: string) => request<void>(`/api/v1/playback/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  activity: () => request<{ sessions: ActivitySession[] }>('/api/v1/admin/activity'),
   revokeSession: (id: string) => request<void>(`/api/v1/me/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   me: () => request<{ user: User }>('/api/v1/auth/me'),
   getSettings: () => request<{ settings: UserSettings }>('/api/v1/me/settings'),

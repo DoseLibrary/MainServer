@@ -65,6 +65,29 @@ export const sessions = pgTable('sessions', {
  * Pairing requests for the QR device flow. A device polls with its secret
  * device code while the user approves the short user code on a signed-in phone.
  */
+/**
+ * One row per active playback. The player starts a session, heartbeats while it
+ * plays, and ends it on exit; administrators watch these to see what the server
+ * is serving right now.
+ */
+export const playbackSessions = pgTable('playback_sessions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  mediaItemId: uuid('media_item_id').notNull().references(() => mediaItems.id, { onDelete: 'cascade' }),
+  deviceName: text('device_name'),
+  /** How the file reaches the client: direct play, remux, or a full transcode. */
+  playMethod: text('play_method').notNull().default('direct'),
+  positionSeconds: integer('position_seconds').notNull().default(0),
+  durationSeconds: integer('duration_seconds'),
+  paused: boolean('paused').notNull().default(false),
+  startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+  lastReportedAt: timestamp('last_reported_at', { withTimezone: true }).notNull().defaultNow(),
+  endedAt: timestamp('ended_at', { withTimezone: true }),
+}, (table) => [
+  index('playback_sessions_active_index').on(table.endedAt, table.lastReportedAt),
+  index('playback_sessions_user_index').on(table.userId),
+]);
+
 export const deviceAuthRequests = pgTable('device_auth_requests', {
   id: uuid('id').primaryKey().defaultRandom(),
   /** Short, human-readable code shown on the device (e.g. `K7QP-2M4X`). */

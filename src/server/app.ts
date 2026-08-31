@@ -7,6 +7,7 @@ import type { AppConfig } from './config.ts';
 import { createDatabase, isEmbeddedDatabase } from './db/client.ts';
 import { AuthService } from './auth-service.ts';
 import { DeviceAuthService } from './device-auth-service.ts';
+import { PlaybackSessionService } from './playback-session-service.ts';
 import { registerApiRoutes } from './routes.ts';
 import { ScanCoordinator } from './scanner.ts';
 import { CatalogService } from './catalog-service.ts';
@@ -68,7 +69,7 @@ export async function buildApp(config: AppConfig) {
   }
 
   await app.register(fastifyCookie);
-  await registerApiRoutes(app, new AuthService(database), config.NODE_ENV === 'production', undefined, scanner, new CatalogService(database, join(config.CONFIG_PATH, 'trailers'), pluginEvents), join(config.CONFIG_PATH, 'images'), config.NODE_ENV === 'development' && isEmbeddedDatabase(config.DATABASE_URL), plugins, pluginScheduler, artwork, subtitleStore, metadataMatch, libraryWatcher, spriteStore, new UserSettingsService(database), new UserCollectionsService(database), new QueueService(database), new WatchDataService(database), { plex: new PlexHistorySource(), trakt: new TraktHistorySource(), tautulli: new TautulliHistorySource() }, new DeviceAuthService(database));
+  await registerApiRoutes(app, new AuthService(database), config.NODE_ENV === 'production', undefined, scanner, new CatalogService(database, join(config.CONFIG_PATH, 'trailers'), pluginEvents), join(config.CONFIG_PATH, 'images'), config.NODE_ENV === 'development' && isEmbeddedDatabase(config.DATABASE_URL), plugins, pluginScheduler, artwork, subtitleStore, metadataMatch, libraryWatcher, spriteStore, new UserSettingsService(database), new UserCollectionsService(database), new QueueService(database), new WatchDataService(database), { plex: new PlexHistorySource(), trakt: new TraktHistorySource(), tautulli: new TautulliHistorySource() }, new DeviceAuthService(database), new PlaybackSessionService(database));
 
   app.addHook('onClose', async () => {
     plugins.abortAll();

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Clapperboard, Database, Film, HardDrive, Image, Puzzle, UsersRound } from 'lucide-react';
+import { Activity, Clapperboard, Database, Film, HardDrive, Image, Puzzle, UsersRound } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { api, type HealthStatus, type Library } from '@/lib/api';
@@ -22,6 +22,7 @@ export function AdminHome() {
 
   return <AdminShell title="Administration" description="Manage this Dose server." wide>
     <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+      <SectionCard icon={<Activity />} title="Activity" description="See what is playing right now" action="Open activity" onClick={() => navigate('/admin/activity')} />
       <SectionCard icon={<Film />} title="Libraries" description={`${libraries.length} configured ${libraries.length === 1 ? 'library' : 'libraries'}`} action="Manage libraries" onClick={() => navigate('/admin/libraries')} />
       <SectionCard icon={<UsersRound />} title="Family accounts" description="Create accounts, roles, and passwords" action="Manage family" onClick={() => navigate('/admin/users')} />
       <SectionCard icon={<Clapperboard />} title="Media" description="Review, re-match, or remove titles" action="Manage media" onClick={() => navigate('/admin/media')} />

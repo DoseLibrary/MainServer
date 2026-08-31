@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { VideoPlayer } from '@/components/media/VideoPlayer';
 import { Button } from '@/components/ui/button';
@@ -15,6 +15,8 @@ export function Watch() {
   const [playback, setPlayback] = useState<PlaybackResponse>();
   const [thumbnails, setThumbnails] = useState<MediaSprite>();
   const [intro, setIntro] = useState<IntroMarker>();
+  // Live session id, so administrators can see this playback while it runs.
+  const sessionRef = useRef<string | undefined>(undefined);
   const [error, setError] = useState<string>();
   const load = useCallback(async () => {
     setError(undefined); setPlayback(undefined); setThumbnails(undefined); setIntro(undefined);
@@ -28,6 +30,22 @@ export function Watch() {
     } catch (caught) { setError(caught instanceof Error ? caught.message : 'Playback could not be started.'); }
   }, [id]);
   useEffect(() => { queueMicrotask(() => { void load(); }); }, [load]);
+
+  useEffect(() => {
+    if (!playback) return;
+    let cancelled = false;
+    const method = playback.plan.mode === 'direct' ? 'direct' as const : playback.plan.remux ? 'remux' as const : 'transcode' as const;
+    void api.startPlaybackSession({ mediaItemId: id, playMethod: method, durationSeconds: playback.durationSeconds ?? undefined })
+      .then(({ session }) => {
+        if (cancelled) { void api.endPlaybackSession(session.id).catch(() => {}); return; }
+        sessionRef.current = session.id;
+      })
+      .catch(() => { /* reporting is advisory; playback continues regardless */ });
+    // A closed tab never unmounts cleanly, so end the session on pagehide too.
+    const end = () => { const current = sessionRef.current; sessionRef.current = undefined; if (current) void api.endPlaybackSession(current).catch(() => {}); };
+    window.addEventListener('pagehide', end);
+    return () => { cancelled = true; window.removeEventListener('pagehide', end); end(); };
+  }, [id, playback]);
 
   if (error) return <main className="flex min-h-screen flex-col items-center justify-center gap-4 bg-black p-6 text-white"><p>{error}</p><div className="flex gap-2"><Button onClick={() => void load()}>Try again</Button><Button asChild variant="outline"><Link to={`/media/${encodeURIComponent(id)}`}>Back</Link></Button></div></main>;
   if (!item || !playback) return <main aria-busy="true" className="flex min-h-screen items-center justify-center bg-black text-white/70">Preparing playback…</main>;
@@ -64,7 +82,10 @@ export function Watch() {
     backHref={detailsHref}
     onBack={(event) => { event.preventDefault(); navigate(detailsHref); }}
     startPositionSeconds={startPositionSeconds}
-    onProgress={(positionSeconds) => { void api.saveProgress(id, positionSeconds).catch(() => {}); }}
+    onProgress={(positionSeconds) => {
+      void api.saveProgress(id, positionSeconds).catch(() => {});
+      if (sessionRef.current) void api.reportPlayback(sessionRef.current, { positionSeconds }).catch(() => {});
+    }}
     onEnded={({ autoAdvanceCancelled }) => {
       void api.saveProgress(id, duration ?? 0, true).catch(() => {});
       // Stopping the countdown means the viewer wants playback to end here.

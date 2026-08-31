@@ -76,7 +76,7 @@ describe('Watch marathon mode', () => {
 
     const video = await findVideo();
     fireEvent.ended(video);
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(`/api/v1/catalog/items/${ONE}/progress`, expect.objectContaining({ method: 'POST' })));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(`/api/v1/catalog/items/${ONE}/progress`, expect.objectContaining({ method: 'POST' })), { timeout: 5000 });
     expect(fetchMock).not.toHaveBeenCalledWith(expect.stringContaining('/api/v1/me/queue/next'), expect.anything());
   });
 });

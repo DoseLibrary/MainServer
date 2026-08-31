@@ -148,6 +148,13 @@
       "when": 1788212417320,
       "tag": "0020_early_dormammu",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1788213406023,
+      "tag": "0021_yellow_black_tarantula",
+      "breakpoints": true
     }
   ]
 }

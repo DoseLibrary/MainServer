@@ -12,6 +12,7 @@ import { PluginsPage } from '@/routes/PluginsPage';
 import { PluginDetailPage } from '@/routes/PluginDetailPage';
 import { AdminRoute } from '@/routes/AdminRoute';
 import { AdminHome } from '@/routes/AdminHome';
+import { ActivityPage } from '@/routes/ActivityPage';
 import { LibrariesAdminPage } from '@/routes/LibrariesAdminPage';
 import { FamilyAdminPage } from '@/routes/FamilyAdminPage';
 import { MediaAdminPage } from '@/routes/MediaAdminPage';
@@ -38,6 +39,7 @@ const routes: RouteObject[] = [
   // Plugin administration moved under /admin; the old path stays as a redirect.
   { path: '/profile/plugins', element: <Navigate to="/admin/plugins" replace /> },
   { path: '/admin', element: <AdminRoute><AdminHome /></AdminRoute> },
+  { path: '/admin/activity', element: <AdminRoute><ActivityPage /></AdminRoute> },
   { path: '/admin/libraries', element: <AdminRoute><LibrariesAdminPage /></AdminRoute> },
   { path: '/admin/users', element: <AdminRoute><FamilyAdminPage /></AdminRoute> },
   { path: '/admin/media', element: <AdminRoute><MediaAdminPage /></AdminRoute> },

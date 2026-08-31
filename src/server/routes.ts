@@ -11,6 +11,7 @@ import type { ScanCoordinator } from './scanner.ts';
 import type { CatalogService } from './catalog-service.ts';
 import { PluginAlreadyRunningError, PluginNotRunnableError, UnknownPluginActionError, type PluginService } from './plugin-service.ts';
 import { DeviceAuthError, DEVICE_POLL_INTERVAL_MS, type DeviceAuthService } from './device-auth-service.ts';
+import { UnknownSessionError, type PlaybackSessionService } from './playback-session-service.ts';
 import type { PluginScheduler } from './plugin-scheduler.ts';
 import { UnknownPluginError } from './plugins/registry.ts';
 import { ArtworkPathError, type ArtworkService } from './artwork-service.ts';
@@ -81,6 +82,8 @@ const IMAGE_TYPES: Record<string, string> = { jpg: 'image/jpeg', jpeg: 'image/jp
 const maturityLimit = z.number().int().min(0).max(21).nullable();
 const userCreate = credentials.extend({ role: z.enum(['admin', 'member']).default('member'), maxMaturityLevel: maturityLimit.optional() });
 const userUpdate = z.object({ role: z.enum(['admin', 'member']).optional(), disabled: z.boolean().optional(), password: z.string().min(10).max(256).optional(), maxMaturityLevel: maturityLimit.optional() }).refine((value) => Object.keys(value).length > 0);
+const playbackSessionStart = z.object({ mediaItemId: z.string().uuid(), playMethod: z.enum(['direct', 'remux', 'transcode']).default('direct'), positionSeconds: z.number().min(0).optional(), durationSeconds: z.number().min(0).optional() });
+const playbackSessionUpdate = z.object({ positionSeconds: z.number().min(0).optional(), paused: z.boolean().optional() });
 const deviceStartBody = z.object({ deviceName: z.string().trim().min(1).max(64).optional() });
 const devicePollBody = z.object({ deviceCode: z.string().min(10).max(256) });
 const deviceCodeParams = z.object({ code: z.string().trim().min(4).max(32) });
@@ -117,7 +120,7 @@ function requireAdmin(user: PublicUser, reply: FastifyReply) {
   return true;
 }
 
-export async function registerApiRoutes(app: FastifyInstance, service: AuthService, production: boolean, filesystem: LibraryFilesystem = nodeLibraryFilesystem, scanner?: ScanCoordinator, catalog?: CatalogService, imagesDir = '/config/images', nativeLibraryPaths = false, plugins?: PluginService, pluginScheduler?: PluginScheduler, artwork?: ArtworkService, subtitleStore?: SubtitleStore, metadataMatch?: MetadataMatchService, libraryWatcher?: Pick<LibraryWatcher, 'synchronize'>, spriteStore?: PreviewSpriteStore, settings?: UserSettingsService, userCollections?: UserCollectionsService, queue?: QueueService, watchData?: WatchDataService, historySources?: HistorySources, deviceAuth?: DeviceAuthService) {
+export async function registerApiRoutes(app: FastifyInstance, service: AuthService, production: boolean, filesystem: LibraryFilesystem = nodeLibraryFilesystem, scanner?: ScanCoordinator, catalog?: CatalogService, imagesDir = '/config/images', nativeLibraryPaths = false, plugins?: PluginService, pluginScheduler?: PluginScheduler, artwork?: ArtworkService, subtitleStore?: SubtitleStore, metadataMatch?: MetadataMatchService, libraryWatcher?: Pick<LibraryWatcher, 'synchronize'>, spriteStore?: PreviewSpriteStore, settings?: UserSettingsService, userCollections?: UserCollectionsService, queue?: QueueService, watchData?: WatchDataService, historySources?: HistorySources, deviceAuth?: DeviceAuthService, playbackSessions?: PlaybackSessionService) {
   const imageVariants = new ImageVariantStore(imagesDir);
   const synchronizeWatchers = async () => {
     try { await libraryWatcher?.synchronize(); }
@@ -186,6 +189,39 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
     const params = deviceCodeParams.safeParse(request.params); if (!params.success) return reply.status(400).send({ error: 'Invalid code' });
     try { await deviceAuth.resolve(params.data.code, user.id, 'denied'); return reply.status(204).send(); }
     catch (error) { return deviceAuthError(error, reply); }
+  });
+  // Live playback reporting: the player opens a session, heartbeats while it
+  // plays, and closes it on exit so administrators can see current activity.
+  app.post('/api/v1/playback/sessions', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    if (!playbackSessions) return reply.status(503).send({ error: 'Playback reporting unavailable' });
+    const body = playbackSessionStart.safeParse(request.body); if (!body.success) return reply.status(400).send({ error: 'Invalid playback session' });
+    const session = await playbackSessions.start({ ...body.data, userId: user.id, deviceName: describeUserAgent(request.headers['user-agent']) });
+    return reply.status(201).send({ session });
+  });
+  app.post('/api/v1/playback/sessions/:id', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    if (!playbackSessions) return reply.status(503).send({ error: 'Playback reporting unavailable' });
+    const params = sessionIdParams.safeParse(request.params); const body = playbackSessionUpdate.safeParse(request.body);
+    if (!params.success || !body.success) return reply.status(400).send({ error: 'Invalid playback report' });
+    try { return { session: await playbackSessions.heartbeat(params.data.id, user.id, body.data) }; }
+    catch (error) {
+      if (error instanceof UnknownSessionError) return reply.status(404).send({ error: 'Unknown playback session' });
+      throw error;
+    }
+  });
+  app.delete('/api/v1/playback/sessions/:id', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    if (!playbackSessions) return reply.status(503).send({ error: 'Playback reporting unavailable' });
+    const params = sessionIdParams.safeParse(request.params); if (!params.success) return reply.status(400).send({ error: 'Invalid session id' });
+    await playbackSessions.stop(params.data.id, user.id);
+    return reply.status(204).send();
+  });
+  app.get('/api/v1/admin/activity', async (request, reply) => {
+    const actor = await requireUser(request, reply, service); if (!actor || !requireAdmin(actor, reply)) return;
+    if (!playbackSessions) return reply.status(503).send({ error: 'Playback reporting unavailable' });
+    await playbackSessions.closeStale();
+    return { sessions: await playbackSessions.listActive() };
   });
   app.get('/api/v1/me/sessions', async (request, reply) => {
     const user = await requireUser(request, reply, service); if (!user) return;
