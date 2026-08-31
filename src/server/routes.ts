@@ -19,6 +19,7 @@ import type { SubtitleStore } from './subtitles.ts';
 import type { PreviewSpriteStore } from './sprites.ts';
 import { negotiatePlayback } from './playback.ts';
 import { buildTranscodeArgs, contentTypeFor, decodePlaybackPlan, encodePlaybackPlan, resolveRange, resolveWithin } from './streaming.ts';
+import { audioTracksOf } from './playback.ts';
 import { ImageVariantStore } from './images.ts';
 import { MatchItemNotFoundError, MatchUnsupportedKindError, TmdbMatchNotFoundError, type MetadataMatchService } from './metadata-match-service.ts';
 import type { LibraryWatcher } from './library-watcher.ts';
@@ -67,6 +68,8 @@ const capabilities = z.object({
   audioCodecs: z.array(z.string().min(1).max(32)).max(32).default([]),
   maxHeight: z.number().int().positive().max(16384).optional(),
   maxBitrate: z.number().int().positive().optional(),
+  /** Which audio track to play, by position among the file's audio streams. */
+  audioTrackIndex: z.number().int().min(0).max(63).optional(),
 });
 const imageParams = z.object({ name: z.string().regex(/^[A-Za-z0-9._-]+$/).max(255) });
 const imageQuery = z.object({
@@ -577,13 +580,13 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
     const body = capabilities.safeParse(request.body ?? {}); if (!body.success) return reply.status(400).send({ error: 'Invalid client capabilities' });
     if (!catalog) return reply.status(503).send({ error: 'Catalog unavailable' });
     const source = await catalog.forViewer(user.maxMaturityLevel).playbackSource(params.data.id); if (!source) return reply.status(404).send({ error: 'No playable file for this item' });
-    const plan = negotiatePlayback(source.probe, body.data);
+    const plan = negotiatePlayback(source.probe, body.data, body.data.audioTrackIndex);
     if (plan.mode === 'transcode' && plan.container !== 'mp4') return reply.status(406).send({ error: 'No supported transcode container; client must support mp4' });
     const baseUrl = `/api/v1/catalog/items/${params.data.id}/stream`;
     const url = plan.mode === 'direct' ? baseUrl : `${baseUrl}?plan=${encodeURIComponent(encodePlaybackPlan(plan))}`;
     const castToken = randomBytes(32).toString('hex');
     castStreams.set(castToken, { itemId: params.data.id, plan: plan.mode === 'direct' ? undefined : encodePlaybackPlan(plan), expiresAt: Date.now() + 6 * 60 * 60 * 1000, maturityLimit: user.maxMaturityLevel });
-    return { plan, durationSeconds: source.durationSeconds, stream: { url, castUrl: `/api/v1/cast/${castToken}/stream`, direct: plan.mode === 'direct' } };
+    return { plan, durationSeconds: source.durationSeconds, audioTracks: audioTracksOf(source.probe), stream: { url, castUrl: `/api/v1/cast/${castToken}/stream`, direct: plan.mode === 'direct' } };
   });
   app.get('/api/v1/images/:name', async (request, reply) => {
     const parsed = imageParams.safeParse(request.params); if (!parsed.success) return reply.status(400).send({ error: 'Invalid image name' });

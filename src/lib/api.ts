@@ -164,8 +164,12 @@ export interface RandomItemFilters { kind?: 'movie' | 'series'; genre?: string; 
 export interface CatalogSearchItem { id: string; title: string; year?: number; posterUrl?: string; kind: string; meta?: string; badge?: string; genres?: string[] }
 export interface CatalogSearch { query: string; groups: Array<{ id: string; label: string; items: CatalogSearchItem[] }> }
 export interface ClientCapabilities { containers: string[]; videoCodecs: string[]; audioCodecs: string[]; maxHeight?: number; maxBitrate?: number }
+export interface AudioTrack { index: number; label: string; language?: string; codec?: string; channels?: number; default: boolean }
+
 export interface PlaybackResponse {
-  plan: { mode: 'direct' | 'transcode'; container: string; remux: boolean; reasons: string[] };
+  /** Selectable audio tracks of the file, in file order. */
+  audioTracks?: AudioTrack[];
+  plan: { mode: 'direct' | 'transcode'; container: string; remux: boolean; audioTrackIndex?: number; reasons: string[] };
   durationSeconds?: number;
   stream: { url: string; castUrl?: string; direct: boolean };
 }
@@ -332,7 +336,7 @@ export const api = {
   setArtwork: (id: string, change: { posterPath?: string | null; backdropPath?: string | null }) =>
     request<{ item: { id: string; posterUrl?: string; backdropUrl?: string } }>(`/api/v1/catalog/items/${encodeURIComponent(id)}/artwork`, { method: 'PATCH', body: JSON.stringify(change) }),
   catalogSearch: (libraryId: string | undefined, query: string) => request<CatalogSearch>(`/api/v1/catalog/search?${libraryId ? `libraryId=${encodeURIComponent(libraryId)}&` : ''}q=${encodeURIComponent(query)}`),
-  playback: (id: string, capabilities: ClientCapabilities) => request<PlaybackResponse>(`/api/v1/catalog/items/${encodeURIComponent(id)}/playback`, { method: 'POST', body: JSON.stringify(capabilities) }),
+  playback: (id: string, capabilities: ClientCapabilities, audioTrackIndex?: number) => request<PlaybackResponse>(`/api/v1/catalog/items/${encodeURIComponent(id)}/playback`, { method: 'POST', body: JSON.stringify({ ...capabilities, ...(audioTrackIndex != null ? { audioTrackIndex } : {}) }) }),
   saveProgress: (id: string, positionSeconds: number, watched?: boolean) => request<{ mediaItemId: string; positionSeconds: number; watched: boolean }>(`/api/v1/catalog/items/${encodeURIComponent(id)}/progress`, { method: 'POST', body: JSON.stringify({ positionSeconds: Math.round(positionSeconds), ...(watched != null ? { watched } : {}) }) }),
   markWatched: (id: string, watched: boolean) => request<{ mediaItemId: string; positionSeconds: number; watched: boolean }>(`/api/v1/catalog/items/${encodeURIComponent(id)}/progress`, { method: 'POST', body: JSON.stringify({ watched }) }),
   setWatchlist: (id: string, saved: boolean) => request<{ mediaItemId: string; inWatchlist: boolean }>(`/api/v1/catalog/items/${encodeURIComponent(id)}/watchlist`, { method: saved ? 'POST' : 'DELETE' }),

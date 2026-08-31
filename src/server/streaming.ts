@@ -87,7 +87,7 @@ export function buildTranscodeArgs(plan: PlaybackPlan, inputPath: string): strin
   }
 
   if (plan.audio) {
-    args.push('-map', '0:a:0');
+    args.push('-map', `0:a:${plan.audioTrackIndex ?? 0}`);
     if (plan.audio.action === 'copy') args.push('-c:a', 'copy');
     else args.push('-c:a', AUDIO_ENCODERS[plan.audio.codec] ?? 'aac', '-b:a', '192k');
   }

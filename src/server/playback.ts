@@ -41,6 +41,8 @@ export interface PlaybackPlan {
   remux: boolean;
   video: { action: TrackAction; codec: string; height?: number } | null;
   audio: { action: TrackAction; codec: string } | null;
+  /** Which audio stream of the file to play, by position among audio streams. */
+  audioTrackIndex: number;
   /** Human-readable notes on why each decision was made. */
   reasons: string[];
 }
@@ -69,7 +71,7 @@ function preferred(supported: string[], fallback: string): string {
   return supported[0] ?? fallback;
 }
 
-export function negotiatePlayback(probe: Probe, capabilities: ClientCapabilities): PlaybackPlan {
+export function negotiatePlayback(probe: Probe, capabilities: ClientCapabilities, requestedAudioTrackIndex = 0): PlaybackPlan {
   const reasons: string[] = [];
   const streams = probe.streams ?? [];
   const source = probe.format?.format_name ?? '';
@@ -102,7 +104,12 @@ export function negotiatePlayback(probe: Probe, capabilities: ClientCapabilities
     }
   }
 
-  const audioStream = streams.find(isAudioStream);
+  const audioStreams = streams.filter(isAudioStream);
+  // A request for a track the file does not have falls back to the first one.
+  const audioTrackIndex = audioStreams.length > 0
+    ? Math.min(Math.max(Math.trunc(requestedAudioTrackIndex), 0), audioStreams.length - 1)
+    : 0;
+  const audioStream = audioStreams[audioTrackIndex];
   let audio: PlaybackPlan['audio'] = null;
   if (audioStream) {
     const codec = audioStream.codec_name ?? '';
@@ -116,10 +123,47 @@ export function negotiatePlayback(probe: Probe, capabilities: ClientCapabilities
   }
 
   const anyTranscode = video?.action === 'transcode' || audio?.action === 'transcode';
-  const remux = !anyTranscode && !containerSupported && (video != null || audio != null);
-  const mode: PlaybackPlan['mode'] = !anyTranscode && containerSupported ? 'direct' : 'transcode';
+  // Serving the file as-is would hand the client every audio stream and let it
+  // pick the first; a chosen alternate track therefore needs repackaging.
+  const needsTrackSelection = audioTrackIndex > 0;
+  const remux = !anyTranscode && (needsTrackSelection || !containerSupported) && (video != null || audio != null);
+  const mode: PlaybackPlan['mode'] = !anyTranscode && containerSupported && !needsTrackSelection ? 'direct' : 'transcode';
   if (mode === 'direct') reasons.push('source is directly playable');
-  else if (remux) reasons.push('tracks are compatible; repackaging container only (no re-encode)');
+  else if (remux) reasons.push(needsTrackSelection
+    ? 'selected audio track is repackaged into its own stream (no re-encode)'
+    : 'tracks are compatible; repackaging container only (no re-encode)');
 
-  return { mode, container, remux, video, audio, reasons };
+  return { mode, container, remux, video, audio, audioTrackIndex, reasons };
+}
+
+export interface AudioTrackInfo {
+  /** Position among the file's audio streams; what a plan selects. */
+  index: number;
+  label: string;
+  language?: string;
+  codec?: string;
+  channels?: number;
+  default: boolean;
+}
+
+/** The selectable audio tracks of a probed file, in file order. */
+export function audioTracksOf(probe: Probe): AudioTrackInfo[] {
+  const streams = (probe.streams ?? []).filter(isAudioStream);
+  return streams.map((stream, index) => {
+    const tags = (stream as { tags?: Record<string, string> }).tags ?? {};
+    const language = tags.language ?? tags.LANGUAGE;
+    const channels = stream.channels;
+    const title = tags.title ?? tags.TITLE;
+    const parts = [title ?? language?.toUpperCase() ?? `Track ${index + 1}`];
+    if (stream.codec_name) parts.push(stream.codec_name.toUpperCase());
+    if (channels) parts.push(channels === 6 ? '5.1' : channels === 8 ? '7.1' : channels === 2 ? 'Stereo' : `${channels}ch`);
+    return {
+      index,
+      label: parts.join(' · '),
+      language,
+      codec: stream.codec_name ?? undefined,
+      channels: channels ?? undefined,
+      default: (stream as { disposition?: { default?: number } }).disposition?.default === 1 || index === 0,
+    };
+  });
 }

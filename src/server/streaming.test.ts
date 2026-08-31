@@ -47,7 +47,7 @@ describe('contentTypeFor', () => {
 
 describe('buildTranscodeArgs', () => {
   it('copies a compatible video track and transcodes only audio', () => {
-    const plan: PlaybackPlan = { mode: 'transcode', container: 'mp4', remux: false, video: { action: 'copy', codec: 'h264', height: 1080 }, audio: { action: 'transcode', codec: 'aac' }, reasons: [] };
+    const plan: PlaybackPlan = { mode: 'transcode', container: 'mp4', remux: false, audioTrackIndex: 0, video: { action: 'copy', codec: 'h264', height: 1080 }, audio: { action: 'transcode', codec: 'aac' }, reasons: [] };
     const args = buildTranscodeArgs(plan, '/media/a.mkv');
     expect(args).toContain('-i');
     expect(args.join(' ')).toContain('-c:v copy');
@@ -56,7 +56,7 @@ describe('buildTranscodeArgs', () => {
   });
 
   it('encodes and downscales video that must be transcoded', () => {
-    const plan: PlaybackPlan = { mode: 'transcode', container: 'mp4', remux: false, video: { action: 'transcode', codec: 'h264', height: 720 }, audio: { action: 'copy', codec: 'aac' }, reasons: [] };
+    const plan: PlaybackPlan = { mode: 'transcode', container: 'mp4', remux: false, audioTrackIndex: 0, video: { action: 'transcode', codec: 'h264', height: 720 }, audio: { action: 'copy', codec: 'aac' }, reasons: [] };
     const joined = buildTranscodeArgs(plan, '/media/a.mkv').join(' ');
     expect(joined).toContain('-c:v libx264');
     expect(joined).toContain('scale=-2:720');
@@ -66,13 +66,13 @@ describe('buildTranscodeArgs', () => {
 
 describe('playback plan transport', () => {
   it('round-trips a negotiated transcode plan', () => {
-    const plan: PlaybackPlan = { mode: 'transcode', container: 'mp4', remux: false, video: { action: 'copy', codec: 'h264', height: 1080 }, audio: { action: 'transcode', codec: 'aac' }, reasons: ['audio unsupported'] };
+    const plan: PlaybackPlan = { mode: 'transcode', container: 'mp4', remux: false, audioTrackIndex: 0, video: { action: 'copy', codec: 'h264', height: 1080 }, audio: { action: 'transcode', codec: 'aac' }, reasons: ['audio unsupported'] };
     expect(decodePlaybackPlan(encodePlaybackPlan(plan))).toEqual(plan);
   });
 
   it('rejects malformed, direct, and unsupported-container plans', () => {
     expect(decodePlaybackPlan('not-base64-json')).toBeNull();
-    expect(decodePlaybackPlan(encodePlaybackPlan({ mode: 'direct', container: 'mp4', remux: false, video: null, audio: null, reasons: [] }))).toBeNull();
-    expect(decodePlaybackPlan(encodePlaybackPlan({ mode: 'transcode', container: 'webm', remux: true, video: null, audio: null, reasons: [] }))).toBeNull();
+    expect(decodePlaybackPlan(encodePlaybackPlan({ mode: 'direct', container: 'mp4', remux: false, audioTrackIndex: 0, video: null, audio: null, reasons: [] }))).toBeNull();
+    expect(decodePlaybackPlan(encodePlaybackPlan({ mode: 'transcode', container: 'webm', remux: true, audioTrackIndex: 0, video: null, audio: null, reasons: [] }))).toBeNull();
   });
 });

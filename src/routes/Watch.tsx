@@ -15,20 +15,25 @@ export function Watch() {
   const [playback, setPlayback] = useState<PlaybackResponse>();
   const [thumbnails, setThumbnails] = useState<MediaSprite>();
   const [intro, setIntro] = useState<IntroMarker>();
+  // Re-negotiating with another audio track swaps dubs or commentary mid-title.
+  const [audioTrackIndex, setAudioTrackIndex] = useState<number>();
+  // Switching tracks reloads the stream; playback resumes where it left off.
+  const positionRef = useRef(0);
+  const [resumeAt, setResumeAt] = useState<number>();
   // Live session id, so administrators can see this playback while it runs.
   const sessionRef = useRef<string | undefined>(undefined);
   const [error, setError] = useState<string>();
   const load = useCallback(async () => {
     setError(undefined); setPlayback(undefined); setThumbnails(undefined); setIntro(undefined);
     try {
-      const [{ item: nextItem }, nextPlayback] = await Promise.all([api.catalogItem(id), api.playback(id, detectMediaCapabilities())]);
+      const [{ item: nextItem }, nextPlayback] = await Promise.all([api.catalogItem(id), api.playback(id, detectMediaCapabilities(), audioTrackIndex)]);
       setItem(nextItem); setPlayback(nextPlayback);
       // Scrubber previews are optional; a title without a generated sprite just omits them.
       void api.mediaSprites(id).then(({ sprite }) => setThumbnails(sprite)).catch(() => setThumbnails(undefined));
       // Intro markers are optional; a title without one simply hides Skip intro.
       void api.mediaIntro(id).then(({ intro: marker }) => setIntro(marker ?? undefined)).catch(() => setIntro(undefined));
     } catch (caught) { setError(caught instanceof Error ? caught.message : 'Playback could not be started.'); }
-  }, [id]);
+  }, [id, audioTrackIndex]);
   useEffect(() => { queueMicrotask(() => { void load(); }); }, [load]);
 
   useEffect(() => {
@@ -54,7 +59,7 @@ export function Watch() {
   const detailsHref = `/media/${encodeURIComponent(id)}`;
   const duration = playback.durationSeconds ?? item.files?.[0]?.durationSeconds;
   // Resume from the last saved spot; progress is a 0..1 fraction, so scale by runtime.
-  const startPositionSeconds = typeof item.progress === 'number' && item.progress > 0 && item.progress < 1 && duration ? item.progress * duration : undefined;
+  const startPositionSeconds = resumeAt ?? (typeof item.progress === 'number' && item.progress > 0 && item.progress < 1 && duration ? item.progress * duration : undefined);
   const subtitles = (item.subtitles ?? []).map((track) => ({ id: track.id, label: track.label, srcLang: track.language, src: track.url }));
   const nextHref = item.nextEpisodeId ? `/watch/${encodeURIComponent(item.nextEpisodeId)}` : undefined;
   const nextUp = item.nextEpisode ? {
@@ -83,6 +88,7 @@ export function Watch() {
     onBack={(event) => { event.preventDefault(); navigate(detailsHref); }}
     startPositionSeconds={startPositionSeconds}
     onProgress={(positionSeconds) => {
+      positionRef.current = positionSeconds;
       void api.saveProgress(id, positionSeconds).catch(() => {});
       if (sessionRef.current) void api.reportPlayback(sessionRef.current, { positionSeconds }).catch(() => {});
     }}
@@ -96,6 +102,9 @@ export function Watch() {
     nextUp={nextUp}
     onNext={marathon ? () => void advanceQueue() : nextHref ? () => navigate(nextHref) : undefined}
     intro={intro}
+    audioTracks={(playback.audioTracks ?? []).map((track) => ({ id: String(track.index), label: track.label }))}
+    activeAudioId={String(playback.plan.audioTrackIndex ?? 0)}
+    onAudioChange={(next) => { setResumeAt(positionRef.current); setAudioTrackIndex(Number(next)); }}
     autoPlay
     className="mx-auto max-h-screen max-w-[min(100vw,177.78vh)] rounded-none"
   /></main>;
