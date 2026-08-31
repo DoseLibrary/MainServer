@@ -13,8 +13,15 @@ export interface ManagedUser extends Required<Omit<User, 'maxMaturityLevel'>> {
   maxMaturityLevel: number | null;
 }
 
+export type SubtitleBackground = 'none' | 'shadow' | 'box';
+
 export interface UserSettings {
   showCollectionGaps: boolean;
+  /** Remembered playback rate, as a percentage of normal speed. */
+  playbackSpeedPercent: number;
+  /** Caption size, as a percentage of the player's default. */
+  subtitleSizePercent: number;
+  subtitleBackground: SubtitleBackground;
 }
 
 export interface Library {

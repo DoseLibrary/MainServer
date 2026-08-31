@@ -82,6 +82,11 @@ export interface VideoPlayerProps {
   nextUp?: { title: string; subtitle?: string; posterSrc?: string };
   /** Seconds before the end at which the next-episode card appears. */
   autoAdvanceSeconds?: number;
+  /** Playback rate as a percentage of normal speed, remembered per account. */
+  speedPercent?: number;
+  onSpeedChange?: (percent: number) => void;
+  /** Caption presentation, remembered per account. */
+  captionStyle?: { sizePercent: number; background: 'none' | 'shadow' | 'box' };
   /** When set, a "Next episode" control is shown to skip to the next item. */
   onNext?: () => void;
   /** Detected intro segment; a "Skip intro" button appears while inside it. */
@@ -140,6 +145,9 @@ export function VideoPlayer({
   onNext,
   nextUp,
   autoAdvanceSeconds = 15,
+  speedPercent = 100,
+  onSpeedChange,
+  captionStyle,
   intro,
   autoPlay = false,
   className,
@@ -157,6 +165,10 @@ export function VideoPlayer({
   const lastReportRef = useRef(0);
   const resumeAppliedRef = useRef(false);
   useEffect(() => { onProgressRef.current = onProgress; onEndedRef.current = onEnded; });
+  useEffect(() => {
+    const video = videoRef.current;
+    if (video) video.playbackRate = speedPercent / 100;
+  }, [speedPercent, src]);
 
   const [playing, setPlaying] = useState(false);
   const [waiting, setWaiting] = useState(false);
@@ -377,7 +389,14 @@ export function VideoPlayer({
   const progressPct = duration > 0 ? (current / duration) * 100 : 0;
   const bufferedPct = duration > 0 ? (buffered / duration) * 100 : 0;
   const VolumeIcon = muted || volume === 0 ? VolumeX : volume < 0.5 ? Volume1 : Volume2;
-  const hasSettings = qualities.length > 0 || audioTracks.length > 0;
+  const captionCss = captionStyle && (captionStyle.sizePercent !== 100 || captionStyle.background !== 'shadow')
+    ? `#${CSS.escape(menuId)}-stage video::cue{font-size:${captionStyle.sizePercent}%;`
+      + (captionStyle.background === 'box' ? 'background-color:rgba(0,0,0,0.75);text-shadow:none;'
+        : captionStyle.background === 'none' ? 'background-color:transparent;text-shadow:none;'
+          : 'background-color:transparent;text-shadow:0 2px 4px rgba(0,0,0,0.9);')
+      + '}'
+    : undefined;
+  const hasSettings = qualities.length > 0 || audioTracks.length > 0 || Boolean(onSpeedChange);
 
   let spriteStyle: React.CSSProperties | null = null;
   if (hover && thumbnails) {
@@ -397,6 +416,7 @@ export function VideoPlayer({
   return (
     <div
       ref={containerRef}
+      id={`${menuId}-stage`}
       className={cn(
         'group relative aspect-video w-full select-none overflow-hidden rounded-lg bg-black text-white outline-none',
         !controlsVisible && playing && 'cursor-none',
@@ -407,6 +427,7 @@ export function VideoPlayer({
       onMouseMove={showControls}
       onMouseLeave={() => { if (playing) setControlsVisible(false); }}
     >
+      {captionCss && <style>{captionCss}</style>}
       <video
         ref={videoRef}
         src={src}
@@ -634,6 +655,16 @@ export function VideoPlayer({
                 </ControlButton>
                 {openMenu === 'settings' && (
                   <div id={`${menuId}-settings`} role="menu" className="absolute bottom-11 right-0 min-w-44 rounded-md border border-white/10 bg-black/95 p-1 text-sm shadow-xl">
+                    {onSpeedChange && (
+                      <>
+                        <div className="px-3 pb-1 pt-2 text-xs uppercase tracking-wide text-white/50">Speed</div>
+                        {[50, 75, 100, 125, 150, 200].map((percent) => (
+                          <MenuItem key={percent} selected={speedPercent === percent} onClick={() => onSpeedChange(percent)}>
+                            {percent === 100 ? 'Normal' : `${percent / 100}\u00d7`}
+                          </MenuItem>
+                        ))}
+                      </>
+                    )}
                     {qualities.length > 0 && (
                       <>
                         <div className="px-3 pb-1 pt-2 text-xs uppercase tracking-wide text-white/50">Quality</div>

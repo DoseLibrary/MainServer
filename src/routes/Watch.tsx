@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { VideoPlayer } from '@/components/media/VideoPlayer';
 import { Button } from '@/components/ui/button';
-import { api, imageVariant, type CatalogItemDetails, type IntroMarker, type MediaSprite, type PlaybackResponse } from '@/lib/api';
+import { api, imageVariant, type CatalogItemDetails, type IntroMarker, type MediaSprite, type PlaybackResponse, type UserSettings } from '@/lib/api';
 import { detectMediaCapabilities } from '@/lib/media-capabilities';
 
 export function Watch() {
@@ -20,6 +20,9 @@ export function Watch() {
   // Switching tracks reloads the stream; playback resumes where it left off.
   const positionRef = useRef(0);
   const [resumeAt, setResumeAt] = useState<number>();
+  // Playback preferences follow the account, so a chosen speed or caption size
+  // is the same on the next device.
+  const [settings, setSettings] = useState<UserSettings>();
   // Live session id, so administrators can see this playback while it runs.
   const sessionRef = useRef<string | undefined>(undefined);
   const [error, setError] = useState<string>();
@@ -35,6 +38,17 @@ export function Watch() {
     } catch (caught) { setError(caught instanceof Error ? caught.message : 'Playback could not be started.'); }
   }, [id, audioTrackIndex]);
   useEffect(() => { queueMicrotask(() => { void load(); }); }, [load]);
+  useEffect(() => {
+    let active = true;
+    void api.getSettings().then(({ settings: next }) => { if (active) setSettings(next); })
+      .catch(() => { /* defaults are fine when preferences cannot be read */ });
+    return () => { active = false; };
+  }, []);
+
+  const changeSpeed = (percent: number) => {
+    setSettings((current) => (current ? { ...current, playbackSpeedPercent: percent } : current));
+    void api.updateSettings({ playbackSpeedPercent: percent }).catch(() => {});
+  };
 
   useEffect(() => {
     if (!playback) return;
@@ -102,6 +116,9 @@ export function Watch() {
     nextUp={nextUp}
     onNext={marathon ? () => void advanceQueue() : nextHref ? () => navigate(nextHref) : undefined}
     intro={intro}
+    speedPercent={settings?.playbackSpeedPercent ?? 100}
+    onSpeedChange={changeSpeed}
+    captionStyle={settings ? { sizePercent: settings.subtitleSizePercent, background: settings.subtitleBackground } : undefined}
     audioTracks={(playback.audioTracks ?? []).map((track) => ({ id: String(track.index), label: track.label }))}
     activeAudioId={String(playback.plan.audioTrackIndex ?? 0)}
     onAudioChange={(next) => { setResumeAt(positionRef.current); setAudioTrackIndex(Number(next)); }}

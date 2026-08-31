@@ -42,6 +42,12 @@ export const users = pgTable('users', {
 export const userSettings = pgTable('user_settings', {
   userId: uuid('user_id').primaryKey().references(() => users.id, { onDelete: 'cascade' }),
   showCollectionGaps: boolean('show_collection_gaps').notNull().default(false),
+  /** Remembered playback rate, as a percentage of normal speed. */
+  playbackSpeedPercent: integer('playback_speed_percent').notNull().default(100),
+  /** Caption size, as a percentage of the player's default. */
+  subtitleSizePercent: integer('subtitle_size_percent').notNull().default(100),
+  /** Backdrop behind captions: none, a soft shadow, or a solid box. */
+  subtitleBackground: text('subtitle_background').notNull().default('shadow'),
   ...timestamps,
 });
 

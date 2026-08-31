@@ -33,4 +33,18 @@ describe('UserSettingsService', () => {
     const result = await client.query<{ count: string }>('select count(*)::text as count from user_settings');
     expect(result.rows[0]?.count).toBe('0');
   });
+
+  it('stores playback preferences within safe bounds', async () => {
+    const saved = await service.update(userId, { playbackSpeedPercent: 150, subtitleSizePercent: 125, subtitleBackground: 'box' });
+    expect(saved).toMatchObject({ playbackSpeedPercent: 150, subtitleSizePercent: 125, subtitleBackground: 'box' });
+
+    // Values that would make playback unusable are refused outright.
+    await expect(service.update(userId, { playbackSpeedPercent: 1000 })).rejects.toThrow();
+    await expect(service.update(userId, { subtitleBackground: 'rainbow' as never })).rejects.toThrow();
+    expect(await service.get(userId)).toMatchObject({ playbackSpeedPercent: 150 });
+  });
+
+  it('defaults to normal speed and shadowed captions', async () => {
+    expect(await service.get(userId)).toMatchObject({ playbackSpeedPercent: 100, subtitleSizePercent: 100, subtitleBackground: 'shadow' });
+  });
 });

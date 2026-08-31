@@ -35,6 +35,13 @@ export function Profile() {
     try { setSettings((await api.updateSettings({ showCollectionGaps: next.showCollectionGaps })).settings); }
     catch (caught) { setSettings(previous); setSettingsError(caught instanceof Error ? caught.message : 'Could not save settings.'); }
   }
+  async function savePlayback(change: Partial<UserSettings>) {
+    if (!settings) return;
+    const previous = settings;
+    setSettings({ ...settings, ...change }); setSettingsError(undefined);
+    try { setSettings((await api.updateSettings(change)).settings); }
+    catch (caught) { setSettings(previous); setSettingsError(caught instanceof Error ? caught.message : 'Could not save settings.'); }
+  }
   async function exportWatchData() {
     setTransfer(undefined); setSettingsError(undefined);
     try {
@@ -89,6 +96,29 @@ export function Profile() {
 
         <section aria-labelledby="settings-heading" className="border-t py-8"><div className="mb-4"><h2 id="settings-heading" className="text-xl font-semibold">Settings</h2><p className="mt-1 text-sm text-muted-foreground">Choose how your personal library is presented.</p></div>
           <Card><CardContent className="flex items-center justify-between gap-6 py-6"><div><label htmlFor="show-collection-gaps" className="font-medium">Show missing movies from collections</label><p className="mt-1 text-sm text-muted-foreground">Include movies you do not own when viewing a collection.</p>{settingsError && <p role="alert" className="mt-2 text-sm text-destructive">{settingsError}</p>}</div><input id="show-collection-gaps" type="checkbox" className="h-5 w-5 shrink-0 accent-foreground" checked={settings?.showCollectionGaps ?? false} disabled={!settings} onChange={() => void toggleCollectionGaps()} /></CardContent></Card>
+          <Card className="mt-4"><CardContent className="space-y-4 py-6">
+            <div><p className="font-medium">Playback</p><p className="mt-1 text-sm text-muted-foreground">Applies wherever you sign in.</p></div>
+            <div className="grid gap-3 sm:grid-cols-3">
+              <label className="flex flex-col gap-1.5 text-sm font-medium">Speed
+                <select aria-label="Playback speed" className="h-9 rounded-md border bg-background px-2 text-sm font-normal" value={settings?.playbackSpeedPercent ?? 100} disabled={!settings}
+                  onChange={(event) => void savePlayback({ playbackSpeedPercent: Number(event.target.value) })}>
+                  {[50, 75, 100, 125, 150, 200].map((percent) => <option key={percent} value={percent}>{percent === 100 ? 'Normal' : `${percent / 100}\u00d7`}</option>)}
+                </select>
+              </label>
+              <label className="flex flex-col gap-1.5 text-sm font-medium">Subtitle size
+                <select aria-label="Subtitle size" className="h-9 rounded-md border bg-background px-2 text-sm font-normal" value={settings?.subtitleSizePercent ?? 100} disabled={!settings}
+                  onChange={(event) => void savePlayback({ subtitleSizePercent: Number(event.target.value) })}>
+                  {[75, 100, 125, 150, 200].map((percent) => <option key={percent} value={percent}>{percent === 100 ? 'Default' : `${percent}%`}</option>)}
+                </select>
+              </label>
+              <label className="flex flex-col gap-1.5 text-sm font-medium">Subtitle backdrop
+                <select aria-label="Subtitle backdrop" className="h-9 rounded-md border bg-background px-2 text-sm font-normal" value={settings?.subtitleBackground ?? 'shadow'} disabled={!settings}
+                  onChange={(event) => void savePlayback({ subtitleBackground: event.target.value as 'none' | 'shadow' | 'box' })}>
+                  <option value="shadow">Shadow</option><option value="box">Solid box</option><option value="none">None</option>
+                </select>
+              </label>
+            </div>
+          </CardContent></Card>
           <Card className="mt-4"><CardContent className="flex flex-wrap items-center justify-between gap-4 py-6"><div><p className="font-medium">Watch data</p><p className="mt-1 text-sm text-muted-foreground">Move your progress, watch list, and collections between Dose installs.</p>{transfer && <p role="status" className="mt-2 text-sm text-muted-foreground">{transfer}</p>}</div><div className="flex items-center gap-2"><Button variant="outline" onClick={() => void exportWatchData()}>Export my data</Button><label className="inline-flex cursor-pointer items-center rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted">Import<input type="file" accept="application/json" className="sr-only" aria-label="Import watch data" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void importWatchData(file); }} /></label></div></CardContent></Card>
           <Card className="mt-4"><CardContent className="space-y-4 py-6">
             <div><p className="font-medium">Import watch history</p><p className="mt-1 text-sm text-muted-foreground">One-way and read-only: Dose reads your history and never writes back to the source.</p></div>
