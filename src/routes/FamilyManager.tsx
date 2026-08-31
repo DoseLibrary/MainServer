@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Modal, ModalContent, ModalDescription, ModalFooter, ModalHeader, ModalTitle } from '@/components/ui/modal';
 
-export function FamilyManager({ open, actorId, onOpenChange }: { open: boolean; actorId: string; onOpenChange(open: boolean): void }) {
+export function FamilyManager({ open, embedded = false, actorId, onOpenChange = () => {} }: { open: boolean; embedded?: boolean; actorId: string; onOpenChange?(open: boolean): void }) {
   const [users, setUsers] = useState<ManagedUser[]>([]);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -46,8 +46,12 @@ export function FamilyManager({ open, actorId, onOpenChange }: { open: boolean; 
     finally { setBusy(false); }
   }
 
-  return <Modal open={open} onOpenChange={onOpenChange}><ModalContent aria-describedby="family-description" className="max-h-[90vh] overflow-y-auto">
-    <ModalHeader><ModalTitle className="text-xl font-semibold">Manage family</ModalTitle><ModalDescription id="family-description">Create accounts and control access to this Dose library.</ModalDescription></ModalHeader>
+  const confirmDialogs = <>
+  <Modal open={Boolean(confirmDelete)} onOpenChange={(next) => { if (!next) setConfirmDelete(undefined); }}><ModalContent><ModalHeader><ModalTitle>Delete {confirmDelete?.username}?</ModalTitle><ModalDescription>The account and its watch history will be permanently removed.</ModalDescription></ModalHeader><ModalFooter><Button variant="outline" onClick={() => setConfirmDelete(undefined)}>Cancel</Button><Button variant="destructive" disabled={busy} onClick={() => void remove()}>Confirm delete</Button></ModalFooter></ModalContent></Modal>
+  <Modal open={Boolean(resetUser)} onOpenChange={(next) => { if (!next) { setResetUser(undefined); setResetError(''); } }}><ModalContent><ModalHeader><ModalTitle>Reset {resetUser?.username}&apos;s password</ModalTitle><ModalDescription>This signs the account out on every device.</ModalDescription></ModalHeader>{resetError && <div role="alert" className="mb-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{resetError}</div>}<form onSubmit={reset}><Input name="password" label="New password" type="password" minLength={10} required disabled={busy}/><ModalFooter><Button variant="outline" type="button" onClick={() => { setResetUser(undefined); setResetError(''); }}>Cancel</Button><Button type="submit" disabled={busy}>Reset password</Button></ModalFooter></form></ModalContent></Modal>
+  </>;
+
+  const content = <>
     {error && <div role="alert" className="mb-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div>}
     <form className="space-y-3" onSubmit={create}><Input name="username" label="Username" required maxLength={64} disabled={busy}/><Input name="password" label="Temporary password" type="password" required minLength={10} disabled={busy}/>
       <label className="flex flex-col gap-1.5 text-sm font-medium">Role<select name="role" aria-label="Role" className="h-10 rounded-md border border-input bg-background px-3" disabled={busy}><option value="member">Member</option><option value="admin">Administrator</option></select></label>
@@ -60,8 +64,13 @@ export function FamilyManager({ open, actorId, onOpenChange }: { open: boolean; 
         <Button size="sm" variant="outline" disabled={busy || user.id === actorId} aria-describedby={user.id === actorId ? `self-reset-${user.id}` : undefined} onClick={() => { setResetError(''); setResetUser(user); }}>Reset password</Button><Button size="sm" variant="destructive" disabled={busy || user.id === actorId} onClick={() => setConfirmDelete(user)}>Delete</Button></div></div>
         {user.id === actorId && <p id={`self-reset-${user.id}`} className="mt-2 text-xs text-muted-foreground">Your own password cannot be reset from family management.</p>}
       </li>)}</ul>}</section>
+  </>;
+
+  if (embedded) return <section aria-label="Manage family" className="w-full max-w-2xl">{content}{confirmDialogs}</section>;
+  return <Modal open={open} onOpenChange={onOpenChange}><ModalContent aria-describedby="family-description" className="max-h-[90vh] overflow-y-auto">
+    <ModalHeader><ModalTitle className="text-xl font-semibold">Manage family</ModalTitle><ModalDescription id="family-description">Create accounts and control access to this Dose library.</ModalDescription></ModalHeader>
+    {content}
   </ModalContent>
-  <Modal open={Boolean(confirmDelete)} onOpenChange={(next) => { if (!next) setConfirmDelete(undefined); }}><ModalContent><ModalHeader><ModalTitle>Delete {confirmDelete?.username}?</ModalTitle><ModalDescription>The account and its watch history will be permanently removed.</ModalDescription></ModalHeader><ModalFooter><Button variant="outline" onClick={() => setConfirmDelete(undefined)}>Cancel</Button><Button variant="destructive" disabled={busy} onClick={() => void remove()}>Confirm delete</Button></ModalFooter></ModalContent></Modal>
-  <Modal open={Boolean(resetUser)} onOpenChange={(next) => { if (!next) { setResetUser(undefined); setResetError(''); } }}><ModalContent><ModalHeader><ModalTitle>Reset {resetUser?.username}&apos;s password</ModalTitle><ModalDescription>This signs the account out on every device.</ModalDescription></ModalHeader>{resetError && <div role="alert" className="mb-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{resetError}</div>}<form onSubmit={reset}><Input name="password" label="New password" type="password" minLength={10} required disabled={busy}/><ModalFooter><Button variant="outline" type="button" onClick={() => { setResetUser(undefined); setResetError(''); }}>Cancel</Button><Button type="submit" disabled={busy}>Reset password</Button></ModalFooter></form></ModalContent></Modal>
+  {confirmDialogs}
   </Modal>;
 }

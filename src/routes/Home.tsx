@@ -4,6 +4,8 @@ import { LibraryPage } from '@/pages/LibraryPage';
 import { api, ApiError, imageVariant, type CatalogHome, type Library, type User } from '@/lib/api';
 import { CatalogSearch } from '@/components/media/CatalogSearch';
 import { Button } from '@/components/ui/button';
+import { UserMenu } from '@/components/media/UserMenu';
+import { RandomPickerModal } from '@/components/media/RandomPickerModal';
 
 type AppState =
   | { name: 'loading' }
@@ -25,6 +27,7 @@ export function Home() {
   const [catalog, setCatalog] = useState<CatalogHome>();
   const [catalogStatus, setCatalogStatus] = useState<'loading' | 'loaded' | 'error'>('loading');
   const [catalogError, setCatalogError] = useState<string>();
+  const [randomOpen, setRandomOpen] = useState(false);
 
   const loadCatalog = useCallback(async (libraryId?: string) => {
     setCatalogStatus('loading');
@@ -89,10 +92,6 @@ export function Home() {
     }
   }
 
-  async function logout() {
-    try { await api.logout(); } finally { setState({ name: 'login' }); }
-  }
-
   if (state.name === 'loading') {
     return <LibraryPage title="Your library" state="loading" navigation={{ brandLabel: 'DOSE', items: [] }} />;
   }
@@ -124,10 +123,11 @@ export function Home() {
         brandLabel: 'DOSE',
         brandHref: '/',
         items: [{ id: 'categories', label: 'Categories', href: '/categories' }],
-        actions: <><CatalogSearch libraryId={selectedLibraryId} /><Button asChild variant="outline" size="sm"><a href="/profile" aria-label={`Profile (${state.user.username})`}>Profile</a></Button><Button variant="outline" size="sm" onClick={() => void logout()}>Sign out</Button></>,
+        actions: <><CatalogSearch libraryId={selectedLibraryId} /><Button variant="outline" size="sm" onClick={() => setRandomOpen(true)}>Random pick</Button><UserMenu user={state.user} onLogout={() => setState({ name: 'login' })} /></>,
       }}
       featured={featured}
       sections={sections}
     />
+    <RandomPickerModal open={randomOpen} onOpenChange={setRandomOpen} />
   </>;
 }

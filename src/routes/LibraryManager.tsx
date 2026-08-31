@@ -6,6 +6,8 @@ import { Modal, ModalContent, ModalDescription, ModalFooter, ModalHeader, ModalT
 
 interface LibraryManagerProps {
   open: boolean;
+  /** Render as page content instead of a dialog. */
+  embedded?: boolean;
   libraries: Library[];
   onOpenChange: (open: boolean) => void;
   onChanged: (libraries: Library[]) => void;
@@ -14,7 +16,7 @@ interface LibraryManagerProps {
   onScanCompleted?: () => void;
 }
 
-export function LibraryManager({ open, libraries, onOpenChange, onChanged, onError, error, onScanCompleted }: LibraryManagerProps) {
+export function LibraryManager({ open, embedded = false, libraries, onOpenChange, onChanged, onError, error, onScanCompleted }: LibraryManagerProps) {
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState<Library>();
   const [scans, setScans] = useState<Record<string, LibraryScan | null>>({});
@@ -128,13 +130,17 @@ export function LibraryManager({ open, libraries, onOpenChange, onChanged, onErr
     } finally { setBusy(false); }
   }
 
-  return (
-    <Modal open={open} onOpenChange={onOpenChange}>
-      <ModalContent aria-describedby="library-manager-description">
-        <ModalHeader>
-          <ModalTitle className="text-xl font-semibold">Manage libraries</ModalTitle>
-          <ModalDescription id="library-manager-description">Add folders mounted into this Dose server.</ModalDescription>
-        </ModalHeader>
+  const confirmDialog = (
+    <Modal open={Boolean(confirming)} onOpenChange={(next) => { if (!next) setConfirming(undefined); }}>
+      <ModalContent>
+        <ModalHeader><ModalTitle className="text-xl font-semibold">Delete {confirming?.name}?</ModalTitle><ModalDescription>This removes the library from Dose. It does not delete media files.</ModalDescription></ModalHeader>
+        <ModalFooter><Button type="button" variant="outline" onClick={() => setConfirming(undefined)}>Cancel</Button><Button type="button" variant="destructive" onClick={() => void remove()} disabled={busy}>Confirm delete</Button></ModalFooter>
+      </ModalContent>
+    </Modal>
+  );
+
+  const content = (
+    <>
         {error && <div role="alert" className="mb-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div>}
         <form className="space-y-4" onSubmit={create}>
           <Input name="name" label="Library name" placeholder="Movies" required disabled={busy} />
@@ -158,13 +164,20 @@ export function LibraryManager({ open, libraries, onOpenChange, onChanged, onErr
             ))}</ul>
           )}
         </section>
+    </>
+  );
+
+  if (embedded) return <section aria-label="Manage libraries" className="w-full max-w-2xl">{content}{confirmDialog}</section>;
+  return (
+    <Modal open={open} onOpenChange={onOpenChange}>
+      <ModalContent aria-describedby="library-manager-description">
+        <ModalHeader>
+          <ModalTitle className="text-xl font-semibold">Manage libraries</ModalTitle>
+          <ModalDescription id="library-manager-description">Add folders mounted into this Dose server.</ModalDescription>
+        </ModalHeader>
+        {content}
       </ModalContent>
-      <Modal open={Boolean(confirming)} onOpenChange={(next) => { if (!next) setConfirming(undefined); }}>
-        <ModalContent>
-          <ModalHeader><ModalTitle className="text-xl font-semibold">Delete {confirming?.name}?</ModalTitle><ModalDescription>This removes the library from Dose. It does not delete media files.</ModalDescription></ModalHeader>
-          <ModalFooter><Button type="button" variant="outline" onClick={() => setConfirming(undefined)}>Cancel</Button><Button type="button" variant="destructive" onClick={() => void remove()} disabled={busy}>Confirm delete</Button></ModalFooter>
-        </ModalContent>
-      </Modal>
+      {confirmDialog}
     </Modal>
   );
 }

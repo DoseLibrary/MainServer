@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api, imageVariant, type CatalogGenreView } from '@/lib/api';
 import { Navbar } from '@/components/media/Navbar';
+import { UserMenu } from '@/components/media/UserMenu';
 import { Poster } from '@/components/media/Poster';
 import { Button } from '@/components/ui/button';
 
@@ -19,7 +20,7 @@ export function GenrePage() {
 
   return (
     <div className="min-h-screen bg-background text-foreground">
-      <Navbar brandLabel="DOSE" brand="DOSE" brandHref="/" items={[{ id: 'library', label: 'Library', href: '/' }]} />
+      <Navbar brandLabel="DOSE" brand="DOSE" brandHref="/" items={[{ id: 'library', label: 'Library', href: '/' }]} actions={<UserMenu />} />
       <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
         {error ? (
           <section className="flex min-h-[50vh] flex-col items-center justify-center gap-4 text-center">

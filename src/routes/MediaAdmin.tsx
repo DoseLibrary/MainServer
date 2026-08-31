@@ -7,12 +7,14 @@ import { Spinner } from '@/components/ui/spinner';
 
 interface MediaAdminProps {
   open: boolean;
-  onOpenChange: (open: boolean) => void;
+  /** Render as page content instead of a dialog; the list grows with the page. */
+  embedded?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }
 
 type Filter = 'all' | 'archived';
 
-export function MediaAdmin({ open, onOpenChange }: MediaAdminProps) {
+export function MediaAdmin({ open, embedded = false, onOpenChange = () => {} }: MediaAdminProps) {
   const [filter, setFilter] = useState<Filter>('all');
   const [query, setQuery] = useState('');
   const [items, setItems] = useState<AdminMediaItem[]>();
@@ -53,14 +55,8 @@ export function MediaAdmin({ open, onOpenChange }: MediaAdminProps) {
     finally { setBusyId(undefined); }
   }
 
-  return (
-    <Modal open={open} onOpenChange={onOpenChange}>
-      <ModalContent aria-describedby="media-admin-description" className="max-w-4xl">
-        <ModalHeader>
-          <ModalTitle className="text-xl font-semibold">Media library</ModalTitle>
-          <ModalDescription id="media-admin-description">Review titles, correct a mistaken match, or remove titles. Archived titles have no files on disk and are hidden from members.</ModalDescription>
-        </ModalHeader>
-
+  const content = (
+    <>
         <div className="flex flex-wrap items-center gap-2">
           <div className="inline-flex rounded-md border p-0.5" role="group" aria-label="Filter titles">
             {(['all', 'archived'] as const).map((value) => (
@@ -78,7 +74,7 @@ export function MediaAdmin({ open, onOpenChange }: MediaAdminProps) {
         {notice && <div role="status" className="mt-3 rounded-md border bg-muted/40 px-3 py-2 text-sm">{notice}</div>}
         {error && <div role="alert" className="mt-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div>}
 
-        <ul className="mt-3 max-h-[55vh] list-none space-y-2 overflow-y-auto p-0">
+        <ul className={`mt-3 list-none space-y-2 p-0 ${embedded ? '' : 'max-h-[55vh] overflow-y-auto'}`}>
           {!items ? <li className="py-10 text-center text-muted-foreground"><Spinner label="Loading" className="mx-auto h-5 w-5" /></li>
             : items.length === 0 ? <li className="py-10 text-center text-muted-foreground">No titles match.</li>
             : items.map((item) => (
@@ -107,6 +103,18 @@ export function MediaAdmin({ open, onOpenChange }: MediaAdminProps) {
               </li>
             ))}
         </ul>
+    </>
+  );
+
+  if (embedded) return <section aria-label="Media library" className="w-full">{content}</section>;
+  return (
+    <Modal open={open} onOpenChange={onOpenChange}>
+      <ModalContent aria-describedby="media-admin-description" className="max-w-4xl">
+        <ModalHeader>
+          <ModalTitle className="text-xl font-semibold">Media library</ModalTitle>
+          <ModalDescription id="media-admin-description">Review titles, correct a mistaken match, or remove titles. Archived titles have no files on disk and are hidden from members.</ModalDescription>
+        </ModalHeader>
+        {content}
       </ModalContent>
     </Modal>
   );

@@ -1,38 +1,79 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Clapperboard, Database, Film, HardDrive, Image, Puzzle, ShieldCheck, UserRound, UsersRound } from 'lucide-react';
+import { ListOrdered, ListVideo, ShieldCheck, UserRound, Wrench } from 'lucide-react';
 import { Navbar } from '@/components/media/Navbar';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { api, type HealthStatus, type Library, type User } from '@/lib/api';
-import { FamilyManager } from './FamilyManager';
-import { LibraryManager } from './LibraryManager';
-import { MediaAdmin } from './MediaAdmin';
+import { api, type HistorySourceId, type User, type UserSettings, type WatchDataDocument, type WatchDataImportSummary } from '@/lib/api';
+import { UserMenu } from '@/components/media/UserMenu';
 
 export function Profile() {
   const navigate = useNavigate();
   const [user, setUser] = useState<User>();
-  const [libraries, setLibraries] = useState<Library[]>([]);
-  const [health, setHealth] = useState<HealthStatus>();
   const [error, setError] = useState<string>();
-  const [familyOpen, setFamilyOpen] = useState(false);
-  const [librariesOpen, setLibrariesOpen] = useState(false);
-  const [mediaOpen, setMediaOpen] = useState(false);
-  const [managerError, setManagerError] = useState<string>();
+  const [settings, setSettings] = useState<UserSettings>();
+  const [settingsError, setSettingsError] = useState<string>();
+  const [transfer, setTransfer] = useState<string>();
+  const [historySource, setHistorySource] = useState<HistorySourceId>('plex');
+  const [historyFields, setHistoryFields] = useState<Record<string, string>>({});
+  const [importing, setImporting] = useState(false);
   const load = useCallback(async () => {
     setError(undefined);
     try {
-      const [{ user: nextUser }, { libraries: nextLibraries }, nextHealth] = await Promise.all([api.me(), api.libraries(), api.health()]);
-      setUser(nextUser); setLibraries(nextLibraries); setHealth(nextHealth);
+      const [{ user: nextUser }, { settings: nextSettings }] = await Promise.all([api.me(), api.getSettings()]);
+      setUser(nextUser); setSettings(nextSettings);
     } catch (caught) { setError(caught instanceof Error ? caught.message : 'Could not load this profile.'); }
   }, []);
   useEffect(() => { queueMicrotask(() => { void load(); }); }, [load]);
 
-  async function logout() { try { await api.logout(); } finally { navigate('/'); } }
+  async function toggleCollectionGaps() {
+    if (!settings) return;
+    const previous = settings;
+    const next = { ...settings, showCollectionGaps: !settings.showCollectionGaps };
+    setSettings(next); setSettingsError(undefined);
+    try { setSettings((await api.updateSettings({ showCollectionGaps: next.showCollectionGaps })).settings); }
+    catch (caught) { setSettings(previous); setSettingsError(caught instanceof Error ? caught.message : 'Could not save settings.'); }
+  }
+  async function exportWatchData() {
+    setTransfer(undefined); setSettingsError(undefined);
+    try {
+      const document = await api.exportWatchData();
+      // Blob + object URL keeps the download entirely client-side and offline.
+      const url = URL.createObjectURL(new Blob([JSON.stringify(document, null, 2)], { type: 'application/json' }));
+      const link = window.document.createElement('a');
+      link.href = url; link.download = 'dose-watch-data.json';
+      link.click(); URL.revokeObjectURL(url);
+      setTransfer(`Exported ${document.progress.length} progress ${document.progress.length === 1 ? 'entry' : 'entries'}.`);
+    } catch (caught) { setSettingsError(caught instanceof Error ? caught.message : 'Export failed.'); }
+  }
+  async function importWatchData(file: File) {
+    setTransfer(undefined); setSettingsError(undefined);
+    try {
+      const parsed = JSON.parse(await file.text()) as WatchDataDocument;
+      const { summary }: { summary: WatchDataImportSummary } = await api.importWatchData(parsed);
+      setTransfer(`Imported ${summary.written} of ${summary.matched} matched ${summary.matched === 1 ? 'entry' : 'entries'}; ${summary.unmatched.length} not found in this library.`);
+    } catch (caught) { setSettingsError(caught instanceof Error ? caught.message : 'Import failed.'); }
+  }
+  async function importHistory() {
+    setTransfer(undefined); setSettingsError(undefined); setImporting(true);
+    try {
+      const config = historySource === 'plex' ? { baseUrl: historyFields.baseUrl ?? '', token: historyFields.token ?? '' }
+        : historySource === 'trakt' ? { clientId: historyFields.clientId ?? '', accessToken: historyFields.accessToken ?? '' }
+          : { baseUrl: historyFields.baseUrl ?? '', apiKey: historyFields.apiKey ?? '', ...(historyFields.userId ? { userId: historyFields.userId } : {}) };
+      const { summary } = await api.importHistory(historySource, config);
+      setTransfer(`Imported ${summary.written} of ${summary.matched} matched ${summary.matched === 1 ? 'entry' : 'entries'}; ${summary.skipped} not found in this library.`);
+    } catch (caught) { setSettingsError(caught instanceof Error ? caught.message : 'Import failed.'); }
+    finally { setImporting(false); }
+  }
+  const historyInputs: Array<{ name: string; label: string; type?: string }> = historySource === 'plex'
+    ? [{ name: 'baseUrl', label: 'Plex server URL' }, { name: 'token', label: 'Plex token', type: 'password' }]
+    : historySource === 'trakt'
+      ? [{ name: 'clientId', label: 'Trakt client id' }, { name: 'accessToken', label: 'Trakt access token', type: 'password' }]
+      : [{ name: 'baseUrl', label: 'Tautulli URL' }, { name: 'apiKey', label: 'Tautulli API key', type: 'password' }, { name: 'userId', label: 'Plex user id (optional)' }];
   const isAdmin = user?.role === 'admin';
   const initials = user?.username.slice(0, 2).toUpperCase() ?? 'DO';
   return <div className="min-h-screen bg-background text-foreground">
-    <Navbar brandLabel="DOSE" brand="DOSE" brandHref="/" items={[{ id: 'library', label: 'Library', href: '/' }]} actions={<Button variant="outline" size="sm" onClick={() => void logout()}>Sign out</Button>} />
+    <Navbar brandLabel="DOSE" brand="DOSE" brandHref="/" items={[{ id: 'library', label: 'Library', href: '/' }]} actions={<UserMenu />} />
     <main className="mx-auto max-w-6xl px-4 py-10 sm:px-6 lg:px-8">
       {error ? <section className="flex min-h-[50vh] flex-col items-center justify-center gap-4 text-center"><h1 className="text-2xl font-bold">Profile unavailable</h1><p className="text-muted-foreground">{error}</p><Button onClick={() => void load()}>Try again</Button></section> : !user ? <p role="status" className="py-20 text-center text-muted-foreground">Loading profile…</p> : <>
         <section className="flex flex-col gap-6 border-b pb-8 sm:flex-row sm:items-center">
@@ -45,18 +86,41 @@ export function Profile() {
           <SummaryCard icon={<ShieldCheck />} title="Privacy" description="Offline-first" value="Stored locally" detail="Your account and watch activity stay on this server." />
         </div></section>
 
-        {isAdmin && <section aria-labelledby="admin-heading" className="border-t py-8"><div className="mb-4"><h2 id="admin-heading" className="text-xl font-semibold">Administration</h2><p className="mt-1 text-sm text-muted-foreground">Manage this Dose server without leaving your profile.</p></div><div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          <AdminCard icon={<Film />} title="Libraries" description={`${libraries.length} configured ${libraries.length === 1 ? 'library' : 'libraries'}`} action="Manage libraries" onClick={() => { setManagerError(undefined); setLibrariesOpen(true); }} />
-          <AdminCard icon={<UsersRound />} title="Family accounts" description="Create accounts, roles, and passwords" action="Manage family" onClick={() => setFamilyOpen(true)} />
-          <AdminCard icon={<Puzzle />} title="Plugins" description="Schedule and configure internal plugins" action="Manage plugins" onClick={() => navigate('/profile/plugins')} />
-          <AdminCard icon={<Clapperboard />} title="Media" description="Review, re-match, or remove titles" action="Manage media" onClick={() => setMediaOpen(true)} />
-          <Card><CardHeader><div className="mb-3 flex h-10 w-10 items-center justify-center rounded-lg bg-muted"><HardDrive className="h-5 w-5" /></div><CardTitle>Server status</CardTitle><CardDescription>Local service health</CardDescription></CardHeader><CardContent className="space-y-3"><StatusRow icon={<Database />} label="Database" ok={health?.database === 'ok'} /><StatusRow icon={<HardDrive />} label="Dose server" ok={health?.status === 'ok'} /><StatusRow icon={<Image />} label="TMDB metadata" ok={health?.metadata?.tmdb === 'configured'} unavailableLabel="Not configured" /><Button variant="outline" className="w-full" onClick={() => void load()}>Refresh status</Button></CardContent></Card>
+        <section aria-labelledby="settings-heading" className="border-t py-8"><div className="mb-4"><h2 id="settings-heading" className="text-xl font-semibold">Settings</h2><p className="mt-1 text-sm text-muted-foreground">Choose how your personal library is presented.</p></div>
+          <Card><CardContent className="flex items-center justify-between gap-6 py-6"><div><label htmlFor="show-collection-gaps" className="font-medium">Show missing movies from collections</label><p className="mt-1 text-sm text-muted-foreground">Include movies you do not own when viewing a collection.</p>{settingsError && <p role="alert" className="mt-2 text-sm text-destructive">{settingsError}</p>}</div><input id="show-collection-gaps" type="checkbox" className="h-5 w-5 shrink-0 accent-foreground" checked={settings?.showCollectionGaps ?? false} disabled={!settings} onChange={() => void toggleCollectionGaps()} /></CardContent></Card>
+          <Card className="mt-4"><CardContent className="flex flex-wrap items-center justify-between gap-4 py-6"><div><p className="font-medium">Watch data</p><p className="mt-1 text-sm text-muted-foreground">Move your progress, watch list, and collections between Dose installs.</p>{transfer && <p role="status" className="mt-2 text-sm text-muted-foreground">{transfer}</p>}</div><div className="flex items-center gap-2"><Button variant="outline" onClick={() => void exportWatchData()}>Export my data</Button><label className="inline-flex cursor-pointer items-center rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted">Import<input type="file" accept="application/json" className="sr-only" aria-label="Import watch data" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void importWatchData(file); }} /></label></div></CardContent></Card>
+          <Card className="mt-4"><CardContent className="space-y-4 py-6">
+            <div><p className="font-medium">Import watch history</p><p className="mt-1 text-sm text-muted-foreground">One-way and read-only: Dose reads your history and never writes back to the source.</p></div>
+            <div className="flex flex-wrap gap-2">
+              {(['plex', 'trakt', 'tautulli'] as const).map((source) => (
+                <Button key={source} type="button" size="sm" variant={historySource === source ? 'default' : 'outline'} aria-pressed={historySource === source} onClick={() => { setHistorySource(source); setHistoryFields({}); }}>
+                  {source === 'plex' ? 'Plex' : source === 'trakt' ? 'Trakt' : 'Tautulli'}
+                </Button>
+              ))}
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              {historyInputs.map((field) => (
+                <label key={field.name} className="flex flex-col gap-1.5 text-sm font-medium">{field.label}
+                  <input type={field.type ?? 'text'} value={historyFields[field.name] ?? ''} onChange={(event) => setHistoryFields((previous) => ({ ...previous, [field.name]: event.target.value }))} className="h-9 rounded-md border bg-background px-3 text-sm font-normal" />
+                </label>
+              ))}
+            </div>
+            <Button onClick={() => void importHistory()} disabled={importing}>{importing ? 'Importing…' : 'Import history'}</Button>
+          </CardContent></Card>
+        </section>
+
+        <section aria-labelledby="library-heading" className="border-t py-8"><div className="mb-4"><h2 id="library-heading" className="text-xl font-semibold">Your library</h2><p className="mt-1 text-sm text-muted-foreground">Collections you have put together yourself.</p></div><div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+          <AdminCard icon={<ListVideo />} title="My Collections" description="Create and curate your own collections" action="Manage collections" onClick={() => navigate('/profile/collections')} />
+          <AdminCard icon={<ListOrdered />} title="Marathon queue" description="Line up titles and play straight through" action="Open queue" onClick={() => navigate('/profile/queue')} />
+        </div></section>
+
+        {isAdmin && <section aria-labelledby="admin-heading" className="border-t py-8"><div className="mb-4"><h2 id="admin-heading" className="text-xl font-semibold">Administration</h2><p className="mt-1 text-sm text-muted-foreground">Server management now lives on its own pages.</p></div><div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+          <AdminCard icon={<Wrench />} title="Server administration" description="Libraries, family accounts, media, and plugins" action="Open administration" onClick={() => navigate('/admin')} />
         </div></section>}
 
         <div className="border-t pt-8"><Button asChild variant="outline"><Link to="/">Back to library</Link></Button></div>
       </>}
     </main>
-    {user && isAdmin && <><LibraryManager open={librariesOpen} libraries={libraries} onOpenChange={setLibrariesOpen} error={managerError} onError={setManagerError} onChanged={setLibraries} /><FamilyManager open={familyOpen} actorId={user.id} onOpenChange={setFamilyOpen} /><MediaAdmin open={mediaOpen} onOpenChange={setMediaOpen} /></>}
   </div>;
 }
 
@@ -65,7 +129,4 @@ function SummaryCard({ icon, title, description, value, detail }: { icon: React.
 }
 function AdminCard({ icon, title, description, action, onClick }: { icon: React.ReactNode; title: string; description: string; action: string; onClick(): void }) {
   return <Card><CardHeader><div className="mb-3 flex h-10 w-10 items-center justify-center rounded-lg bg-muted [&>svg]:h-5 [&>svg]:w-5">{icon}</div><CardTitle>{title}</CardTitle><CardDescription>{description}</CardDescription></CardHeader><CardContent><Button className="w-full" onClick={onClick}>{action}</Button></CardContent></Card>;
-}
-function StatusRow({ icon, label, ok, unavailableLabel = 'Unavailable' }: { icon: React.ReactNode; label: string; ok: boolean; unavailableLabel?: string }) {
-  return <div className="flex items-center justify-between rounded-md border px-3 py-2"><span className="flex items-center gap-2 text-sm [&>svg]:h-4 [&>svg]:w-4">{icon}{label}</span><span className={ok ? 'text-sm font-medium text-foreground' : 'text-sm font-medium text-destructive'}>{ok ? 'Healthy' : unavailableLabel}</span></div>;
 }

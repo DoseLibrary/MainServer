@@ -46,8 +46,10 @@ describe('Home application flow', () => {
     fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'long-password' } });
     fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
 
-    expect((await screen.findAllByRole('link', { name: /Profile/ })).length).toBeGreaterThan(0);
-    fireEvent.click(screen.getAllByRole('button', { name: 'Sign out' })[0]);
+    // Profile now lives in the account dropdown; sign out is a menu item.
+    const accountButton = (await screen.findAllByRole('button', { name: /Account menu/ }))[0];
+    fireEvent.pointerDown(accountButton); fireEvent.click(accountButton);
+    fireEvent.click(await screen.findByText('Sign out'));
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Welcome back' })).toBeInTheDocument());
   });
 
@@ -85,6 +87,13 @@ describe('Home application flow', () => {
     globalThis.fetch = vi.fn(async (input) => { const url = String(input); if (url.endsWith('/setup/status')) return json({ setupRequired: false }); if (url.endsWith('/auth/me')) return json({ user: { id: 'u', username: 'admin', role: 'admin' } }); if (url.endsWith('/libraries')) return json({ libraries: [{ id: 'l', name: 'Movies' }] }); return json({ featured: { id: 'm1', title: 'Local Film', kind: 'movie', hasLocalTrailer: true }, sections: [{ id: 'movies', title: 'Movies', items: [{ id: 'm1', title: 'Local Film', kind: 'movie' }] }] }); });
     render(<Home />);
     expect(await screen.findByRole('link', { name: 'Fullscreen trailer' })).toHaveAttribute('href', '/trailer/m1');
+  });
+
+  it('opens the random picker from the navbar', async () => {
+    globalThis.fetch = vi.fn(async (input) => { const url = String(input); if (url.endsWith('/setup/status')) return json({ setupRequired: false }); if (url.endsWith('/auth/me')) return json({ user: { id: 'u', username: 'member', role: 'member' } }); if (url.endsWith('/libraries')) return json({ libraries: [] }); if (url.endsWith('/catalog/categories')) return json({ categories: [] }); throw new Error(`Unexpected request ${url}`); });
+    render(<Home />);
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Random pick' }))[0]);
+    expect(await screen.findByRole('heading', { name: 'Pick something to watch' })).toBeInTheDocument();
   });
 
 });
