@@ -78,8 +78,9 @@ const imageQuery = z.object({
 const streamQuery = z.object({ plan: z.string().max(4096).optional() });
 const castStreamParams = z.object({ token: z.string().regex(/^[a-f0-9]{64}$/) });
 const IMAGE_TYPES: Record<string, string> = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif' };
-const userCreate = credentials.extend({ role: z.enum(['admin', 'member']).default('member') });
-const userUpdate = z.object({ role: z.enum(['admin', 'member']).optional(), disabled: z.boolean().optional(), password: z.string().min(10).max(256).optional() }).refine((value) => Object.keys(value).length > 0);
+const maturityLimit = z.number().int().min(0).max(21).nullable();
+const userCreate = credentials.extend({ role: z.enum(['admin', 'member']).default('member'), maxMaturityLevel: maturityLimit.optional() });
+const userUpdate = z.object({ role: z.enum(['admin', 'member']).optional(), disabled: z.boolean().optional(), password: z.string().min(10).max(256).optional(), maxMaturityLevel: maturityLimit.optional() }).refine((value) => Object.keys(value).length > 0);
 const deviceStartBody = z.object({ deviceName: z.string().trim().min(1).max(64).optional() });
 const devicePollBody = z.object({ deviceCode: z.string().min(10).max(256) });
 const deviceCodeParams = z.object({ code: z.string().trim().min(4).max(32) });
@@ -122,7 +123,7 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
     try { await libraryWatcher?.synchronize(); }
     catch (error) { app.log.error(error, 'library watcher synchronization failed'); }
   };
-  const castStreams = new Map<string, { itemId: string; plan?: string; expiresAt: number }>();
+  const castStreams = new Map<string, { itemId: string; plan?: string; expiresAt: number; maturityLimit: number | null }>();
   app.get('/api/v1/setup/status', async () => ({ setupRequired: await service.setupRequired() }));
   app.post('/api/v1/setup', async (request, reply) => {
     const parsed = credentials.safeParse(request.body);
@@ -412,19 +413,19 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
   app.get('/api/v1/catalog/home', async (request, reply) => {
     const user = await requireUser(request, reply, service); if (!user) return;
     const parsed = homeQuery.safeParse(request.query); if (!parsed.success) return reply.status(400).send({ error: 'Invalid library id' });
-    if (!catalog) return reply.status(503).send({ error: 'Catalog unavailable' }); return catalog.home(parsed.data.libraryId, user.id);
+    if (!catalog) return reply.status(503).send({ error: 'Catalog unavailable' }); return catalog.forViewer(user.maxMaturityLevel).home(parsed.data.libraryId, user.id);
   });
   app.get('/api/v1/catalog/random', async (request, reply) => {
     const user = await requireUser(request, reply, service); if (!user) return;
     const parsed = randomQuery.safeParse(request.query); if (!parsed.success) return reply.status(400).send({ error: 'Invalid random picker filters' });
     if (!catalog) return reply.status(503).send({ error: 'Catalog unavailable' });
-    const item = await catalog.randomItem(parsed.data); if (!item) return reply.status(404).send({ error: 'No titles match these filters' });
+    const item = await catalog.forViewer(user.maxMaturityLevel).randomItem(parsed.data); if (!item) return reply.status(404).send({ error: 'No titles match these filters' });
     return { item };
   });
   app.get('/api/v1/catalog/items/:id', async (request, reply) => {
     const user = await requireUser(request, reply, service); if (!user) return;
     const parsed = idParams.safeParse(request.params); if (!parsed.success) return reply.status(400).send({ error: 'Invalid item id' });
-    if (!catalog) return reply.status(503).send({ error: 'Catalog unavailable' }); const item = await catalog.item(parsed.data.id, user.id); if (!item) return reply.status(404).send({ error: 'Item not found' }); return { item };
+    if (!catalog) return reply.status(503).send({ error: 'Catalog unavailable' }); const item = await catalog.forViewer(user.maxMaturityLevel).item(parsed.data.id, user.id); if (!item) return reply.status(404).send({ error: 'Item not found' }); return { item };
   });
   app.post('/api/v1/catalog/items/:id/progress', async (request, reply) => {
     const user = await requireUser(request, reply, service); if (!user) return;
@@ -484,55 +485,55 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
     const parsed = idParams.safeParse(request.params); if (!parsed.success) return reply.status(400).send({ error: 'Invalid collection id' });
     if (!catalog) return reply.status(503).send({ error: 'Catalog unavailable' });
     const showGaps = settings ? (await settings.get(user.id)).showCollectionGaps : false;
-    const collection = await catalog.collection(parsed.data.id, showGaps); if (!collection) return reply.status(404).send({ error: 'Collection not found' });
+    const collection = await catalog.forViewer(user.maxMaturityLevel).collection(parsed.data.id, showGaps); if (!collection) return reply.status(404).send({ error: 'Collection not found' });
     return { collection };
   });
   app.get('/api/v1/catalog/genres/:id', async (request, reply) => {
     const user = await requireUser(request, reply, service); if (!user) return;
     const parsed = idParams.safeParse(request.params); if (!parsed.success) return reply.status(400).send({ error: 'Invalid genre id' });
     if (!catalog) return reply.status(503).send({ error: 'Catalog unavailable' });
-    const genre = await catalog.genre(parsed.data.id); if (!genre) return reply.status(404).send({ error: 'Genre not found' });
+    const genre = await catalog.forViewer(user.maxMaturityLevel).genre(parsed.data.id); if (!genre) return reply.status(404).send({ error: 'Genre not found' });
     return { genre };
   });
   app.get('/api/v1/catalog/categories', async (request, reply) => {
     const user = await requireUser(request, reply, service); if (!user) return;
     const parsed = homeQuery.safeParse(request.query); if (!parsed.success) return reply.status(400).send({ error: 'Invalid library filter' });
     if (!catalog) return reply.status(503).send({ error: 'Catalog unavailable' });
-    return { categories: await catalog.categories(parsed.data.libraryId) };
+    return { categories: await catalog.forViewer(user.maxMaturityLevel).categories(parsed.data.libraryId) };
   });
   app.get('/api/v1/catalog/categories/:key', async (request, reply) => {
     const user = await requireUser(request, reply, service); if (!user) return;
     const params = categoryParams.safeParse(request.params); const query = homeQuery.safeParse(request.query);
     if (!params.success || !query.success) return reply.status(400).send({ error: 'Invalid category' });
     if (!catalog) return reply.status(503).send({ error: 'Catalog unavailable' });
-    const category = await catalog.category(params.data.key, query.data.libraryId); if (!category) return reply.status(404).send({ error: 'Category not found' });
+    const category = await catalog.forViewer(user.maxMaturityLevel).category(params.data.key, query.data.libraryId); if (!category) return reply.status(404).send({ error: 'Category not found' });
     return { category };
   });
   app.get('/api/v1/catalog/people/:id', async (request, reply) => {
     const user = await requireUser(request, reply, service); if (!user) return;
     const parsed = idParams.safeParse(request.params); if (!parsed.success) return reply.status(400).send({ error: 'Invalid person id' });
     if (!catalog) return reply.status(503).send({ error: 'Catalog unavailable' });
-    const person = await catalog.person(parsed.data.id); if (!person) return reply.status(404).send({ error: 'Person not found' });
+    const person = await catalog.forViewer(user.maxMaturityLevel).person(parsed.data.id); if (!person) return reply.status(404).send({ error: 'Person not found' });
     return { person };
   });
   app.get('/api/v1/catalog/search', async (request, reply) => {
     const user = await requireUser(request, reply, service); if (!user) return;
     const parsed = searchQuery.safeParse(request.query); if (!parsed.success) return reply.status(400).send({ error: 'Invalid search query' });
     if (!catalog) return reply.status(503).send({ error: 'Catalog unavailable' });
-    return catalog.search(parsed.data.libraryId, parsed.data.q);
+    return catalog.forViewer(user.maxMaturityLevel).search(parsed.data.libraryId, parsed.data.q);
   });
   app.post('/api/v1/catalog/items/:id/playback', async (request, reply) => {
     const user = await requireUser(request, reply, service); if (!user) return;
     const params = idParams.safeParse(request.params); if (!params.success) return reply.status(400).send({ error: 'Invalid item id' });
     const body = capabilities.safeParse(request.body ?? {}); if (!body.success) return reply.status(400).send({ error: 'Invalid client capabilities' });
     if (!catalog) return reply.status(503).send({ error: 'Catalog unavailable' });
-    const source = await catalog.playbackSource(params.data.id); if (!source) return reply.status(404).send({ error: 'No playable file for this item' });
+    const source = await catalog.forViewer(user.maxMaturityLevel).playbackSource(params.data.id); if (!source) return reply.status(404).send({ error: 'No playable file for this item' });
     const plan = negotiatePlayback(source.probe, body.data);
     if (plan.mode === 'transcode' && plan.container !== 'mp4') return reply.status(406).send({ error: 'No supported transcode container; client must support mp4' });
     const baseUrl = `/api/v1/catalog/items/${params.data.id}/stream`;
     const url = plan.mode === 'direct' ? baseUrl : `${baseUrl}?plan=${encodeURIComponent(encodePlaybackPlan(plan))}`;
     const castToken = randomBytes(32).toString('hex');
-    castStreams.set(castToken, { itemId: params.data.id, plan: plan.mode === 'direct' ? undefined : encodePlaybackPlan(plan), expiresAt: Date.now() + 6 * 60 * 60 * 1000 });
+    castStreams.set(castToken, { itemId: params.data.id, plan: plan.mode === 'direct' ? undefined : encodePlaybackPlan(plan), expiresAt: Date.now() + 6 * 60 * 60 * 1000, maturityLimit: user.maxMaturityLevel });
     return { plan, durationSeconds: source.durationSeconds, stream: { url, castUrl: `/api/v1/cast/${castToken}/stream`, direct: plan.mode === 'direct' } };
   });
   app.get('/api/v1/images/:name', async (request, reply) => {
@@ -558,7 +559,7 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
     const params = idParams.safeParse(request.params); if (!params.success) return reply.status(400).send({ error: 'Invalid item id' });
     const query = streamQuery.safeParse(request.query); if (!query.success) return reply.status(400).send({ error: 'Invalid stream options' });
     if (!catalog) return reply.status(503).send({ error: 'Catalog unavailable' });
-    const source = await catalog.playbackSource(params.data.id); if (!source) return reply.status(404).send({ error: 'No playable file for this item' });
+    const source = await catalog.forViewer(user.maxMaturityLevel).playbackSource(params.data.id); if (!source) return reply.status(404).send({ error: 'No playable file for this item' });
     const absolute = resolveWithin(source.rootPath, source.relativePath); if (!absolute) return reply.status(404).send({ error: 'File not found' });
     let info; try { info = await stat(absolute); } catch { return reply.status(404).send({ error: 'File not found' }); }
     if (!info.isFile()) return reply.status(404).send({ error: 'File not found' });
@@ -583,7 +584,7 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
     const user = await requireUser(request, reply, service); if (!user) return;
     const params = idParams.safeParse(request.params); if (!params.success) return reply.status(400).send({ error: 'Invalid item id' });
     if (!catalog) return reply.status(503).send({ error: 'Catalog unavailable' });
-    const source = await catalog.localTrailerSource(params.data.id); if (!source) return reply.status(404).send({ error: 'Trailer not found' });
+    const source = await catalog.forViewer(user.maxMaturityLevel).localTrailerSource(params.data.id); if (!source) return reply.status(404).send({ error: 'Trailer not found' });
     let info; try { info = await stat(source.localPath); } catch { return reply.status(404).send({ error: 'Trailer not found' }); }
     if (!info.isFile()) return reply.status(404).send({ error: 'Trailer not found' });
     const range = resolveRange(request.headers.range, info.size);
@@ -596,20 +597,20 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
     const user = await requireUser(request, reply, service); if (!user) return;
     const params = idParams.safeParse(request.params); if (!params.success) return reply.status(400).send({ error: 'Invalid item id' });
     if (!catalog) return reply.status(503).send({ error: 'Catalog unavailable' });
-    const sprite = await catalog.previewSprite(params.data.id); if (!sprite) return reply.status(404).send({ error: 'Preview sprite not found' });
+    const sprite = await catalog.forViewer(user.maxMaturityLevel).previewSprite(params.data.id); if (!sprite) return reply.status(404).send({ error: 'Preview sprite not found' });
     return { sprite: { src: `/api/v1/media/${encodeURIComponent(params.data.id)}/sprites/sheet`, columns: sprite.columns, rows: sprite.rows, interval: sprite.interval, tileWidth: sprite.tileWidth, tileHeight: sprite.tileHeight } };
   });
   app.get('/api/v1/media/:id/intro', async (request, reply) => {
     const user = await requireUser(request, reply, service); if (!user) return;
     if (!catalog) return reply.status(503).send({ error: 'Catalog unavailable' });
     const params = idParams.safeParse(request.params); if (!params.success) return reply.status(400).send({ error: 'Invalid media id' });
-    return { intro: await catalog.introMarker(params.data.id) };
+    return { intro: await catalog.forViewer(user.maxMaturityLevel).introMarker(params.data.id) };
   });
   app.get('/api/v1/media/:id/sprites/sheet', async (request, reply) => {
     const user = await requireUser(request, reply, service); if (!user) return;
     const params = idParams.safeParse(request.params); if (!params.success) return reply.status(400).send({ error: 'Invalid item id' });
     if (!catalog || !spriteStore) return reply.status(503).send({ error: 'Previews unavailable' });
-    const sprite = await catalog.previewSprite(params.data.id); if (!sprite) return reply.status(404).send({ error: 'Preview sprite not found' });
+    const sprite = await catalog.forViewer(user.maxMaturityLevel).previewSprite(params.data.id); if (!sprite) return reply.status(404).send({ error: 'Preview sprite not found' });
     let body; try { body = await spriteStore.read(sprite.storageKey); } catch { return reply.status(404).send({ error: 'Preview sprite not found' }); }
     reply.header('Content-Type', 'image/jpeg'); reply.header('Cache-Control', 'private, max-age=86400'); return reply.send(body);
   });
@@ -618,7 +619,7 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
     const grant = castStreams.get(params.data.token);
     if (!grant || grant.expiresAt <= Date.now()) { castStreams.delete(params.data.token); return reply.status(404).send({ error: 'Stream not found' }); }
     if (!catalog) return reply.status(503).send({ error: 'Catalog unavailable' });
-    const source = await catalog.playbackSource(grant.itemId); if (!source) return reply.status(404).send({ error: 'Stream not found' });
+    const source = await catalog.forViewer(grant.maturityLimit).playbackSource(grant.itemId); if (!source) return reply.status(404).send({ error: 'Stream not found' });
     const absolute = resolveWithin(source.rootPath, source.relativePath); if (!absolute) return reply.status(404).send({ error: 'Stream not found' });
     let info; try { info = await stat(absolute); } catch { return reply.status(404).send({ error: 'Stream not found' }); }
     if (!info.isFile()) return reply.status(404).send({ error: 'Stream not found' });

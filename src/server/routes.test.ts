@@ -32,6 +32,12 @@ function service(overrides: Partial<Record<keyof AuthService, unknown>> = {}) {
   } as unknown as AuthService;
 }
 
+/** Route handlers scope catalog reads with forViewer(); fakes echo themselves. */
+function catalogStub(methods: Record<string, unknown>) {
+  const stub = { ...methods, forViewer: () => stub } as unknown as CatalogService;
+  return stub;
+}
+
 async function appWith(auth: AuthService, scanner?: ScanCoordinator, catalog?: CatalogService, imagesDir?: string, nativeLibraryPaths = false, metadataMatch?: MetadataMatchService, settings?: UserSettingsService, userCollections?: UserCollectionsService, queue?: QueueService, watchData?: WatchDataService, historySources?: HistorySources) {
   const filesystem: LibraryFilesystem = { realpath: async (path) => path, isDirectory: async () => true };
   const app = Fastify(); await app.register(cookie); await registerApiRoutes(app, auth, false, filesystem, scanner, catalog, imagesDir, nativeLibraryPaths, undefined, undefined, undefined, undefined, metadataMatch, undefined, undefined, settings, userCollections, queue, watchData, historySources); return app;
@@ -57,12 +63,12 @@ describe('API authorization', () => {
     const id = '11111111-1111-4111-8111-111111111111';
     const headers = { cookie: 'dose_session=token' };
 
-    const gated = await appWith(auth, undefined, { collection } as unknown as CatalogService, undefined, false, undefined, settings);
+    const gated = await appWith(auth, undefined, catalogStub({ collection }), undefined, false, undefined, settings);
     expect((await gated.inject({ method: 'GET', url: `/api/v1/catalog/collections/${id}`, headers })).statusCode).toBe(200);
     expect(collection).toHaveBeenLastCalledWith(id, true);
     await gated.close();
 
-    const off = await appWith(auth, undefined, { collection } as unknown as CatalogService, undefined, false, undefined, { get: vi.fn(async () => ({ userId: 'user-id', showCollectionGaps: false })) } as unknown as UserSettingsService);
+    const off = await appWith(auth, undefined, catalogStub({ collection }), undefined, false, undefined, { get: vi.fn(async () => ({ userId: 'user-id', showCollectionGaps: false })) } as unknown as UserSettingsService);
     await off.inject({ method: 'GET', url: `/api/v1/catalog/collections/${id}`, headers });
     expect(collection).toHaveBeenLastCalledWith(id, false);
     await off.close();
@@ -184,7 +190,7 @@ describe('API authorization', () => {
     try {
       const auth = service({ authenticate: vi.fn(async () => ({ id: 'user-id', username: 'member', role: 'member' })) });
       const localTrailerSource = vi.fn().mockResolvedValueOnce({ localPath: file }).mockResolvedValueOnce({ localPath: file }).mockResolvedValueOnce(null);
-      const app = await appWith(auth, undefined, { localTrailerSource } as unknown as CatalogService); const headers = { cookie: 'dose_session=token' }; const id = '11111111-1111-4111-8111-111111111111';
+      const app = await appWith(auth, undefined, catalogStub({ localTrailerSource })); const headers = { cookie: 'dose_session=token' }; const id = '11111111-1111-4111-8111-111111111111';
       const full = await app.inject({ method: 'GET', url: `/api/v1/media/${id}/trailer`, headers });
       expect(full.statusCode).toBe(200); expect(full.headers['content-type']).toContain('video/mp4'); expect(full.body).toBe('0123456789');
       const ranged = await app.inject({ method: 'GET', url: `/api/v1/media/${id}/trailer`, headers: { ...headers, range: 'bytes=2-5' } });
@@ -196,7 +202,7 @@ describe('API authorization', () => {
     const adminMediaList = vi.fn(async () => ({ items: [{ id: 'm1', title: 'One', year: 2020, kind: 'movie', library: 'Movies', archived: false, archivedAt: null }], total: 1 }));
     const removeItem = vi.fn(async (id: string) => id === '11111111-1111-4111-8111-111111111111');
     const admin = service({ authenticate: vi.fn(async () => ({ id: 'a', username: 'admin', role: 'admin' })) });
-    const app = await appWith(admin, undefined, { adminMediaList, removeItem } as unknown as CatalogService);
+    const app = await appWith(admin, undefined, catalogStub({ adminMediaList, removeItem }));
     const headers = { cookie: 'dose_session=token' }; const id = '11111111-1111-4111-8111-111111111111';
     const list = await app.inject({ method: 'GET', url: '/api/v1/admin/items?archived=true&sort=archivedAt&direction=desc&limit=25', headers });
     expect(list.statusCode).toBe(200); expect(list.json().total).toBe(1);
@@ -204,20 +210,20 @@ describe('API authorization', () => {
     expect((await app.inject({ method: 'DELETE', url: `/api/v1/admin/items/${id}`, headers })).statusCode).toBe(204);
     expect((await app.inject({ method: 'DELETE', url: '/api/v1/admin/items/22222222-2222-4222-8222-222222222222', headers })).statusCode).toBe(404);
     const member = service({ authenticate: vi.fn(async () => ({ id: 'u', username: 'm', role: 'member' })) });
-    const memberApp = await appWith(member, undefined, { adminMediaList, removeItem } as unknown as CatalogService);
+    const memberApp = await appWith(member, undefined, catalogStub({ adminMediaList, removeItem }));
     expect((await memberApp.inject({ method: 'GET', url: '/api/v1/admin/items', headers })).statusCode).toBe(403);
     await app.close(); await memberApp.close();
   });
   it('serves a preview sprite descriptor and 404s when none exists', async () => {
     const auth = service({ authenticate: vi.fn(async () => ({ id: 'user-id', username: 'member', role: 'member' })) });
     const previewSprite = vi.fn().mockResolvedValueOnce({ storageKey: 'sprite.jpg', columns: 5, rows: 2, interval: 10, tileWidth: 160, tileHeight: 90 }).mockResolvedValueOnce(null);
-    const app = await appWith(auth, undefined, { previewSprite } as unknown as CatalogService);
+    const app = await appWith(auth, undefined, catalogStub({ previewSprite }));
     const headers = { cookie: 'dose_session=token' }; const id = '11111111-1111-4111-8111-111111111111';
     const ok = await app.inject({ method: 'GET', url: `/api/v1/media/${id}/sprites`, headers });
     expect(ok.statusCode).toBe(200);
     expect(ok.json()).toEqual({ sprite: { src: `/api/v1/media/${id}/sprites/sheet`, columns: 5, rows: 2, interval: 10, tileWidth: 160, tileHeight: 90 } });
     expect((await app.inject({ method: 'GET', url: `/api/v1/media/${id}/sprites`, headers })).statusCode).toBe(404);
-    const anonymous = await appWith(service(), undefined, { previewSprite } as unknown as CatalogService);
+    const anonymous = await appWith(service(), undefined, catalogStub({ previewSprite }));
     expect((await anonymous.inject({ method: 'GET', url: `/api/v1/media/${id}/sprites` })).statusCode).toBe(401);
     await app.close(); await anonymous.close();
   });
@@ -343,13 +349,13 @@ describe('API authorization', () => {
     const groups = [{ id: 'movies', label: 'Movies', items: [{ id: 'm1', title: 'Inception', year: 2010, kind: 'movie', meta: '2h 28m' }] }];
     const search = vi.fn(async () => ({ query: 'inc', groups }));
     const member = service({ authenticate: vi.fn(async () => ({ id: 'user-id', username: 'member', role: 'member' })) });
-    const app = await appWith(member, undefined, { search } as unknown as CatalogService);
+    const app = await appWith(member, undefined, catalogStub({ search }));
     const headers = { cookie: 'dose_session=token' }; const id = '11111111-1111-4111-8111-111111111111';
     const ok = await app.inject({ method: 'GET', url: `/api/v1/catalog/search?libraryId=${id}&q=inc`, headers });
     expect(ok.statusCode).toBe(200); expect(ok.json()).toEqual({ query: 'inc', groups });
     expect(search).toHaveBeenCalledWith(id, 'inc');
     expect((await app.inject({ method: 'GET', url: `/api/v1/catalog/search?libraryId=${id}&q=`, headers })).statusCode).toBe(400);
-    const anonymous = await appWith(service(), undefined, { search } as unknown as CatalogService);
+    const anonymous = await appWith(service(), undefined, catalogStub({ search }));
     expect((await anonymous.inject({ method: 'GET', url: `/api/v1/catalog/search?libraryId=${id}&q=inc` })).statusCode).toBe(401);
     await app.close(); await anonymous.close();
   });
@@ -357,7 +363,7 @@ describe('API authorization', () => {
   it('validates random filters, returns a pick, and reports an empty pool', async () => {
     const randomItem = vi.fn().mockResolvedValueOnce({ id: 'm1', title: 'Arrival', kind: 'movie', year: 2016 }).mockResolvedValueOnce(null);
     const member = service({ authenticate: vi.fn(async () => ({ id: 'user-id', username: 'member', role: 'member' })) });
-    const app = await appWith(member, undefined, { randomItem } as unknown as CatalogService);
+    const app = await appWith(member, undefined, catalogStub({ randomItem }));
     const headers = { cookie: 'dose_session=token' };
     const picked = await app.inject({ method: 'GET', url: '/api/v1/catalog/random?kind=movie&genre=Sci-Fi&yearMin=2000&yearMax=2020&ratingMin=7.5', headers });
     expect(picked.statusCode).toBe(200); expect(picked.json().item.id).toBe('m1');
@@ -365,7 +371,7 @@ describe('API authorization', () => {
     expect((await app.inject({ method: 'GET', url: '/api/v1/catalog/random?yearMin=2025&yearMax=2020', headers })).statusCode).toBe(400);
     expect((await app.inject({ method: 'GET', url: '/api/v1/catalog/random?ratingMin=11', headers })).statusCode).toBe(400);
     expect((await app.inject({ method: 'GET', url: '/api/v1/catalog/random', headers })).statusCode).toBe(404);
-    const anonymous = await appWith(service(), undefined, { randomItem } as unknown as CatalogService);
+    const anonymous = await appWith(service(), undefined, catalogStub({ randomItem }));
     expect((await anonymous.inject({ method: 'GET', url: '/api/v1/catalog/random' })).statusCode).toBe(401);
     await app.close(); await anonymous.close();
   });
@@ -374,7 +380,7 @@ describe('API authorization', () => {
     const categories = vi.fn(async () => [{ key: 'action', name: 'Action', count: 3 }]);
     const category = vi.fn(async (key: string) => key === 'action' ? { key: 'action', name: 'Action', titles: [] } : null);
     const member = service({ authenticate: vi.fn(async () => ({ id: 'user-id', username: 'member', role: 'member' })) });
-    const app = await appWith(member, undefined, { categories, category } as unknown as CatalogService);
+    const app = await appWith(member, undefined, catalogStub({ categories, category }));
     const headers = { cookie: 'dose_session=token' };
     const list = await app.inject({ method: 'GET', url: '/api/v1/catalog/categories', headers });
     expect(list.statusCode).toBe(200); expect(list.json()).toEqual({ categories: [{ key: 'action', name: 'Action', count: 3 }] });
@@ -383,7 +389,7 @@ describe('API authorization', () => {
     expect(opened.statusCode).toBe(200); expect(opened.json()).toEqual({ category: { key: 'action', name: 'Action', titles: [] } });
     const missing = await app.inject({ method: 'GET', url: '/api/v1/catalog/categories/nope', headers });
     expect(missing.statusCode).toBe(404);
-    const anonymous = await appWith(service(), undefined, { categories, category } as unknown as CatalogService);
+    const anonymous = await appWith(service(), undefined, catalogStub({ categories, category }));
     expect((await anonymous.inject({ method: 'GET', url: '/api/v1/catalog/categories' })).statusCode).toBe(401);
     await app.close(); await anonymous.close();
   });
@@ -394,7 +400,7 @@ describe('API authorization', () => {
       .mockResolvedValueOnce({ fileId: 'f1', relativePath: 'a.mkv', durationSeconds: 8880, probe })
       .mockResolvedValueOnce(null);
     const member = service({ authenticate: vi.fn(async () => ({ id: 'user-id', username: 'member', role: 'member' })) });
-    const app = await appWith(member, undefined, { playbackSource } as unknown as CatalogService);
+    const app = await appWith(member, undefined, catalogStub({ playbackSource }));
     const headers = { cookie: 'dose_session=token' }; const id = '11111111-1111-4111-8111-111111111111';
     const response = await app.inject({ method: 'POST', url: `/api/v1/catalog/items/${id}/playback`, headers, payload: { containers: ['mp4'], videoCodecs: ['h264'], audioCodecs: ['aac'] } });
     expect(response.statusCode).toBe(200);
@@ -440,7 +446,7 @@ describe('API authorization', () => {
     await writeFile(join(root, 'Dune', 'Dune.mp4'), Buffer.from('0123456789'));
     const playbackSource = vi.fn(async () => ({ fileId: 'f1', relativePath: 'Dune/Dune.mp4', rootPath: root, durationSeconds: 100, probe: {} }));
     const member = service({ authenticate: vi.fn(async () => ({ id: 'user-id', username: 'member', role: 'member' })) });
-    const app = await appWith(member, undefined, { playbackSource } as unknown as CatalogService);
+    const app = await appWith(member, undefined, catalogStub({ playbackSource }));
     const headers = { cookie: 'dose_session=token' }; const id = '11111111-1111-4111-8111-111111111111';
     const full = await app.inject({ method: 'GET', url: `/api/v1/catalog/items/${id}/stream`, headers });
     expect(full.statusCode).toBe(200); expect(full.headers['accept-ranges']).toBe('bytes'); expect(full.headers['content-length']).toBe('10');
@@ -454,7 +460,7 @@ describe('API authorization', () => {
     await writeFile(join(root, 'movie.mkv'), Buffer.from('media'));
     const playbackSource = vi.fn(async () => ({ fileId: 'f1', relativePath: 'movie.mkv', rootPath: root, durationSeconds: 100, probe: {} }));
     const member = service({ authenticate: vi.fn(async () => ({ id: 'user-id', username: 'member', role: 'member' })) });
-    const app = await appWith(member, undefined, { playbackSource } as unknown as CatalogService);
+    const app = await appWith(member, undefined, catalogStub({ playbackSource }));
     const id = '11111111-1111-4111-8111-111111111111';
     const response = await app.inject({ method: 'GET', url: `/api/v1/catalog/items/${id}/stream?plan=invalid`, headers: { cookie: 'dose_session=token' } });
     expect(response.statusCode).toBe(400); expect(response.json()).toEqual({ error: 'Invalid playback plan' });

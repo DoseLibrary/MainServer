@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { api, type ManagedUser } from '@/lib/api';
+import { MATURITY_CHOICES, maturityLabel } from '@/lib/maturity';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Modal, ModalContent, ModalDescription, ModalFooter, ModalHeader, ModalTitle } from '@/components/ui/modal';
@@ -23,11 +24,12 @@ export function FamilyManager({ open, embedded = false, actorId, onOpenChange = 
 
   async function create(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); const form = event.currentTarget; const data = new FormData(form); setBusy(true);
-    try { await api.createUser({ username: String(data.get('username') ?? '').trim(), password: String(data.get('password') ?? ''), role: data.get('role') === 'admin' ? 'admin' : 'member' }); form.reset(); await refresh(); }
+    const limit = String(data.get('maxMaturityLevel') ?? '');
+    try { await api.createUser({ username: String(data.get('username') ?? '').trim(), password: String(data.get('password') ?? ''), role: data.get('role') === 'admin' ? 'admin' : 'member', maxMaturityLevel: limit === '' ? null : Number(limit) }); form.reset(); await refresh(); }
     catch (caught) { setError(caught instanceof Error ? caught.message : 'Could not create account.'); }
     finally { setBusy(false); }
   }
-  async function update(user: ManagedUser, change: { role?: 'admin' | 'member'; disabled?: boolean; password?: string }) {
+  async function update(user: ManagedUser, change: { role?: 'admin' | 'member'; disabled?: boolean; password?: string; maxMaturityLevel?: number | null }) {
     setBusy(true); try { await api.updateUser(user.id, change); await refresh(); }
     catch (caught) { setError(caught instanceof Error ? caught.message : 'Could not update account.'); }
     finally { setBusy(false); }
@@ -55,11 +57,18 @@ export function FamilyManager({ open, embedded = false, actorId, onOpenChange = 
     {error && <div role="alert" className="mb-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div>}
     <form className="space-y-3" onSubmit={create}><Input name="username" label="Username" required maxLength={64} disabled={busy}/><Input name="password" label="Temporary password" type="password" required minLength={10} disabled={busy}/>
       <label className="flex flex-col gap-1.5 text-sm font-medium">Role<select name="role" aria-label="Role" className="h-10 rounded-md border border-input bg-background px-3" disabled={busy}><option value="member">Member</option><option value="admin">Administrator</option></select></label>
+      <label className="flex flex-col gap-1.5 text-sm font-medium">Can watch<select name="maxMaturityLevel" aria-label="Can watch" className="h-10 rounded-md border border-input bg-background px-3" disabled={busy}><option value="">Everything</option>{MATURITY_CHOICES.map((choice) => <option key={choice.level} value={choice.level}>{choice.label} · {choice.description}</option>)}</select></label>
       <Button type="submit" disabled={busy}>Add family member</Button></form>
     <section className="mt-6 border-t pt-4" aria-labelledby="family-accounts"><h2 id="family-accounts" className="font-semibold">Family accounts</h2>
       {loading ? <p role="status" className="mt-2 text-sm text-muted-foreground">Loading accounts…</p> : users.length === 0 ? <p className="mt-2 text-sm text-muted-foreground">No family accounts.</p> : <ul className="mt-2 space-y-2">{users.map((user) => <li key={user.id} className="rounded-md border p-3">
-        <div className="flex flex-wrap items-center justify-between gap-2"><div><p className="font-medium">{user.username}{user.id === actorId ? ' (you)' : ''}</p><p className="text-xs text-muted-foreground">{user.role === 'admin' ? 'Administrator' : 'Member'} · {user.disabled ? 'Disabled' : 'Enabled'}</p></div>
-        <div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" disabled={busy || user.id === actorId} onClick={() => void update(user, { role: user.role === 'admin' ? 'member' : 'admin' })}>{user.role === 'admin' ? 'Make member' : 'Make admin'}</Button>
+        <div className="flex flex-wrap items-center justify-between gap-2"><div><p className="font-medium">{user.username}{user.id === actorId ? ' (you)' : ''}</p><p className="text-xs text-muted-foreground">{user.role === 'admin' ? 'Administrator' : 'Member'} · {user.disabled ? 'Disabled' : 'Enabled'} · {maturityLabel(user.maxMaturityLevel)}</p></div>
+        <div className="flex flex-wrap items-center gap-2"><label className="flex items-center gap-1.5 text-xs font-normal text-muted-foreground">Can watch
+        <select aria-label={`Maturity limit for ${user.username}`} className="h-8 rounded-md border border-input bg-background px-2 text-xs" disabled={busy}
+          value={user.maxMaturityLevel ?? ''} onChange={(event) => void update(user, { maxMaturityLevel: event.target.value === '' ? null : Number(event.target.value) })}>
+          <option value="">Everything</option>
+          {MATURITY_CHOICES.map((choice) => <option key={choice.level} value={choice.level}>{choice.label} · {choice.description}</option>)}
+        </select></label>
+        <Button size="sm" variant="outline" disabled={busy || user.id === actorId} onClick={() => void update(user, { role: user.role === 'admin' ? 'member' : 'admin' })}>{user.role === 'admin' ? 'Make member' : 'Make admin'}</Button>
         <Button size="sm" variant="outline" disabled={busy || user.id === actorId} onClick={() => void update(user, { disabled: !user.disabled })}>{user.disabled ? 'Enable' : 'Disable'}</Button>
         <Button size="sm" variant="outline" disabled={busy || user.id === actorId} aria-describedby={user.id === actorId ? `self-reset-${user.id}` : undefined} onClick={() => { setResetError(''); setResetUser(user); }}>Reset password</Button><Button size="sm" variant="destructive" disabled={busy || user.id === actorId} onClick={() => setConfirmDelete(user)}>Delete</Button></div></div>
         {user.id === actorId && <p id={`self-reset-${user.id}`} className="mt-2 text-xs text-muted-foreground">Your own password cannot be reset from family management.</p>}

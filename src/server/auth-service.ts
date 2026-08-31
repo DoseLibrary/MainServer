@@ -5,7 +5,7 @@ import { createSessionToken, DUMMY_PASSWORD_HASH, hashPassword, hashSessionToken
 
 const LAST_SEEN_REFRESH_MS = 5 * 60 * 1000;
 
-export type PublicUser = { id: string; username: string; role: 'admin' | 'member' };
+export type PublicUser = { id: string; username: string; role: 'admin' | 'member'; maxMaturityLevel: number | null };
 export type ManagedUser = PublicUser & { disabled: boolean; createdAt: Date; updatedAt: Date };
 export class DuplicateLibraryError extends Error {}
 export class DuplicateUsernameError extends Error {}
@@ -75,13 +75,13 @@ export class AuthService {
   async deleteLibrary(id: string) { return (await this.db.delete(libraries).where(eq(libraries.id, id)).returning({ id: libraries.id }))[0] ?? null; }
 
   async listUsers(): Promise<ManagedUser[]> {
-    return this.db.select({ id: users.id, username: users.username, role: users.role, disabled: users.disabled, createdAt: users.createdAt, updatedAt: users.updatedAt }).from(users).orderBy(users.username);
+    return this.db.select({ id: users.id, username: users.username, role: users.role, disabled: users.disabled, maxMaturityLevel: users.maxMaturityLevel, createdAt: users.createdAt, updatedAt: users.updatedAt }).from(users).orderBy(users.username);
   }
 
-  async createUser(value: { username: string; password: string; role: 'admin' | 'member' }): Promise<ManagedUser> {
+  async createUser(value: { username: string; password: string; role: 'admin' | 'member'; maxMaturityLevel?: number | null }): Promise<ManagedUser> {
     try {
-      const [user] = await this.db.insert(users).values({ username: value.username, passwordHash: await hashPassword(value.password), role: value.role })
-        .returning({ id: users.id, username: users.username, role: users.role, disabled: users.disabled, createdAt: users.createdAt, updatedAt: users.updatedAt });
+      const [user] = await this.db.insert(users).values({ username: value.username, passwordHash: await hashPassword(value.password), role: value.role, maxMaturityLevel: value.maxMaturityLevel ?? null })
+        .returning({ id: users.id, username: users.username, role: users.role, disabled: users.disabled, maxMaturityLevel: users.maxMaturityLevel, createdAt: users.createdAt, updatedAt: users.updatedAt });
       return user;
     } catch (error) {
       if (isUniqueViolation(error)) throw new DuplicateUsernameError('Username already exists');
@@ -89,7 +89,7 @@ export class AuthService {
     }
   }
 
-  async updateUser(actorId: string, targetId: string, change: { role?: 'admin' | 'member'; disabled?: boolean; password?: string }): Promise<ManagedUser> {
+  async updateUser(actorId: string, targetId: string, change: { role?: 'admin' | 'member'; disabled?: boolean; password?: string; maxMaturityLevel?: number | null }): Promise<ManagedUser> {
     const passwordHash = change.password ? await hashPassword(change.password) : undefined;
     return this.db.transaction(async (tx) => {
       await tx.execute(sql`select pg_advisory_xact_lock(1146044742)`);
@@ -98,8 +98,8 @@ export class AuthService {
       if (actorId === targetId && (change.disabled === true || change.role === 'member')) throw new UserInvariantError('You cannot disable or demote your own account');
       const removesEnabledAdmin = target.role === 'admin' && !target.disabled && (change.role === 'member' || change.disabled === true);
       if (removesEnabledAdmin && await enabledAdminCount(tx) <= 1) throw new UserInvariantError('Dose must have at least one enabled administrator');
-      const [updated] = await tx.update(users).set({ role: change.role, disabled: change.disabled, passwordHash, updatedAt: new Date() }).where(eq(users.id, targetId))
-        .returning({ id: users.id, username: users.username, role: users.role, disabled: users.disabled, createdAt: users.createdAt, updatedAt: users.updatedAt });
+      const [updated] = await tx.update(users).set({ role: change.role, disabled: change.disabled, passwordHash, maxMaturityLevel: change.maxMaturityLevel === undefined ? undefined : change.maxMaturityLevel, updatedAt: new Date() }).where(eq(users.id, targetId))
+        .returning({ id: users.id, username: users.username, role: users.role, disabled: users.disabled, maxMaturityLevel: users.maxMaturityLevel, createdAt: users.createdAt, updatedAt: users.updatedAt });
       if (change.disabled === true || passwordHash) await tx.delete(sessions).where(eq(sessions.userId, targetId));
       return updated;
     });
@@ -118,7 +118,7 @@ export class AuthService {
   }
 
   private publicUser(user: typeof users.$inferSelect): PublicUser {
-    return { id: user.id, username: user.username, role: user.role };
+    return { id: user.id, username: user.username, role: user.role, maxMaturityLevel: user.maxMaturityLevel };
   }
 }
 

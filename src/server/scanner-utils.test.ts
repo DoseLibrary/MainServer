@@ -28,6 +28,7 @@ function mediaItemFixture(overrides: Partial<MediaItem> = {}): MediaItem {
     tagline: null,
     providerRating: null,
     contentRating: null,
+    maturityLevel: null,
     userTitle: null,
     userYear: null,
     userOverview: null,

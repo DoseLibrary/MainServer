@@ -2,12 +2,15 @@ export interface User {
   id: string;
   username: string;
   role?: 'admin' | 'member';
+  /** Highest maturity level this account may watch; null means no limit. */
+  maxMaturityLevel?: number | null;
 }
 
-export interface ManagedUser extends Required<User> {
+export interface ManagedUser extends Required<Omit<User, 'maxMaturityLevel'>> {
   disabled: boolean;
   createdAt: string;
   updatedAt: string;
+  maxMaturityLevel: number | null;
 }
 
 export interface UserSettings {
@@ -304,9 +307,9 @@ export const api = {
   refreshLibraryMetadata: (id: string, force = false) => request<{ libraryId: string; refreshed: number; failed: number }>(`/api/v1/libraries/${encodeURIComponent(id)}/refresh${force ? '?force=true' : ''}`, { method: 'POST' }),
   latestLibraryScan: (id: string) => request<{ scan: LibraryScan | null }>(`/api/v1/libraries/${encodeURIComponent(id)}/scans/latest`),
   users: () => request<{ users: ManagedUser[] }>('/api/v1/users'),
-  createUser: (user: { username: string; password: string; role: 'admin' | 'member' }) =>
+  createUser: (user: { username: string; password: string; role: 'admin' | 'member'; maxMaturityLevel?: number | null }) =>
     request<{ user: ManagedUser }>('/api/v1/users', { method: 'POST', body: JSON.stringify(user) }),
-  updateUser: (id: string, change: { role?: 'admin' | 'member'; disabled?: boolean; password?: string }) =>
+  updateUser: (id: string, change: { role?: 'admin' | 'member'; disabled?: boolean; password?: string; maxMaturityLevel?: number | null }) =>
     request<{ user: ManagedUser }>(`/api/v1/users/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(change) }),
   deleteUser: (id: string) => request<void>(`/api/v1/users/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   plugins: () => request<{ plugins: PluginSummary[] }>('/api/v1/plugins'),

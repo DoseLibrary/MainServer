@@ -3,6 +3,7 @@ import type { Database } from './db/client.ts';
 import { castCredits, collectionExpectedMembers, collectionMembers, collections, genres, mediaItemGenres, mediaItems, people, recommendationEdges } from './db/schema.ts';
 import type { TmdbClient, TmdbCollectionMetadata, TmdbMetadata } from './tmdb.ts';
 import type { ImageStore } from './images.ts';
+import { maturityLevel } from './maturity.ts';
 import type { PluginEventBus } from './plugins/events.ts';
 
 /** Bump when the enrichment model changes so unchanged files can be backfilled. */
@@ -60,6 +61,7 @@ export class EnrichmentService {
         tagline: preserveUserMatch ? metadata.tagline ?? null : metadata.tagline,
         providerRating: preserveUserMatch ? metadata.rating ?? null : metadata.rating,
         contentRating: preserveUserMatch ? metadata.contentRating ?? null : metadata.contentRating,
+        maturityLevel: maturityLevel(metadata.contentRating),
         posterPath: preserveUserMatch ? metadata.posterPath ?? null : metadata.posterPath,
         backdropPath: preserveUserMatch ? metadata.backdropPath ?? null : metadata.backdropPath,
         logoPath: preserveUserMatch ? metadata.logoPath ?? null : metadata.logoPath,
@@ -75,6 +77,19 @@ export class EnrichmentService {
       await this.replaceCast(tx, libraryId, itemId, metadata);
       await this.applyCollection(tx, libraryId, itemId, metadata, expected);
       await this.replaceRecommendations(tx, libraryId, itemId, metadata);
+      if (kind === 'series') {
+        // Providers rate the show, not each episode; children inherit the series
+        // level so a parental limit filters them with one comparison.
+        await tx.update(mediaItems)
+          .set({ maturityLevel: maturityLevel(metadata.contentRating) })
+          .where(eq(mediaItems.id, itemId));
+        await tx.execute(sql`
+          update ${mediaItems} set maturity_level = ${maturityLevel(metadata.contentRating)}
+          where ${mediaItems.libraryId} = ${libraryId}
+            and (${mediaItems.parentId} = ${itemId}
+              or ${mediaItems.parentId} in (select id from ${mediaItems} where parent_id = ${itemId}))
+        `);
+      }
     });
 
     // Emitted after the transaction commits so a handler that reads the item sees it.

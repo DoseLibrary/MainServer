@@ -34,6 +34,8 @@ export const users = pgTable('users', {
   passwordHash: text('password_hash').notNull(),
   role: userRole('role').notNull().default('member'),
   disabled: boolean('disabled').notNull().default(false),
+  /** Highest maturity level this account may watch; null means no limit. */
+  maxMaturityLevel: integer('max_maturity_level'),
   ...timestamps,
 }, (table) => [uniqueIndex('users_username_unique').on(table.username)]);
 
@@ -114,6 +116,8 @@ export const mediaItems = pgTable('media_items', {
   tagline: text('tagline'),
   providerRating: real('provider_rating'),
   contentRating: text('content_rating'),
+  /** contentRating normalized to a comparable level; set during enrichment. */
+  maturityLevel: integer('maturity_level'),
   userTitle: text('user_title'),
   userYear: integer('user_year'),
   userOverview: text('user_overview'),

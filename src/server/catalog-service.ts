@@ -5,6 +5,7 @@ import { castCredits, collectionExpectedMembers, collectionMembers, collections,
 import type { Probe } from './playback.ts';
 import { imageLocalUrl } from './images.ts';
 import type { PluginEventBus } from './plugins/events.ts';
+import { UNRATED_LEVEL } from './maturity.ts';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { stat } from 'node:fs/promises';
 
@@ -52,12 +53,36 @@ export interface RandomItemFilters {
 }
 
 export class CatalogService {
-  constructor(private readonly database: Database, private readonly trailerStorageRoot?: string, private readonly events?: PluginEventBus) {}
+  constructor(
+    private readonly database: Database,
+    private readonly trailerStorageRoot?: string,
+    private readonly events?: PluginEventBus,
+    /** Highest maturity level this view may return; null means unrestricted. */
+    private readonly maturityLimit: number | null = null,
+  ) {}
+
+  /**
+   * A view of the catalog restricted to what one member may watch. Every
+   * member-facing read goes through the returned instance, so a parental limit
+   * cannot be sidestepped by hitting search, a collection, or the stream URL.
+   */
+  forViewer(limit: number | null | undefined): CatalogService {
+    if (limit == null) return this;
+    return new CatalogService(this.database, this.trailerStorageRoot, this.events, limit);
+  }
+
+  /** SQL guard for the item table, or undefined when the viewer is unrestricted. */
+  private get withinMaturity() {
+    if (this.maturityLimit == null) return undefined;
+    // An unrated title is hidden from a restricted member rather than assumed safe.
+    return sql`coalesce(${mediaItems.maturityLevel}, ${UNRATED_LEVEL}) <= ${this.maturityLimit}`;
+  }
+
 
   /** Pick one uniformly random member-visible top-level title matching every filter. */
   async randomItem(filters: RandomItemFilters = {}) {
     const clauses = [
-      eq(mediaItems.available, true),
+      eq(mediaItems.available, true), this.withinMaturity,
       isNull(mediaItems.archivedAt),
       isNull(mediaItems.parentId),
       inArray(mediaItems.kind, ['movie', 'series'] as const),
@@ -236,7 +261,7 @@ export class CatalogService {
     const rows = await this.database.select({ id: mediaSubtitles.id, language: mediaSubtitles.language, label: mediaSubtitles.label, forced: mediaSubtitles.forced })
       .from(mediaSubtitles).innerJoin(mediaFiles, eq(mediaFiles.id, mediaSubtitles.mediaFileId))
       .innerJoin(mediaItems, eq(mediaItems.id, mediaFiles.mediaItemId))
-      .where(and(eq(mediaFiles.mediaItemId, itemId), eq(mediaFiles.available, true), eq(mediaItems.available, true), isNull(mediaItems.archivedAt)))
+      .where(and(eq(mediaFiles.mediaItemId, itemId), eq(mediaFiles.available, true), eq(mediaItems.available, true), this.withinMaturity, isNull(mediaItems.archivedAt)))
       .orderBy(desc(mediaSubtitles.forced), mediaSubtitles.label);
     return rows.map((row) => ({ id: row.id, language: row.language ?? undefined, label: row.label, forced: row.forced, url: `/api/v1/subtitles/${row.id}` }));
   }
@@ -257,7 +282,7 @@ export class CatalogService {
     if (!collection) return null;
     const rows = await this.database.select({ item: mediaItems }).from(collectionMembers)
       .innerJoin(mediaItems, eq(mediaItems.id, collectionMembers.mediaItemId))
-      .where(and(eq(collectionMembers.collectionId, collectionId), eq(mediaItems.available, true), isNull(mediaItems.archivedAt)))
+      .where(and(eq(collectionMembers.collectionId, collectionId), eq(mediaItems.available, true), this.withinMaturity, isNull(mediaItems.archivedAt)))
       .orderBy(collectionMembers.position, mediaItems.sortTitle);
     const items = rows.map(({ item }) => item);
     const quality = await this.qualityByItem(items.map((item) => item.id));
@@ -304,7 +329,7 @@ export class CatalogService {
     if (!genre) return null;
     const rows = await this.database.select({ item: mediaItems }).from(mediaItemGenres)
       .innerJoin(mediaItems, eq(mediaItems.id, mediaItemGenres.mediaItemId))
-      .where(and(eq(mediaItemGenres.genreId, genreId), eq(mediaItems.available, true), isNull(mediaItems.archivedAt), isNull(mediaItems.parentId), inArray(mediaItems.kind, ['movie', 'series'])))
+      .where(and(eq(mediaItemGenres.genreId, genreId), eq(mediaItems.available, true), this.withinMaturity, isNull(mediaItems.archivedAt), isNull(mediaItems.parentId), inArray(mediaItems.kind, ['movie', 'series'])))
       .orderBy(mediaItems.sortTitle);
     const items = rows.map(({ item }) => item);
     const quality = await this.qualityByItem(items.map((item) => item.id));
@@ -324,7 +349,7 @@ export class CatalogService {
       .from(genres)
       .innerJoin(mediaItemGenres, eq(mediaItemGenres.genreId, genres.id))
       .innerJoin(mediaItems, eq(mediaItems.id, mediaItemGenres.mediaItemId))
-      .where(and(eq(mediaItems.available, true), isNull(mediaItems.archivedAt), isNull(mediaItems.parentId), inArray(mediaItems.kind, ['movie', 'series']), ...(scope ? [scope] : [])))
+      .where(and(eq(mediaItems.available, true), this.withinMaturity, isNull(mediaItems.archivedAt), isNull(mediaItems.parentId), inArray(mediaItems.kind, ['movie', 'series']), ...(scope ? [scope] : [])))
       .groupBy(genres.normalizedName)
       .orderBy(sql`min(${genres.name})`);
     return rows.map((row) => ({ key: row.key, name: row.name, count: Number(row.total) }));
@@ -339,7 +364,7 @@ export class CatalogService {
     const genreIds = genreRows.map((genre) => genre.id);
     const rows = await this.database.selectDistinct({ item: mediaItems }).from(mediaItemGenres)
       .innerJoin(mediaItems, eq(mediaItems.id, mediaItemGenres.mediaItemId))
-      .where(and(inArray(mediaItemGenres.genreId, genreIds), eq(mediaItems.available, true), isNull(mediaItems.archivedAt), isNull(mediaItems.parentId), inArray(mediaItems.kind, ['movie', 'series'])))
+      .where(and(inArray(mediaItemGenres.genreId, genreIds), eq(mediaItems.available, true), this.withinMaturity, isNull(mediaItems.archivedAt), isNull(mediaItems.parentId), inArray(mediaItems.kind, ['movie', 'series'])))
       .orderBy(mediaItems.sortTitle);
     const items = rows.map(({ item }) => item);
     const quality = await this.qualityByItem(items.map((item) => item.id));
@@ -353,7 +378,7 @@ export class CatalogService {
     if (!person) return null;
     const rows = await this.database.select({ item: mediaItems, character: castCredits.character })
       .from(castCredits).innerJoin(mediaItems, eq(mediaItems.id, castCredits.mediaItemId))
-      .where(and(eq(castCredits.personId, personId), eq(mediaItems.available, true), isNull(mediaItems.archivedAt), inArray(mediaItems.kind, ['movie', 'series'])))
+      .where(and(eq(castCredits.personId, personId), eq(mediaItems.available, true), this.withinMaturity, isNull(mediaItems.archivedAt), inArray(mediaItems.kind, ['movie', 'series'])))
       .orderBy(castCredits.billingOrder, mediaItems.sortTitle);
     const titles = rows.map((row) => ({ ...toCatalogItem(row.item, null), character: row.character ?? undefined }));
     return { id: person.id, name: person.name, profileUrl: imageLocalUrl(person.profilePath), titles };
@@ -362,7 +387,7 @@ export class CatalogService {
   private async recommendationsForItem(itemId: string) {
     const rows = await this.database.select({ item: mediaItems })
       .from(recommendationEdges).innerJoin(mediaItems, eq(mediaItems.id, recommendationEdges.recommendedMediaItemId))
-      .where(and(eq(recommendationEdges.sourceMediaItemId, itemId), eq(mediaItems.available, true), isNull(mediaItems.archivedAt))).orderBy(recommendationEdges.position);
+      .where(and(eq(recommendationEdges.sourceMediaItemId, itemId), eq(mediaItems.available, true), this.withinMaturity, isNull(mediaItems.archivedAt))).orderBy(recommendationEdges.position);
     return rows.map((row) => toCatalogItem(row.item, null));
   }
 
@@ -373,7 +398,7 @@ export class CatalogService {
     // separate libraries are both reachable from one search box.
     const itemScope = libraryId ? eq(mediaItems.libraryId, libraryId) : undefined;
     const rows = await this.database.select().from(mediaItems)
-      .where(and(eq(mediaItems.available, true), isNull(mediaItems.archivedAt), isNull(mediaItems.parentId), ilike(mediaItems.title, `%${term}%`), ...(itemScope ? [itemScope] : [])))
+      .where(and(eq(mediaItems.available, true), this.withinMaturity, isNull(mediaItems.archivedAt), isNull(mediaItems.parentId), ilike(mediaItems.title, `%${term}%`), ...(itemScope ? [itemScope] : [])))
       .orderBy(mediaItems.sortTitle).limit(SEARCH_LIMIT);
 
     const movieIds = rows.filter((item) => item.kind === 'movie').map((item) => item.id);
@@ -389,7 +414,7 @@ export class CatalogService {
     const seasonCounts = new Map<string, number>();
     if (seriesIds.length > 0) {
       const seasons = await this.database.select({ parentId: mediaItems.parentId, total: count() })
-        .from(mediaItems).where(and(inArray(mediaItems.parentId, seriesIds), eq(mediaItems.kind, 'season'), eq(mediaItems.available, true), isNull(mediaItems.archivedAt)))
+        .from(mediaItems).where(and(inArray(mediaItems.parentId, seriesIds), eq(mediaItems.kind, 'season'), eq(mediaItems.available, true), this.withinMaturity, isNull(mediaItems.archivedAt)))
         .groupBy(mediaItems.parentId);
       for (const season of seasons) if (season.parentId) seasonCounts.set(season.parentId, season.total);
     }
@@ -451,7 +476,7 @@ export class CatalogService {
       .from(mediaPreviewSprites)
       .innerJoin(mediaFiles, eq(mediaFiles.id, mediaPreviewSprites.mediaFileId))
       .innerJoin(mediaItems, eq(mediaItems.id, mediaFiles.mediaItemId))
-      .where(and(eq(mediaFiles.mediaItemId, mediaItemId), eq(mediaFiles.available, true), eq(mediaItems.available, true), isNull(mediaItems.archivedAt))).limit(1);
+      .where(and(eq(mediaFiles.mediaItemId, mediaItemId), eq(mediaFiles.available, true), eq(mediaItems.available, true), this.withinMaturity, isNull(mediaItems.archivedAt))).limit(1);
     return row ?? null;
   }
 
@@ -459,14 +484,14 @@ export class CatalogService {
     const [file] = await this.database.select({ id: mediaFiles.id, relativePath: mediaFiles.relativePath, durationSeconds: mediaFiles.durationSeconds, probe: mediaFiles.probe, rootPath: libraries.rootPath })
       .from(mediaFiles).innerJoin(libraries, eq(libraries.id, mediaFiles.libraryId))
       .innerJoin(mediaItems, eq(mediaItems.id, mediaFiles.mediaItemId))
-      .where(and(eq(mediaFiles.mediaItemId, mediaItemId), eq(mediaFiles.available, true), eq(mediaItems.available, true), isNull(mediaItems.archivedAt))).limit(1);
+      .where(and(eq(mediaFiles.mediaItemId, mediaItemId), eq(mediaFiles.available, true), eq(mediaItems.available, true), this.withinMaturity, isNull(mediaItems.archivedAt))).limit(1);
     if (!file) return null;
     return { fileId: file.id, relativePath: file.relativePath, rootPath: file.rootPath, durationSeconds: file.durationSeconds, probe: file.probe as Probe };
   }
   async localTrailerSource(mediaItemId: string) {
     const [trailer] = await this.database.select({ localPath: mediaTrailers.localPath }).from(mediaTrailers)
       .innerJoin(mediaItems, eq(mediaItems.id, mediaTrailers.mediaItemId))
-      .where(and(eq(mediaTrailers.mediaItemId, mediaItemId), eq(mediaTrailers.preferred, true), eq(mediaTrailers.status, 'ready'), isNotNull(mediaTrailers.localPath), eq(mediaItems.available, true), isNull(mediaItems.archivedAt))).limit(1);
+      .where(and(eq(mediaTrailers.mediaItemId, mediaItemId), eq(mediaTrailers.preferred, true), eq(mediaTrailers.status, 'ready'), isNotNull(mediaTrailers.localPath), eq(mediaItems.available, true), this.withinMaturity, isNull(mediaItems.archivedAt))).limit(1);
     if (!trailer?.localPath || !this.trailerStorageRoot || !managedTrailerPath(this.trailerStorageRoot, trailer.localPath)) return null;
     try { if (!(await stat(resolve(trailer.localPath))).isFile()) return null; } catch { return null; }
     return { localPath: resolve(trailer.localPath) };
@@ -474,7 +499,7 @@ export class CatalogService {
   async home(libraryId: string | undefined, userId: string) {
     // A missing libraryId aggregates every library so movies and shows share one home.
     const scope = libraryId ? eq(mediaItems.libraryId, libraryId) : undefined;
-    const items = await this.database.select({ item: mediaItems, progress: playbackProgress }).from(mediaItems).leftJoin(playbackProgress, and(eq(playbackProgress.mediaItemId, mediaItems.id), eq(playbackProgress.userId, userId))).where(and(eq(mediaItems.available, true), isNull(mediaItems.archivedAt), isNull(mediaItems.parentId), ...(scope ? [scope] : []))).orderBy(mediaItems.sortTitle);
+    const items = await this.database.select({ item: mediaItems, progress: playbackProgress }).from(mediaItems).leftJoin(playbackProgress, and(eq(playbackProgress.mediaItemId, mediaItems.id), eq(playbackProgress.userId, userId))).where(and(eq(mediaItems.available, true), this.withinMaturity, isNull(mediaItems.archivedAt), isNull(mediaItems.parentId), ...(scope ? [scope] : []))).orderBy(mediaItems.sortTitle);
     const fileScope = libraryId ? eq(mediaFiles.libraryId, libraryId) : undefined;
     const files = await this.database.select({ mediaItemId: mediaFiles.mediaItemId, durationSeconds: mediaFiles.durationSeconds }).from(mediaFiles).where(and(eq(mediaFiles.available, true), ...(fileScope ? [fileScope] : [])));
     const durations = new Map(files.map((file) => [file.mediaItemId, file.durationSeconds]));
@@ -491,7 +516,7 @@ export class CatalogService {
 
     // Newest episodes across every series, shown as posters (never mixed with movies).
     const episodeRows = await this.database.select({ item: mediaItems }).from(mediaItems)
-      .where(and(eq(mediaItems.available, true), isNull(mediaItems.archivedAt), eq(mediaItems.kind, 'episode'), ...(scope ? [scope] : [])))
+      .where(and(eq(mediaItems.available, true), this.withinMaturity, isNull(mediaItems.archivedAt), eq(mediaItems.kind, 'episode'), ...(scope ? [scope] : [])))
       .orderBy(desc(mediaItems.createdAt)).limit(HOME_ROW_LIMIT);
     const episodes = episodeRows.map(({ item }) => ({ ...toCatalogItem(item, null), badge: undefined as string | undefined, genres: [] as string[], collection: undefined as string | undefined }));
 
@@ -500,7 +525,7 @@ export class CatalogService {
       .from(playbackProgress)
       .innerJoin(mediaItems, eq(mediaItems.id, playbackProgress.mediaItemId))
       .leftJoin(mediaFiles, and(eq(mediaFiles.mediaItemId, mediaItems.id), eq(mediaFiles.available, true)))
-      .where(and(eq(playbackProgress.userId, userId), eq(mediaItems.kind, 'episode'), eq(mediaItems.available, true), isNull(mediaItems.archivedAt), eq(playbackProgress.watched, false), ...(scope ? [scope] : [])))
+      .where(and(eq(playbackProgress.userId, userId), eq(mediaItems.kind, 'episode'), eq(mediaItems.available, true), this.withinMaturity, isNull(mediaItems.archivedAt), eq(playbackProgress.watched, false), ...(scope ? [scope] : [])))
       .orderBy(desc(playbackProgress.lastWatchedAt)).limit(HOME_ROW_LIMIT);
     const seenEpisode = new Set<string>();
     const ongoingEpisodes = ongoingEpRows
@@ -544,8 +569,8 @@ export class CatalogService {
     return { libraryId: libraryId ?? null, featured, sections };
   }
   async item(id: string, userId: string) {
-    const [row] = await this.database.select({ item: mediaItems, progress: playbackProgress }).from(mediaItems).leftJoin(playbackProgress, and(eq(playbackProgress.mediaItemId, mediaItems.id), eq(playbackProgress.userId, userId))).where(and(eq(mediaItems.id, id), eq(mediaItems.available, true), isNull(mediaItems.archivedAt))).limit(1); if (!row) return null;
-    const childRows = await this.database.select({ item: mediaItems, progress: playbackProgress }).from(mediaItems).leftJoin(playbackProgress, and(eq(playbackProgress.mediaItemId, mediaItems.id), eq(playbackProgress.userId, userId))).where(and(eq(mediaItems.parentId, id), eq(mediaItems.available, true), isNull(mediaItems.archivedAt))).orderBy(mediaItems.seasonNumber, mediaItems.episodeNumber, mediaItems.sortTitle);
+    const [row] = await this.database.select({ item: mediaItems, progress: playbackProgress }).from(mediaItems).leftJoin(playbackProgress, and(eq(playbackProgress.mediaItemId, mediaItems.id), eq(playbackProgress.userId, userId))).where(and(eq(mediaItems.id, id), eq(mediaItems.available, true), this.withinMaturity, isNull(mediaItems.archivedAt))).limit(1); if (!row) return null;
+    const childRows = await this.database.select({ item: mediaItems, progress: playbackProgress }).from(mediaItems).leftJoin(playbackProgress, and(eq(playbackProgress.mediaItemId, mediaItems.id), eq(playbackProgress.userId, userId))).where(and(eq(mediaItems.parentId, id), eq(mediaItems.available, true), this.withinMaturity, isNull(mediaItems.archivedAt))).orderBy(mediaItems.seasonNumber, mediaItems.episodeNumber, mediaItems.sortTitle);
     const childFiles = await this.database.select({ mediaItemId: mediaFiles.mediaItemId, durationSeconds: mediaFiles.durationSeconds }).from(mediaFiles).innerJoin(mediaItems, eq(mediaItems.id, mediaFiles.mediaItemId)).where(and(eq(mediaItems.parentId, id), eq(mediaFiles.available, true)));
     const children = serializeCatalogChildren(childRows, new Map(childFiles.map((file) => [file.mediaItemId, file.durationSeconds])));
     const files = await this.database.select({ id: mediaFiles.id, relativePath: mediaFiles.relativePath, durationSeconds: mediaFiles.durationSeconds }).from(mediaFiles).where(and(eq(mediaFiles.mediaItemId, id), eq(mediaFiles.available, true)));
