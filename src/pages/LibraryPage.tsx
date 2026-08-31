@@ -5,7 +5,7 @@ import { MediaCard } from '@/components/media/MediaCard';
 import { Navbar, type NavbarBrandImage } from '@/components/media/Navbar';
 import { Poster } from '@/components/media/Poster';
 import { Button } from '@/components/ui/button';
-import { Skeleton } from '@/components/ui/skeleton';
+import { Spinner } from '@/components/ui/spinner';
 
 export interface LibraryNavigationItem<Id extends string = string> {
   id: Id;
@@ -99,17 +99,9 @@ function ActionButton({ action, variant = 'default' }: { action: LibraryAction; 
 
 function LibraryLoading({ title }: { title: string }) {
   return (
-    <main aria-busy="true" aria-label={`Loading ${title}`} className="mx-auto max-w-7xl space-y-10 px-4 py-8 sm:px-6 lg:px-8">
+    <main aria-busy="true" className="mx-auto flex min-h-[60vh] max-w-7xl items-center justify-center px-4 py-16 sm:px-6 lg:px-8">
       <h1 className="sr-only">{title}</h1>
-      <Skeleton className="h-[24rem] w-full rounded-lg sm:h-[30rem]" />
-      {[0, 1, 2].map((row) => (
-        <section key={row} aria-hidden="true" className="space-y-3">
-          <Skeleton className="h-7 w-48" />
-          <div className="flex gap-3 overflow-hidden sm:gap-4">
-            {[0, 1, 2, 3, 4, 5].map((item) => <Skeleton key={item} className="aspect-[2/3] w-36 shrink-0 sm:w-44" />)}
-          </div>
-        </section>
-      ))}
+      <Spinner className="h-10 w-10 text-muted-foreground" label={`Loading ${title}`} />
     </main>
   );
 }
@@ -169,38 +161,35 @@ export function LibraryPage<NavigationId extends string = string>({
 
         <div className="space-y-10 px-4 py-8 sm:px-6 lg:px-8">
           {sections.map((section) => (
-            <section key={section.id} aria-labelledby={`library-section-${section.id}`}>
-              <div className="mb-3 flex items-center justify-between gap-4">
-                <h2 id={`library-section-${section.id}`} className="text-xl font-semibold">{section.title}</h2>
-                {section.action && <ActionButton action={section.action} variant="outline" />}
-              </div>
-              <Carousel
-                label={section.carouselLabel ?? section.title}
-                items={section.items}
-                getItemKey={(item) => item.id}
-                itemClassName={section.layout === 'card' ? 'w-60 sm:w-72 lg:w-80' : 'w-36 sm:w-44 lg:w-48'}
-                renderItem={(item) => section.layout === 'card' ? (
-                  <MediaCard
-                    title={item.title}
-                    imageSrc={item.backdropSrc ?? item.posterSrc}
-                    imageAlt={item.posterAlt}
-                    subtitle={item.subtitle}
-                    badge={item.badge}
-                    progress={item.progress}
-                    interaction={item.interaction}
-                  />
-                ) : (
-                  <Poster
-                    title={item.title}
-                    src={item.posterSrc}
-                    alt={item.posterAlt}
-                    subtitle={item.subtitle}
-                    badge={item.badge}
-                    interaction={item.interaction}
-                  />
-                )}
-              />
-            </section>
+            <Carousel
+              key={section.id}
+              label={section.carouselLabel ?? section.title}
+              heading={section.title}
+              headingAction={section.action && <ActionButton action={section.action} variant="outline" />}
+              items={section.items}
+              getItemKey={(item) => item.id}
+              itemClassName={section.layout === 'card' ? 'w-60 sm:w-72 lg:w-80' : 'w-36 sm:w-44 lg:w-48'}
+              renderItem={(item) => section.layout === 'card' ? (
+                <MediaCard
+                  title={item.title}
+                  imageSrc={item.backdropSrc ?? item.posterSrc}
+                  imageAlt={item.posterAlt}
+                  subtitle={item.subtitle}
+                  badge={item.badge}
+                  progress={item.progress}
+                  interaction={item.interaction}
+                />
+              ) : (
+                <Poster
+                  title={item.title}
+                  src={item.posterSrc}
+                  alt={item.posterAlt}
+                  subtitle={item.subtitle}
+                  badge={item.badge}
+                  interaction={item.interaction}
+                />
+              )}
+            />
           ))}
         </div>
       </main>

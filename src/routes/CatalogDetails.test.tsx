@@ -13,6 +13,38 @@ describe('CatalogDetails', () => {
     expect(globalThis.fetch).toHaveBeenCalledWith('/api/v1/catalog/items/movie%2F1', expect.anything());
   });
 
+  it('adds a title to a personal collection from the media page', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith('/api/v1/me/collections/')) return new Response(JSON.stringify({ collection: { id: 'c1', name: 'Marathon', items: [] } }), { status: 200 });
+      if (url === '/api/v1/me/collections') return new Response(JSON.stringify({ collections: [{ id: 'c1', name: 'Marathon', itemCount: 0 }] }), { status: 200 });
+      if (url === '/api/v1/auth/me') return new Response(JSON.stringify({ user: { id: 'u1', username: 'member', role: 'member' } }), { status: 200 });
+      return new Response(JSON.stringify({ item: { id: 'm9', title: 'Heat', kind: 'movie' } }), { status: 200 });
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    render(<MemoryRouter initialEntries={['/media/m9']}><Routes><Route path="/media/:id" element={<CatalogDetails />} /></Routes></MemoryRouter>);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Add to collection' }));
+    fireEvent.click(await screen.findByRole('button', { name: /Marathon/ }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/v1/me/collections/c1/items', expect.objectContaining({ method: 'POST', body: JSON.stringify({ mediaItemId: 'm9' }) })));
+    expect(await screen.findByText('Added to Marathon.')).toBeInTheDocument();
+  });
+
+  it('queues a movie for the marathon from the media page', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/v1/me/queue') return new Response(JSON.stringify({ items: [{ id: 'm9', title: 'Heat', kind: 'movie' }] }), { status: 200 });
+      if (url === '/api/v1/auth/me') return new Response(JSON.stringify({ user: { id: 'u1', username: 'member', role: 'member' } }), { status: 200 });
+      return new Response(JSON.stringify({ item: { id: 'm9', title: 'Heat', kind: 'movie' } }), { status: 200 });
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    render(<MemoryRouter initialEntries={['/media/m9']}><Routes><Route path="/media/:id" element={<CatalogDetails />} /></Routes></MemoryRouter>);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Add to queue' }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/v1/me/queue', expect.objectContaining({ method: 'POST', body: JSON.stringify({ mediaItemId: 'm9' }) })));
+    expect(await screen.findByRole('button', { name: 'In queue' })).toBeInTheDocument();
+  });
+
   it('labels the primary action Resume for a partially watched movie', async () => {
     globalThis.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ item: { id: 'm3', title: 'Dune', kind: 'movie', progress: 0.4 } }), { status: 200 }));
     render(<MemoryRouter initialEntries={['/media/m3']}><Routes><Route path="/media/:id" element={<CatalogDetails />} /></Routes></MemoryRouter>);

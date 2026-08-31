@@ -4,6 +4,7 @@ import { api, imageVariant, type CatalogItemDetails } from '@/lib/api';
 import { MediaDetailsPage } from '@/pages/MediaDetailsPage';
 import { ArtworkManager } from '@/routes/ArtworkManager';
 import { MetadataRematch } from '@/routes/MetadataRematch';
+import { AddToCollectionModal } from '@/components/media/AddToCollectionModal';
 
 export function CatalogDetails() {
   const { id = '' } = useParams();
@@ -15,6 +16,8 @@ export function CatalogDetails() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [artworkOpen, setArtworkOpen] = useState(false);
   const [rematchOpen, setRematchOpen] = useState(false);
+  const [collectionOpen, setCollectionOpen] = useState(false);
+  const [queued, setQueued] = useState(false);
   const load = useCallback(async () => {
     setError(undefined);
     try { const next = (await api.catalogItem(id)).item; setItem(next); setSaved(Boolean(next.inWatchlist)); setWatched(Boolean(next.watched)); }
@@ -27,6 +30,11 @@ export function CatalogDetails() {
     const next = !saved;
     setSaved(next); // Optimistic; revert if the request fails.
     try { await api.setWatchlist(id, next); } catch { setSaved(!next); }
+  }
+  async function addToQueue() {
+    const previous = queued;
+    setQueued(true); // Optimistic; revert if the request fails.
+    try { await api.addToQueue(id); } catch { setQueued(previous); }
   }
   async function toggleWatched() {
     const next = !watched;
@@ -73,6 +81,10 @@ export function CatalogDetails() {
     errorMessage: error, onRetry: load,
     primaryAction: item && (item.kind === 'movie' || item.kind === 'episode') ? { label: typeof item.progress === 'number' && item.progress > 0 && item.progress < 1 ? 'Resume' : 'Play', href: `/watch/${encodeURIComponent(item.id)}` } : undefined,
     secondaryAction: item && (item.kind === 'movie' || item.kind === 'series') ? { label: saved ? 'In Watch List' : 'Add to Watch List', onClick: () => void toggleWatchlist() } : undefined,
+    extraActions: item && (item.kind === 'movie' || item.kind === 'series') ? [
+      { id: 'add-to-collection', label: 'Add to collection', onClick: () => setCollectionOpen(true) },
+      ...(item.kind === 'movie' ? [{ id: 'add-to-queue', label: queued ? 'In queue' : 'Add to queue', onClick: () => void addToQueue() }] : []),
+    ] : undefined,
     onPlayTrailer: hasLocalTrailer ? () => navigate(`/trailer/${encodeURIComponent(id)}`) : undefined,
     trailerLabel: 'Play Trailer',
     watched,
@@ -95,7 +107,9 @@ export function CatalogDetails() {
     id: episode.id,
     name: episode.title || (episode.episodeNumber != null ? `Episode ${episode.episodeNumber}` : 'Episode'),
     overview: episode.overview,
-    posterSrc: imageVariant(episode.posterUrl, { width: 640, height: 360, fit: 'cover', format: 'webp' }),
+    // Episode stills are stored as the backdrop; fall back to the season poster
+    // (this page's own art) rather than showing an empty tile.
+    posterSrc: imageVariant(episode.posterUrl ?? episode.backdropUrl ?? item?.posterUrl, { width: 640, height: 360, fit: 'cover', format: 'webp' }),
     progress: episode.progress,
     interaction: { href: `/media/${encodeURIComponent(episode.id)}` },
   }));
@@ -103,6 +117,7 @@ export function CatalogDetails() {
   const page = kind === 'show' ? <MediaDetailsPage kind="show" {...common} seasons={children} seasonsTitle={item?.kind === 'season' ? 'Episodes' : 'Seasons'} /> : <MediaDetailsPage kind="movie" {...common} cast={cast} />;
   return <>
     {page}
+    {item && <AddToCollectionModal open={collectionOpen} mediaItemId={id} onOpenChange={setCollectionOpen} />}
     {isAdmin && <ArtworkManager open={artworkOpen} itemId={id} onOpenChange={setArtworkOpen} onApplied={() => void load()} />}
     {isAdmin && item && (item.kind === 'movie' || item.kind === 'series') && <MetadataRematch open={rematchOpen} itemId={id} kind={item.kind} initialTitle={item.title} onOpenChange={setRematchOpen} onMatched={() => { void load(); setArtworkOpen(true); }} />}
   </>;

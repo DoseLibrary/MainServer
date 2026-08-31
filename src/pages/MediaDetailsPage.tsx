@@ -7,7 +7,7 @@ import { Avatar } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { Skeleton } from '@/components/ui/skeleton';
+import { Spinner } from '@/components/ui/spinner';
 
 export type MediaDetailsAction =
   | { label: string; href: string; onClick?: MouseEventHandler<HTMLAnchorElement> }
@@ -64,6 +64,8 @@ interface MediaDetailsBaseProps {
   posterAlt?: string;
   primaryAction?: MediaDetailsAction;
   secondaryAction?: MediaDetailsAction;
+  /** Extra member-facing actions (e.g. add to collection) shown beside the secondary action. */
+  extraActions?: readonly (MediaDetailsAction & { id: string })[];
   /** When provided, a "Play trailer" button is shown (i.e. a trailer exists). */
   onPlayTrailer?: () => void;
   trailerLabel?: string;
@@ -116,12 +118,13 @@ function ActionButton({ action, variant = 'default', size = 'lg' }: { action: Me
 
 type DetailsActionsProps = Pick<
   MediaDetailsBaseProps,
-  'primaryAction' | 'secondaryAction' | 'onPlayTrailer' | 'trailerLabel' | 'watched' | 'onToggleWatched' | 'markWatchedLabel' | 'markUnwatchedLabel' | 'canManage' | 'onEditMetadata' | 'manageLabel' | 'adminActions'
+  'primaryAction' | 'secondaryAction' | 'extraActions' | 'onPlayTrailer' | 'trailerLabel' | 'watched' | 'onToggleWatched' | 'markWatchedLabel' | 'markUnwatchedLabel' | 'canManage' | 'onEditMetadata' | 'manageLabel' | 'adminActions'
 >;
 
 function DetailsActions({
   primaryAction,
   secondaryAction,
+  extraActions,
   onPlayTrailer,
   trailerLabel = 'Play trailer',
   watched = false,
@@ -134,7 +137,7 @@ function DetailsActions({
   adminActions,
 }: DetailsActionsProps) {
   const showManage = canManage && (onEditMetadata !== undefined || (adminActions?.length ?? 0) > 0);
-  const hasAny = primaryAction || secondaryAction || onPlayTrailer || onToggleWatched || showManage;
+  const hasAny = primaryAction || secondaryAction || (extraActions?.length ?? 0) > 0 || onPlayTrailer || onToggleWatched || showManage;
   if (!hasAny) return null;
 
   return (
@@ -155,6 +158,8 @@ function DetailsActions({
       )}
 
       {secondaryAction && <ActionButton action={secondaryAction} variant="outline" />}
+
+      {extraActions?.map((action) => <ActionButton key={action.id} action={action} variant="outline" />)}
 
       {showManage && (
         <DropdownMenu>
@@ -211,23 +216,9 @@ function DetailsShell({ navigation, children }: { navigation?: ComponentProps<ty
 function LoadingState({ navigation, title }: { navigation?: ComponentProps<typeof Navbar>; title: string }) {
   return (
     <DetailsShell navigation={navigation}>
-      <main aria-busy="true" aria-label={`Loading ${title}`} className="mx-auto max-w-7xl space-y-10 px-4 py-8 sm:px-6 lg:px-8">
+      <main aria-busy="true" className="mx-auto flex min-h-[60vh] max-w-7xl items-center justify-center px-4 py-16 sm:px-6 lg:px-8">
         <h1 className="sr-only">{title}</h1>
-        <div className="grid gap-6 sm:grid-cols-[minmax(0,14rem)_minmax(0,1fr)] lg:grid-cols-[minmax(0,18rem)_minmax(0,1fr)]">
-          <Skeleton className="aspect-[2/3] w-40 rounded-lg sm:w-full" />
-          <div className="space-y-4">
-            <Skeleton className="h-10 w-3/4" />
-            <Skeleton className="h-5 w-1/2" />
-            <Skeleton className="h-24 w-full" />
-            <div className="flex gap-3"><Skeleton className="h-11 w-32" /><Skeleton className="h-11 w-40" /></div>
-          </div>
-        </div>
-        <section aria-hidden="true" className="space-y-3">
-          <Skeleton className="h-7 w-48" />
-          <div className="flex gap-3 overflow-hidden sm:gap-4">
-            {[0, 1, 2, 3, 4, 5].map((item) => <Skeleton key={item} className="aspect-[2/3] w-36 shrink-0 sm:w-44" />)}
-          </div>
-        </section>
+        <Spinner className="h-10 w-10 text-muted-foreground" label={`Loading ${title}`} />
       </main>
     </DetailsShell>
   );
@@ -245,21 +236,20 @@ function ErrorState({ navigation, errorTitle = 'Details unavailable', errorMessa
   );
 }
 
-function RelatedRow({ id, title, items }: { id: string; title: string; items: readonly MediaRelatedItem[] }) {
+function RelatedRow({ title, items }: { title: string; items: readonly MediaRelatedItem[] }) {
   if (items.length === 0) return null;
   return (
-    <section aria-labelledby={`media-related-${id}`}>
-      <h2 id={`media-related-${id}`} className="mb-3 text-xl font-semibold">{title}</h2>
-      <Carousel
-        label={title}
-        items={items}
-        getItemKey={(item) => item.id}
-        itemClassName="w-36 sm:w-44 lg:w-48"
-        renderItem={(item) => (
-          <Poster title={item.title} src={item.posterSrc} alt={item.posterAlt} subtitle={item.subtitle} badge={item.badge} interaction={item.interaction} />
-        )}
-      />
-    </section>
+    <Carousel
+      label={title}
+      heading={title}
+      headingClassName="text-xl font-semibold"
+      items={items}
+      getItemKey={(item) => item.id}
+      itemClassName="w-36 sm:w-44 lg:w-48"
+      renderItem={(item) => (
+        <Poster title={item.title} src={item.posterSrc} alt={item.posterAlt} subtitle={item.subtitle} badge={item.badge} interaction={item.interaction} />
+      )}
+    />
   );
 }
 
@@ -353,6 +343,7 @@ export function MediaDetailsPage(props: MediaDetailsPageProps) {
     posterAlt,
     primaryAction,
     secondaryAction,
+    extraActions,
     onPlayTrailer,
     trailerLabel,
     watched,
@@ -401,6 +392,7 @@ export function MediaDetailsPage(props: MediaDetailsPageProps) {
                 <DetailsActions
                   primaryAction={primaryAction}
                   secondaryAction={secondaryAction}
+                  extraActions={extraActions}
                   onPlayTrailer={onPlayTrailer}
                   trailerLabel={trailerLabel}
                   watched={watched}
@@ -421,7 +413,7 @@ export function MediaDetailsPage(props: MediaDetailsPageProps) {
           {props.kind === 'movie'
             ? <CastRow title={props.castTitle ?? 'Cast'} cast={props.cast ?? []} />
             : <SeasonsList title={props.seasonsTitle ?? 'Seasons'} seasons={props.seasons ?? []} />}
-          <RelatedRow id="recommendations" title={recommendationsTitle} items={recommendations} />
+          <RelatedRow title={recommendationsTitle} items={recommendations} />
         </div>
       </main>
     </DetailsShell>

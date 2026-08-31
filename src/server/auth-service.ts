@@ -59,6 +59,9 @@ export class AuthService {
       throw error;
     }
   }
+  async updateLibraryKind(id: string, kind: 'movies' | 'shows') {
+    return (await this.db.update(libraries).set({ kind, updatedAt: new Date() }).where(eq(libraries.id, id)).returning())[0] ?? null;
+  }
   async deleteLibrary(id: string) { return (await this.db.delete(libraries).where(eq(libraries.id, id)).returning({ id: libraries.id }))[0] ?? null; }
 
   async listUsers(): Promise<ManagedUser[]> {

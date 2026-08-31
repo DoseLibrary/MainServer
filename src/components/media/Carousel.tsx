@@ -15,6 +15,8 @@ export interface CarouselProps<T = never> {
   label: string;
   /** Optional visible title. */
   heading?: ReactNode;
+  /** Optional control rendered on the heading row, beside the scroll buttons. */
+  headingAction?: ReactNode;
   /** Content supplied directly. */
   children?: ReactNode;
   /** Typed data to render as carousel content. */
@@ -37,6 +39,7 @@ const SCROLL_FRACTION = 0.8;
 export function Carousel<T = never>({
   label,
   heading,
+  headingAction,
   children,
   items,
   renderItem,
@@ -108,8 +111,10 @@ export function Carousel<T = never>({
           </h2>
         ) : <span />}
 
-        {hasContent && (
-          <div className="flex shrink-0 gap-2">
+        <div className="flex shrink-0 items-center gap-2">
+          {headingAction}
+          {hasContent && (
+            <>
             <button
               type="button"
               aria-label={previousLabel}
@@ -130,8 +135,9 @@ export function Carousel<T = never>({
             >
               <ChevronRight aria-hidden="true" className="h-5 w-5" />
             </button>
-          </div>
-        )}
+            </>
+          )}
+        </div>
       </div>
 
       {hasContent && (
