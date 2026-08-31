@@ -40,7 +40,7 @@ export function Queue() {
   const playable = (items ?? []).some((item) => !item.unavailable);
 
   return <div className="min-h-screen bg-background text-foreground">
-    <Navbar brandLabel="DOSE" brand="DOSE" brandHref="/" items={[{ id: 'library', label: 'Library', href: '/' }]} actions={<UserMenu />} />
+    <Navbar brandLabel="DOSE" brand="DOSE" brandImage={{ src: '/logo.svg', alt: '' }} brandHref="/" items={[{ id: 'library', label: 'Library', href: '/' }]} actions={<UserMenu />} />
     <main className="mx-auto w-full max-w-4xl px-4 py-8 sm:px-6 lg:px-8">
       <div className="mb-6 flex items-center justify-between gap-4">
         <div><h1 className="text-3xl font-bold">Marathon queue</h1><p className="mt-1 text-muted-foreground">Line titles up and play straight through.</p></div>

@@ -73,7 +73,7 @@ export function Profile() {
   const isAdmin = user?.role === 'admin';
   const initials = user?.username.slice(0, 2).toUpperCase() ?? 'DO';
   return <div className="min-h-screen bg-background text-foreground">
-    <Navbar brandLabel="DOSE" brand="DOSE" brandHref="/" items={[{ id: 'library', label: 'Library', href: '/' }]} actions={<UserMenu />} />
+    <Navbar brandLabel="DOSE" brand="DOSE" brandImage={{ src: '/logo.svg', alt: '' }} brandHref="/" items={[{ id: 'library', label: 'Library', href: '/' }]} actions={<UserMenu />} />
     <main className="mx-auto max-w-6xl px-4 py-10 sm:px-6 lg:px-8">
       {error ? <section className="flex min-h-[50vh] flex-col items-center justify-center gap-4 text-center"><h1 className="text-2xl font-bold">Profile unavailable</h1><p className="text-muted-foreground">{error}</p><Button onClick={() => void load()}>Try again</Button></section> : !user ? <p role="status" className="py-20 text-center text-muted-foreground">Loading profile…</p> : <>
         <section className="flex flex-col gap-6 border-b pb-8 sm:flex-row sm:items-center">

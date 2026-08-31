@@ -60,7 +60,7 @@ export function UserCollections() {
   });
 
   return <div className="min-h-screen bg-background text-foreground">
-    <Navbar brandLabel="DOSE" brand="DOSE" brandHref="/" items={[{ id: 'library', label: 'Library', href: '/' }]} actions={<UserMenu />} />
+    <Navbar brandLabel="DOSE" brand="DOSE" brandImage={{ src: '/logo.svg', alt: '' }} brandHref="/" items={[{ id: 'library', label: 'Library', href: '/' }]} actions={<UserMenu />} />
     <main className="mx-auto w-full max-w-5xl px-4 py-8 sm:px-6 lg:px-8">
       <div className="mb-6 flex items-center justify-between gap-4">
         <div><h1 className="text-3xl font-bold">My Collections</h1><p className="mt-1 text-muted-foreground">Group titles however you like — only you can see these.</p></div>

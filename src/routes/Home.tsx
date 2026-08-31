@@ -101,11 +101,11 @@ export function Home() {
   }
 
   if (state.name === 'setup') {
-    return <AuthPage mode="register" showEmail={false} brand="DOSE" heading="Create your administrator" description="Set up the first account for this Dose library. Use a password with at least 10 characters." alternateLabel="Local library setup" submitLabel="Create administrator" submitting={submitting} formError={formError} onSubmit={authenticate} />;
+    return <AuthPage mode="register" showEmail={false} brand="DOSE" brandImageSrc="/logo.svg" brandImageAlt="DOSE logo" heading="Create your administrator" description="Set up the first account for this Dose library. Use a password with at least 10 characters." alternateLabel="Local library setup" submitLabel="Create administrator" submitting={submitting} formError={formError} onSubmit={authenticate} />;
   }
 
   if (state.name === 'login') {
-    return <AuthPage mode="login" brand="DOSE" backdropImageSrc="/login-backdrop.webp" backdropImageAlt="A dark home cinema with a wall of film stills" heading="Welcome back" description="Sign in to your local library." alternateLabel="Accounts are managed by your administrator" submitting={submitting} formError={formError} onSubmit={authenticate} />;
+    return <AuthPage mode="login" brand="DOSE" brandImageSrc="/logo.svg" brandImageAlt="DOSE logo" backdropImageSrc="/login-backdrop.webp" backdropImageAlt="A dark home cinema with a wall of film stills" heading="Welcome back" description="Sign in to your local library." alternateLabel="Accounts are managed by your administrator" submitting={submitting} formError={formError} onSubmit={authenticate} />;
   }
 
   const episodeLabel = (item: CatalogHome['sections'][number]['items'][number]) => (typeof item.seasonNumber === 'number' && typeof item.episodeNumber === 'number' ? `S${String(item.seasonNumber).padStart(2, '0')}E${String(item.episodeNumber).padStart(2, '0')}` : undefined);
@@ -121,6 +121,8 @@ export function Home() {
       onRetry={() => void loadCatalog(selectedLibraryId)}
       navigation={{
         brandLabel: 'DOSE',
+        brand: 'DOSE',
+        brandImage: { src: '/logo.svg', alt: '' },
         brandHref: '/',
         items: [{ id: 'categories', label: 'Categories', href: '/categories' }],
         actions: <><CatalogSearch libraryId={selectedLibraryId} /><Button variant="outline" size="sm" onClick={() => setRandomOpen(true)}>Random pick</Button><UserMenu user={state.user} onLogout={() => setState({ name: 'login' })} /></>,

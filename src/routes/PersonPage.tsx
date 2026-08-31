@@ -21,7 +21,7 @@ export function PersonPage() {
 
   return (
     <div className="min-h-screen bg-background text-foreground">
-      <Navbar brandLabel="DOSE" brand="DOSE" brandHref="/" items={[{ id: 'library', label: 'Library', href: '/' }]} actions={<UserMenu />} />
+      <Navbar brandLabel="DOSE" brand="DOSE" brandImage={{ src: '/logo.svg', alt: '' }} brandHref="/" items={[{ id: 'library', label: 'Library', href: '/' }]} actions={<UserMenu />} />
       <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
         {error ? (
           <section className="flex min-h-[50vh] flex-col items-center justify-center gap-4 text-center">

@@ -15,7 +15,7 @@ const SECTIONS = [
 /** Shared frame for /admin pages: navbar, section tabs, page heading. */
 export function AdminShell({ title, description, wide = false, children }: { title: string; description?: string; wide?: boolean; children: ReactNode }) {
   return <div className="min-h-screen bg-background text-foreground">
-    <Navbar brandLabel="DOSE" brand="DOSE" brandHref="/" items={[{ id: 'library', label: 'Library', href: '/' }]} actions={<UserMenu />} />
+    <Navbar brandLabel="DOSE" brand="DOSE" brandImage={{ src: '/logo.svg', alt: '' }} brandHref="/" items={[{ id: 'library', label: 'Library', href: '/' }]} actions={<UserMenu />} />
     <nav aria-label="Administration sections" className="border-b bg-muted/30">
       <div className="mx-auto flex max-w-6xl gap-1 overflow-x-auto px-4 sm:px-6 lg:px-8">
         {SECTIONS.map((section) => (
