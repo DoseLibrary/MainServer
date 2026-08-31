@@ -101,6 +101,70 @@ export class PlaybackSessionService {
     }));
   }
 
+  /**
+   * What this account has watched, most recent first. Built from recorded
+   * sessions rather than from resume points, so re-watches and finished titles
+   * both appear, and a title watched across several sittings collapses into the
+   * most recent one.
+   */
+  async history(userId: string, limit = 50) {
+    const rows = await this.db.select({
+      id: playbackSessions.id,
+      mediaItemId: mediaItems.id,
+      title: mediaItems.title,
+      userTitle: mediaItems.userTitle,
+      kind: mediaItems.kind,
+      seasonNumber: mediaItems.seasonNumber,
+      episodeNumber: mediaItems.episodeNumber,
+      posterPath: mediaItems.posterPath,
+      backdropPath: mediaItems.backdropPath,
+      deviceName: playbackSessions.deviceName,
+      positionSeconds: playbackSessions.positionSeconds,
+      durationSeconds: playbackSessions.durationSeconds,
+      startedAt: playbackSessions.startedAt,
+      lastReportedAt: playbackSessions.lastReportedAt,
+    }).from(playbackSessions)
+      .innerJoin(mediaItems, eq(mediaItems.id, playbackSessions.mediaItemId))
+      .where(eq(playbackSessions.userId, userId))
+      .orderBy(desc(playbackSessions.lastReportedAt))
+      .limit(Math.min(Math.max(limit, 1), 200) * 4);
+
+    const seen = new Set<string>();
+    const history = [];
+    for (const row of rows) {
+      if (seen.has(row.mediaItemId)) continue;
+      seen.add(row.mediaItemId);
+      history.push({
+        id: row.id,
+        watchedAt: row.lastReportedAt,
+        startedAt: row.startedAt,
+        deviceName: row.deviceName,
+        positionSeconds: row.positionSeconds,
+        durationSeconds: row.durationSeconds,
+        item: {
+          id: row.mediaItemId,
+          title: row.userTitle ?? row.title,
+          kind: row.kind,
+          seasonNumber: row.seasonNumber ?? undefined,
+          episodeNumber: row.episodeNumber ?? undefined,
+          posterUrl: imageLocalUrl(row.posterPath),
+          backdropUrl: imageLocalUrl(row.backdropPath),
+        },
+      });
+      if (history.length >= limit) break;
+    }
+    return history;
+  }
+
+  /** Forget one entry, or the whole history, for this account. */
+  async forget(userId: string, mediaItemId?: string) {
+    await this.db.delete(playbackSessions).where(
+      mediaItemId
+        ? and(eq(playbackSessions.userId, userId), eq(playbackSessions.mediaItemId, mediaItemId))
+        : eq(playbackSessions.userId, userId),
+    );
+  }
+
   /** Close sessions whose client stopped reporting; called before listing. */
   async closeStale() {
     const cutoff = new Date(Date.now() - SESSION_STALE_AFTER_MS);

@@ -89,4 +89,37 @@ describe('PlaybackSessionService', () => {
     const [row] = (await client.query<{ ended_at: string | null }>(`select ended_at from playback_sessions`)).rows;
     expect(row.ended_at).not.toBeNull();
   });
+
+  it('lists what was watched, newest first, collapsing repeat sittings', async () => {
+    const first = await sessions.start({ userId: OWNER, mediaItemId: MOVIE, durationSeconds: 100 });
+    await sessions.heartbeat(first.id, OWNER, { positionSeconds: 100 });
+    await sessions.stop(first.id, OWNER);
+    const episode = await sessions.start({ userId: OWNER, mediaItemId: EPISODE, deviceName: 'TV' });
+    await sessions.stop(episode.id, OWNER);
+    // Watching the movie again later moves it back to the top as one entry.
+    const again = await sessions.start({ userId: OWNER, mediaItemId: MOVIE, durationSeconds: 100 });
+    await sessions.heartbeat(again.id, OWNER, { positionSeconds: 20 });
+
+    const history = await sessions.history(OWNER);
+    expect(history.map((entry) => entry.item.title)).toEqual(['Arrival', 'The Target']);
+    expect(history[0]).toMatchObject({ positionSeconds: 20, durationSeconds: 100 });
+    expect(history[1]).toMatchObject({ deviceName: 'TV', item: { seasonNumber: 1, episodeNumber: 2 } });
+  });
+
+  it('keeps one account history out of another', async () => {
+    const mine = await sessions.start({ userId: OWNER, mediaItemId: MOVIE });
+    await sessions.stop(mine.id, OWNER);
+    expect(await sessions.history(GUEST)).toHaveLength(0);
+  });
+
+  it('forgets one title or the whole history on request', async () => {
+    await sessions.stop((await sessions.start({ userId: OWNER, mediaItemId: MOVIE })).id, OWNER);
+    await sessions.stop((await sessions.start({ userId: OWNER, mediaItemId: EPISODE })).id, OWNER);
+
+    await sessions.forget(OWNER, MOVIE);
+    expect((await sessions.history(OWNER)).map((entry) => entry.item.id)).toEqual([EPISODE]);
+
+    await sessions.forget(OWNER);
+    expect(await sessions.history(OWNER)).toHaveLength(0);
+  });
 });

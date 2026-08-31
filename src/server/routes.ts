@@ -83,6 +83,7 @@ const maturityLimit = z.number().int().min(0).max(21).nullable();
 const userCreate = credentials.extend({ role: z.enum(['admin', 'member']).default('member'), maxMaturityLevel: maturityLimit.optional() });
 const userUpdate = z.object({ role: z.enum(['admin', 'member']).optional(), disabled: z.boolean().optional(), password: z.string().min(10).max(256).optional(), maxMaturityLevel: maturityLimit.optional() }).refine((value) => Object.keys(value).length > 0);
 const playbackSessionStart = z.object({ mediaItemId: z.string().uuid(), playMethod: z.enum(['direct', 'remux', 'transcode']).default('direct'), positionSeconds: z.number().min(0).optional(), durationSeconds: z.number().min(0).optional() });
+const historyForgetQuery = z.object({ itemId: z.string().uuid().optional() });
 const playbackSessionUpdate = z.object({ positionSeconds: z.number().min(0).optional(), paused: z.boolean().optional() });
 const deviceStartBody = z.object({ deviceName: z.string().trim().min(1).max(64).optional() });
 const devicePollBody = z.object({ deviceCode: z.string().min(10).max(256) });
@@ -215,6 +216,18 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
     if (!playbackSessions) return reply.status(503).send({ error: 'Playback reporting unavailable' });
     const params = sessionIdParams.safeParse(request.params); if (!params.success) return reply.status(400).send({ error: 'Invalid session id' });
     await playbackSessions.stop(params.data.id, user.id);
+    return reply.status(204).send();
+  });
+  app.get('/api/v1/me/history', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    if (!playbackSessions) return reply.status(503).send({ error: 'Playback reporting unavailable' });
+    return { history: await playbackSessions.history(user.id) };
+  });
+  app.delete('/api/v1/me/history', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    if (!playbackSessions) return reply.status(503).send({ error: 'Playback reporting unavailable' });
+    const query = historyForgetQuery.safeParse(request.query); if (!query.success) return reply.status(400).send({ error: 'Invalid item id' });
+    await playbackSessions.forget(user.id, query.data.itemId);
     return reply.status(204).send();
   });
   app.get('/api/v1/admin/activity', async (request, reply) => {

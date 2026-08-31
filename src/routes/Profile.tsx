@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { ListOrdered, ListVideo, ShieldCheck, UserRound, Wrench } from 'lucide-react';
+import { History as HistoryIcon, ListOrdered, ListVideo, ShieldCheck, UserRound, Wrench } from 'lucide-react';
 import { Navbar } from '@/components/media/Navbar';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -121,6 +121,7 @@ export function Profile() {
         <section aria-labelledby="library-heading" className="border-t py-8"><div className="mb-4"><h2 id="library-heading" className="text-xl font-semibold">Your library</h2><p className="mt-1 text-sm text-muted-foreground">Collections you have put together yourself.</p></div><div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           <AdminCard icon={<ListVideo />} title="My Collections" description="Create and curate your own collections" action="Manage collections" onClick={() => navigate('/profile/collections')} />
           <AdminCard icon={<ListOrdered />} title="Marathon queue" description="Line up titles and play straight through" action="Open queue" onClick={() => navigate('/profile/queue')} />
+          <AdminCard icon={<HistoryIcon />} title="Watch history" description="Everything you have played" action="View history" onClick={() => navigate('/profile/history')} />
         </div></section>
 
         {isAdmin && <section aria-labelledby="admin-heading" className="border-t py-8"><div className="mb-4"><h2 id="admin-heading" className="text-xl font-semibold">Administration</h2><p className="mt-1 text-sm text-muted-foreground">Server management now lives on its own pages.</p></div><div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">

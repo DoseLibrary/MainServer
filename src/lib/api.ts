@@ -146,6 +146,16 @@ export interface ActivitySession {
   item: { id: string; title: string; kind: string; seasonNumber?: number; episodeNumber?: number; posterUrl?: string; backdropUrl?: string };
 }
 
+export interface HistoryEntry {
+  id: string;
+  watchedAt: string;
+  startedAt: string;
+  deviceName: string | null;
+  positionSeconds: number;
+  durationSeconds: number | null;
+  item: { id: string; title: string; kind: string; seasonNumber?: number; episodeNumber?: number; posterUrl?: string; backdropUrl?: string };
+}
+
 export interface IntroMarker { startSeconds: number; endSeconds: number }
 
 export interface CatalogSection { id: string; title: string; items: CatalogItem[]; layout?: 'poster' | 'card' }
@@ -254,6 +264,8 @@ export const api = {
     request<{ session: { id: string } }>(`/api/v1/playback/sessions/${encodeURIComponent(id)}`, { method: 'POST', body: JSON.stringify(update) }),
   endPlaybackSession: (id: string) => request<void>(`/api/v1/playback/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   activity: () => request<{ sessions: ActivitySession[] }>('/api/v1/admin/activity'),
+  history: () => request<{ history: HistoryEntry[] }>('/api/v1/me/history'),
+  forgetHistory: (itemId?: string) => request<void>(`/api/v1/me/history${itemId ? `?itemId=${encodeURIComponent(itemId)}` : ''}`, { method: 'DELETE' }),
   revokeSession: (id: string) => request<void>(`/api/v1/me/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   me: () => request<{ user: User }>('/api/v1/auth/me'),
   getSettings: () => request<{ settings: UserSettings }>('/api/v1/me/settings'),

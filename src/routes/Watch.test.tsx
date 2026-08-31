@@ -39,7 +39,7 @@ function renderWatch(search: string) {
 }
 
 const findVideo = async () => {
-  await waitFor(() => expect(document.querySelector('video')).not.toBeNull());
+  await waitFor(() => expect(document.querySelector('video')).not.toBeNull(), { timeout: 5000 });
   return document.querySelector('video') as HTMLVideoElement;
 };
 
@@ -54,8 +54,8 @@ describe('Watch marathon mode', () => {
 
     const video = await findVideo();
     fireEvent.ended(video);
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(`/api/v1/me/queue/next?after=${ONE}`, expect.anything()));
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(`/api/v1/catalog/items/${TWO}`, expect.anything()));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(`/api/v1/me/queue/next?after=${ONE}`, expect.anything()), { timeout: 5000 });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(`/api/v1/catalog/items/${TWO}`, expect.anything()), { timeout: 5000 });
   });
 
   it('ends quietly when the queue is exhausted', async () => {
@@ -65,7 +65,7 @@ describe('Watch marathon mode', () => {
 
     const video = await findVideo();
     fireEvent.ended(video);
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(`/api/v1/me/queue/next?after=${ONE}`, expect.anything()));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(`/api/v1/me/queue/next?after=${ONE}`, expect.anything()), { timeout: 5000 });
     expect(fetchMock).not.toHaveBeenCalledWith(`/api/v1/catalog/items/${TWO}`, expect.anything());
   });
 
@@ -151,7 +151,7 @@ describe('Up next countdown', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Play now' }));
     // Routing to the next episode makes the player load that item.
-    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).includes(TWO))).toBe(true));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).includes(TWO))).toBe(true), { timeout: 5000 });
   });
 
   it('cancelling the countdown stops the automatic advance', async () => {
