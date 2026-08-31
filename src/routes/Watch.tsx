@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { VideoPlayer } from '@/components/media/VideoPlayer';
 import { Button } from '@/components/ui/button';
-import { api, imageVariant, type CatalogItemDetails, type PlaybackResponse } from '@/lib/api';
+import { api, imageVariant, type CatalogItemDetails, type MediaSprite, type PlaybackResponse } from '@/lib/api';
 import { detectMediaCapabilities } from '@/lib/media-capabilities';
 
 export function Watch() {
@@ -10,12 +10,15 @@ export function Watch() {
   const navigate = useNavigate();
   const [item, setItem] = useState<CatalogItemDetails>();
   const [playback, setPlayback] = useState<PlaybackResponse>();
+  const [thumbnails, setThumbnails] = useState<MediaSprite>();
   const [error, setError] = useState<string>();
   const load = useCallback(async () => {
-    setError(undefined); setPlayback(undefined);
+    setError(undefined); setPlayback(undefined); setThumbnails(undefined);
     try {
       const [{ item: nextItem }, nextPlayback] = await Promise.all([api.catalogItem(id), api.playback(id, detectMediaCapabilities())]);
       setItem(nextItem); setPlayback(nextPlayback);
+      // Scrubber previews are optional; a title without a generated sprite just omits them.
+      void api.mediaSprites(id).then(({ sprite }) => setThumbnails(sprite)).catch(() => setThumbnails(undefined));
     } catch (caught) { setError(caught instanceof Error ? caught.message : 'Playback could not be started.'); }
   }, [id]);
   useEffect(() => { queueMicrotask(() => { void load(); }); }, [load]);
@@ -32,11 +35,13 @@ export function Watch() {
   const nextHref = item.nextEpisodeId ? `/watch/${encodeURIComponent(item.nextEpisodeId)}` : undefined;
   return <main className="flex min-h-screen items-center bg-black"><VideoPlayer
     src={playback.stream.url}
+    castSrc={playback.stream.castUrl ? new URL(playback.stream.castUrl, window.location.href).href : undefined}
     title={item.title}
     subtitles={subtitles}
     meta={[item.year, playback.plan.mode === 'direct' ? 'Direct play' : playback.plan.remux ? 'Remux' : 'Optimized'].filter(Boolean).join(' · ')}
     poster={poster}
     posterSrc={cornerPoster}
+    thumbnails={thumbnails}
     backHref={detailsHref}
     onBack={(event) => { event.preventDefault(); navigate(detailsHref); }}
     startPositionSeconds={startPositionSeconds}

@@ -13,6 +13,8 @@ describe('loadConfig', () => {
       SCAN_FS_CONCURRENCY: 24,
       SCAN_INGEST_CONCURRENCY: 8,
       SCAN_STALE_AFTER_MS: 1800000,
+      LIBRARY_WATCH_ENABLED: true,
+      LIBRARY_WATCH_DEBOUNCE_MS: 1000,
       FFPROBE_CONCURRENCY: 3,
       FFPROBE_TIMEOUT_MS: 20000,
       TMDB_CONCURRENCY: 4,
@@ -43,5 +45,11 @@ describe('loadConfig', () => {
   it('rejects unsafe scanner concurrency and lease settings', () => {
     expect(() => loadConfig({ DATABASE_URL: 'postgresql://dose:secret@localhost:5432/dose', SCAN_INGEST_CONCURRENCY: '0' })).toThrow('Invalid Dose configuration');
     expect(() => loadConfig({ DATABASE_URL: 'postgresql://dose:secret@localhost:5432/dose', SCAN_STALE_AFTER_MS: '1000' })).toThrow('Invalid Dose configuration');
+  });
+
+  it('configures filesystem watching and validates its debounce', () => {
+    expect(loadConfig({ DATABASE_URL: 'pglite://.dose/database', LIBRARY_WATCH_ENABLED: 'false', LIBRARY_WATCH_DEBOUNCE_MS: '250' }))
+      .toMatchObject({ LIBRARY_WATCH_ENABLED: false, LIBRARY_WATCH_DEBOUNCE_MS: 250 });
+    expect(() => loadConfig({ DATABASE_URL: 'pglite://.dose/database', LIBRARY_WATCH_DEBOUNCE_MS: '10' })).toThrow('Invalid Dose configuration');
   });
 });

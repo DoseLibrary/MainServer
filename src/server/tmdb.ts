@@ -7,6 +7,7 @@ type MediaKind = 'movie' | 'series';
 export type TmdbGenre = { id: number; name: string };
 export type TmdbCastCredit = { personId: number; name: string; character?: string; order: number; profilePath?: string };
 export type TmdbRecommendation = { id: number; kind: MediaKind; title: string; year?: number; posterPath?: string };
+export type TmdbTitleCandidate = { id: number; title: string; year?: number; overview?: string; posterPath?: string };
 export type TmdbCollectionSummary = { id: number; name: string; posterPath?: string; backdropPath?: string };
 
 export type TmdbMetadata = {
@@ -89,6 +90,22 @@ export class TmdbClient {
     return this.cached(key, () => this.search(kind, title, year));
   }
 
+  /** Lightweight title search for the admin re-match picker. */
+  searchTitles(kind: MediaKind, queryText: string): Promise<TmdbTitleCandidate[]> {
+    const query = queryText.trim();
+    if (!query) return Promise.resolve([]);
+    return this.cached(`candidates:${kind}:${query.toLowerCase()}`, async () => {
+      const media = kind === 'series' ? 'tv' : 'movie';
+      const body = await this.json(`https://api.themoviedb.org/3/search/${media}?${new URLSearchParams({ query })}`);
+      return records(body?.results, 20).flatMap((value) => {
+        const id = integer(value.id, 1); const title = text(value.title ?? value.name, 500);
+        if (!id || !title) return [];
+        const releaseDate = date(value.release_date ?? value.first_air_date);
+        return [{ id, title, year: yearOf(releaseDate), overview: text(value.overview, 10_000), posterPath: image(value.poster_path) }];
+      });
+    }).then((value) => value ?? []);
+  }
+
   /** Fetch by known provider id so a refresh keeps the same match, just updated. */
   getById(kind: MediaKind, id: number): Promise<TmdbMetadata | null> {
     if (!integer(id, 1)) return Promise.resolve(null);
@@ -116,7 +133,16 @@ export class TmdbClient {
     return this.cached(`images:all:${kind}:${id}`, async () => {
       const media = kind === 'series' ? 'tv' : 'movie';
       const body = await this.json(`https://api.themoviedb.org/3/${media}/${id}/images`);
-      const paths = (key: string) => records(body?.[key], 100).flatMap((value) => { const path = image(value.file_path); return path ? [path] : []; });
+      // Language-tagged English posters/logos normally contain the localized title text.
+      // Prefer those, then language-neutral art, then other languages; within each tier
+      // use TMDB's community score as the quality signal.
+      const paths = (key: string) => records(body?.[key], 100)
+        .filter((value) => image(value.file_path))
+        .sort((a, b) => {
+          const languageRank = (value: Record<string, unknown>) => value.iso_639_1 === 'en' ? 0 : value.iso_639_1 == null ? 1 : 2;
+          return languageRank(a) - languageRank(b) || (finite(b.vote_average) ?? 0) - (finite(a.vote_average) ?? 0);
+        })
+        .flatMap((value) => { const path = image(value.file_path); return path ? [path] : []; });
       return { posters: paths('posters'), backdrops: paths('backdrops'), logos: paths('logos') };
     }).then((value) => value ?? { posters: [], backdrops: [], logos: [] });
   }
@@ -124,7 +150,7 @@ export class TmdbClient {
   private async fetchById(kind: MediaKind, id: number): Promise<TmdbMetadata | null> {
     const media = kind === 'series' ? 'tv' : 'movie';
     const append = kind === 'movie' ? 'credits,recommendations,release_dates,external_ids,images' : 'credits,recommendations,content_ratings,external_ids,images';
-    const detail = await this.json(`https://api.themoviedb.org/3/${media}/${id}?append_to_response=${append}&include_image_language=en,null`);
+    const detail = await this.json(`https://api.themoviedb.org/3/${media}/${id}?append_to_response=${append}`);
     if (!detail) return null;
     return this.mapMetadata(kind, id, text(detail.title ?? detail.name, 500) ?? String(id), detail, detail);
   }
@@ -167,7 +193,7 @@ export class TmdbClient {
     const id = integer(value?.id, 1);
     if (!value || !id) return null;
     const append = kind === 'movie' ? 'credits,recommendations,release_dates,external_ids,images' : 'credits,recommendations,content_ratings,external_ids,images';
-    const detail = await this.json(`https://api.themoviedb.org/3/${media}/${id}?append_to_response=${append}&include_image_language=en,null`) ?? value;
+    const detail = await this.json(`https://api.themoviedb.org/3/${media}/${id}?append_to_response=${append}`) ?? value;
     return this.mapMetadata(kind, id, title, value, detail);
   }
 
@@ -184,7 +210,9 @@ export class TmdbClient {
       overview: text(detail.overview ?? search.overview, 10_000),
       releaseDate, year: yearOf(releaseDate), tagline: text(detail.tagline, 1_000),
       runtimeMinutes: this.runtime(kind, detail), contentRating: this.contentRating(kind, detail), rating: finite(detail.vote_average, 0),
-      posterPath: image(detail.poster_path ?? search.poster_path), backdropPath: image(detail.backdrop_path ?? search.backdrop_path), logoPath: this.pickLogo(detail),
+      posterPath: this.pickArtwork(detail, 'posters', image(detail.poster_path ?? search.poster_path)),
+      backdropPath: this.pickArtwork(detail, 'backdrops', image(detail.backdrop_path ?? search.backdrop_path)),
+      logoPath: this.pickArtwork(detail, 'logos'),
       genres: records(detail.genres, 50).flatMap((genre) => { const genreId = integer(genre.id, 1); const name = text(genre.name, 100); return genreId && name ? [{ id: genreId, name }] : []; }),
       cast: records(credits?.cast, 100).flatMap((credit, index) => { const personId = integer(credit.id, 1); const name = text(credit.name, 300); if (!personId || !name) return []; return [{ personId, name, character: text(credit.character, 500), order: integer(credit.order) ?? index, profilePath: image(credit.profile_path) }]; }).sort((a, b) => a.order - b.order),
       recommendations: records(recommendationBody?.results, 100).flatMap((item) => this.mapRecommendation(item, kind)),
@@ -193,11 +221,15 @@ export class TmdbClient {
     };
   }
 
-  /** Pick a title logo: English first, then language-agnostic, then whatever exists. */
-  private pickLogo(detail: Record<string, unknown>): string | undefined {
-    const logos = records(record(detail.images)?.logos, 50).filter((logo) => image(logo.file_path));
-    const chosen = logos.find((logo) => logo.iso_639_1 === 'en') ?? logos.find((logo) => !logo.iso_639_1) ?? logos[0];
-    return chosen ? image(chosen.file_path) : undefined;
+  /** Prefer localized English (normally title-bearing) art, then neutral art, then any language. */
+  private pickArtwork(detail: Record<string, unknown>, key: 'posters' | 'backdrops' | 'logos', fallback?: string): string | undefined {
+    const candidates = records(record(detail.images)?.[key], 100).filter((entry) => image(entry.file_path));
+    const score = (entry: Record<string, unknown>) => finite(entry.vote_average) ?? 0;
+    const best = (entries: Record<string, unknown>[]) => [...entries].sort((a, b) => score(b) - score(a))[0];
+    const chosen = best(candidates.filter((entry) => entry.iso_639_1 === 'en'))
+      ?? best(candidates.filter((entry) => entry.iso_639_1 == null))
+      ?? (fallback ? undefined : best(candidates));
+    return chosen ? image(chosen.file_path) : fallback ?? image(best(candidates)?.file_path);
   }
 
   private runtime(kind: MediaKind, detail: Record<string, unknown>) {

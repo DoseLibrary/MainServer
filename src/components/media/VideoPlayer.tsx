@@ -14,8 +14,10 @@ import {
   Loader2,
   ArrowLeft,
   SkipForward,
+  Cast,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { castMedia, subscribeToCast, type CastState } from '@/lib/google-cast';
 
 export interface PlayerTrack {
   id: string;
@@ -45,6 +47,9 @@ export interface PlayerThumbnails {
 
 export interface VideoPlayerProps {
   src: string;
+  /** Public, short-lived stream URL loaded by a Chromecast receiver. */
+  castSrc?: string;
+  castContentType?: string;
   title?: string;
   /** Full-frame poster shown before playback (the `<video>` poster). */
   poster?: string;
@@ -106,6 +111,8 @@ type MenuKind = 'subtitles' | 'settings' | null;
 
 export function VideoPlayer({
   src,
+  castSrc,
+  castContentType = 'video/mp4',
   title,
   poster,
   posterSrc,
@@ -151,6 +158,18 @@ export function VideoPlayer({
   const [openMenu, setOpenMenu] = useState<MenuKind>(null);
   const [activeCcId, setActiveCcId] = useState<string | null>(null);
   const [hover, setHover] = useState<{ time: number; left: number } | null>(null);
+  const [castState, setCastState] = useState<CastState>('unavailable');
+
+  useEffect(() => subscribeToCast(setCastState), []);
+
+  const startCasting = useCallback(async () => {
+    const video = videoRef.current;
+    if (!video || !castSrc) return;
+    try {
+      await castMedia({ src: castSrc, contentType: castContentType, title, poster, currentTime: video.currentTime });
+      video.pause();
+    } catch { /* The Cast chooser may be dismissed; keep local playback unchanged. */ }
+  }, [castContentType, castSrc, poster, title]);
 
   const showControls = useCallback(() => {
     setControlsVisible(true);
@@ -536,6 +555,11 @@ export function VideoPlayer({
           </div>
 
           <div className="ml-auto flex items-center gap-1">
+            {castSrc && castState !== 'unavailable' && (
+              <ControlButton label={castState === 'connected' ? 'Casting' : 'Cast'} onClick={() => { void startCasting(); }}>
+                <Cast className={cn('h-5 w-5', castState === 'connected' && 'fill-current')} />
+              </ControlButton>
+            )}
             {subtitles.length > 0 && (
               <div className="relative">
                 <ControlButton label="Subtitles" onClick={() => setOpenMenu((m) => (m === 'subtitles' ? null : 'subtitles'))}>

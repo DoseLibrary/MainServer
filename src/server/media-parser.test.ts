@@ -19,6 +19,14 @@ describe('parseMediaPath', () => {
     ['Show Name 1x02 Episode Title.mkv', 'Show Name', 1, 2, 'Episode Title'],
     ['Show.Name.s02e003.finalE.mkv', 'Show Name', 2, 3, 'finalE'],
     ['Show.Name.S03e04.mkv', 'Show Name', 3, 4, 'Episode 4'],
+    ['The flash S01E01.mp4', 'The flash', 1, 1, 'Episode 1'],
+    ['Show Name s02e05.mkv', 'Show Name', 2, 5, 'Episode 5'],
+    ['Show.Name.S10E11.mkv', 'Show Name', 10, 11, 'Episode 11'],
+    ['Show.Name.S00E01.mkv', 'Show Name', 0, 1, 'Episode 1'],
+    ['Show.Name.S01.E03.mkv', 'Show Name', 1, 3, 'Episode 3'],
+    ['Show.Name.S01E01-E02.mkv', 'Show Name', 1, 1, 'Episode 1'],
+    ['Show.Name.S01E01E02.mkv', 'Show Name', 1, 1, 'Episode 1'],
+    ['Show Name S01E07 1080p WEB-DL x265.mkv', 'Show Name', 1, 7, 'Episode 7'],
   ])('parses marked episode %s', (path, series, season, episode, title) => {
     expect(parseMediaPath(path, 'shows')).toEqual({
       type: 'episode', series, season, episode, title,
@@ -26,11 +34,25 @@ describe('parseMediaPath', () => {
     });
   });
 
-  it('derives the series and season from a season folder', () => {
-    expect(parseMediaPath('Show Name/Season 03/04 - Episode Title.mkv', 'shows')).toEqual({
-      type: 'episode', series: 'Show Name', season: 3, episode: 4, title: 'Episode Title',
-      key: 'episode:show name:3:4',
+  it.each([
+    ['Show Name/Season 03/04 - Episode Title.mkv', 'Show Name', 3, 4, 'Episode Title'],
+    ['The flash/Season 1/The flash S01E01.mp4', 'The flash', 1, 1, 'Episode 1'],
+    ['Show Name/Season 1/Episode 4.mkv', 'Show Name', 1, 4, 'Episode 4'],
+    ['Show Name/S01/S01E06.mkv', 'Show Name', 1, 6, 'Episode 6'],
+    ['Show Name/Series 3/Show Name S03E02.mkv', 'Show Name', 3, 2, 'Episode 2'],
+  ])('derives episode identity from folders and markers %s', (path, series, season, episode, title) => {
+    expect(parseMediaPath(path, 'shows')).toEqual({
+      type: 'episode', series, season, episode, title,
+      key: `episode:${series.normalize('NFKC').toLowerCase()}:${season}:${episode}`,
     });
+  });
+
+  it.each([
+    'The flash/Season 1/The flash S01E01.mp4',
+    'Show Name S01E02.mkv',
+    'Show Name 1x02.mkv',
+  ])('skips episodes found inside a movies library %s', (path) => {
+    expect(parseMediaPath(path, 'movies')).toBeNull();
   });
 
   it('uses Unicode-normalized, locale-independent natural keys', () => {

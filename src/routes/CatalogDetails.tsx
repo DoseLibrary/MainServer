@@ -1,19 +1,20 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
-import { useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { api, imageVariant, type CatalogItemDetails } from '@/lib/api';
 import { MediaDetailsPage } from '@/pages/MediaDetailsPage';
-import { Modal, ModalContent } from '@/components/ui/modal';
 import { ArtworkManager } from '@/routes/ArtworkManager';
+import { MetadataRematch } from '@/routes/MetadataRematch';
 
 export function CatalogDetails() {
   const { id = '' } = useParams();
+  const navigate = useNavigate();
   const [item, setItem] = useState<CatalogItemDetails>();
   const [error, setError] = useState<string>();
   const [saved, setSaved] = useState(false);
   const [watched, setWatched] = useState(false);
-  const [trailerOpen, setTrailerOpen] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
   const [artworkOpen, setArtworkOpen] = useState(false);
+  const [rematchOpen, setRematchOpen] = useState(false);
   const load = useCallback(async () => {
     setError(undefined);
     try { const next = (await api.catalogItem(id)).item; setItem(next); setSaved(Boolean(next.inWatchlist)); setWatched(Boolean(next.watched)); }
@@ -63,9 +64,7 @@ export function CatalogDetails() {
     imageSrc: imageVariant(member.profileUrl, { width: 96, height: 96, fit: 'cover', format: 'webp' }),
     href: member.id ? `/person/${encodeURIComponent(member.id)}` : undefined,
   }));
-  // Prefer the flagged trailer, else the first YouTube one; trailers play in an embedded modal.
-  const trailer = (item?.trailers ?? []).find((entry) => entry.preferred && entry.site.toLowerCase() === 'youtube')
-    ?? (item?.trailers ?? []).find((entry) => entry.site.toLowerCase() === 'youtube');
+  const hasLocalTrailer = Boolean(item?.hasLocalTrailer || (item?.trailers ?? []).some((entry) => entry.localAvailable));
   const common = {
     title: item?.title ?? 'Media details', backHref: '/', posterSrc: imageVariant(item?.posterUrl, { width: 600, height: 900, fit: 'cover', format: 'webp' }),
     backdropSrc: imageVariant(item?.backdropUrl, { width: 1920, height: 1080, fit: 'cover', format: 'webp', quality: 85 }), overview: item?.overview,
@@ -74,7 +73,7 @@ export function CatalogDetails() {
     errorMessage: error, onRetry: load,
     primaryAction: item && (item.kind === 'movie' || item.kind === 'episode') ? { label: typeof item.progress === 'number' && item.progress > 0 && item.progress < 1 ? 'Resume' : 'Play', href: `/watch/${encodeURIComponent(item.id)}` } : undefined,
     secondaryAction: item && (item.kind === 'movie' || item.kind === 'series') ? { label: saved ? 'In Watch List' : 'Add to Watch List', onClick: () => void toggleWatchlist() } : undefined,
-    onPlayTrailer: trailer ? () => setTrailerOpen(true) : undefined,
+    onPlayTrailer: hasLocalTrailer ? () => navigate(`/trailer/${encodeURIComponent(id)}`) : undefined,
     trailerLabel: 'Play Trailer',
     watched,
     onToggleWatched: item && (item.kind === 'movie' || item.kind === 'episode') ? () => void toggleWatched() : undefined,
@@ -83,6 +82,7 @@ export function CatalogDetails() {
     canManage: isAdmin,
     onEditMetadata: isAdmin && item ? () => setArtworkOpen(true) : undefined,
     manageLabel: 'Change artwork',
+    adminActions: isAdmin && item && (item.kind === 'movie' || item.kind === 'series') ? [{ id: 'rematch', label: 'Re-match metadata', onSelect: () => setRematchOpen(true) }] : undefined,
   };
   const seasons = (item?.children ?? []).filter((child) => child.kind === 'season').map((season) => ({
     id: season.id,
@@ -103,21 +103,7 @@ export function CatalogDetails() {
   const page = kind === 'show' ? <MediaDetailsPage kind="show" {...common} seasons={children} seasonsTitle={item?.kind === 'season' ? 'Episodes' : 'Seasons'} /> : <MediaDetailsPage kind="movie" {...common} cast={cast} />;
   return <>
     {page}
-    <Modal open={trailerOpen} onOpenChange={setTrailerOpen}>
-      <ModalContent aria-label={`${item?.title ?? 'Trailer'} trailer`} className="max-w-3xl p-0">
-        {trailer && (
-          <div className="aspect-video w-full overflow-hidden rounded-lg bg-black">
-            <iframe
-              title={trailer.name || `${item?.title ?? ''} trailer`}
-              src={`https://www.youtube-nocookie.com/embed/${encodeURIComponent(trailer.key)}?autoplay=1`}
-              className="h-full w-full"
-              allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture"
-              allowFullScreen
-            />
-          </div>
-        )}
-      </ModalContent>
-    </Modal>
     {isAdmin && <ArtworkManager open={artworkOpen} itemId={id} onOpenChange={setArtworkOpen} onApplied={() => void load()} />}
+    {isAdmin && item && (item.kind === 'movie' || item.kind === 'series') && <MetadataRematch open={rematchOpen} itemId={id} kind={item.kind} initialTitle={item.title} onOpenChange={setRematchOpen} onMatched={() => { void load(); setArtworkOpen(true); }} />}
   </>;
 }

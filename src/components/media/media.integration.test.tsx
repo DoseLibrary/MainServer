@@ -110,6 +110,12 @@ describe('media component integration', () => {
     expect(next).toBeDisabled();
   });
 
+  it('uses viewport-relative hero height with short-screen mobile bounds', () => {
+    const { container } = render(<Hero title="Responsive hero" />);
+    expect(container.querySelector('section')).toHaveClass('h-[66vh]', 'min-h-[20rem]', 'max-[420px]:min-h-[16rem]');
+    expect(container.querySelector('section')).not.toHaveClass('min-h-[32rem]');
+  });
+
   it('announces the mobile menu and restores toggle focus after Escape', async () => {
     render(
       <Navbar

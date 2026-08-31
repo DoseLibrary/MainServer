@@ -3,6 +3,7 @@ import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { DuplicateLibraryError, DuplicateUsernameError, UserInvariantError, UserNotFoundError, type AuthService, type PublicUser } from './auth-service.ts';
 import { nodeLibraryFilesystem, resolveLibraryRoot, resolveNativeLibraryRoot, SESSION_COOKIE, SESSION_TTL_MS, type LibraryFilesystem } from './security.ts';
@@ -13,9 +14,12 @@ import type { PluginScheduler } from './plugin-scheduler.ts';
 import { UnknownPluginError } from './plugins/registry.ts';
 import { ArtworkPathError, type ArtworkService } from './artwork-service.ts';
 import type { SubtitleStore } from './subtitles.ts';
+import type { PreviewSpriteStore } from './sprites.ts';
 import { negotiatePlayback } from './playback.ts';
 import { buildTranscodeArgs, contentTypeFor, decodePlaybackPlan, encodePlaybackPlan, resolveRange, resolveWithin } from './streaming.ts';
 import { ImageVariantStore } from './images.ts';
+import { MatchItemNotFoundError, MatchUnsupportedKindError, TmdbMatchNotFoundError, type MetadataMatchService } from './metadata-match-service.ts';
+import type { LibraryWatcher } from './library-watcher.ts';
 
 const credentials = z.object({ username: z.string().trim().min(1).max(64), password: z.string().min(10).max(256) });
 const loginCredentials = credentials.extend({ password: z.string().min(1).max(256) });
@@ -23,7 +27,16 @@ const libraryInput = z.object({ name: z.string().trim().min(1).max(128), kind: z
 const idParams = z.object({ id: z.string().uuid() });
 const homeQuery = z.object({ libraryId: z.string().uuid().optional() });
 const progressBody = z.object({ positionSeconds: z.number().int().min(0).max(86_400).optional(), watched: z.boolean().optional() }).refine((value) => value.positionSeconds != null || value.watched != null, { message: 'positionSeconds or watched is required' });
-const searchQuery = z.object({ libraryId: z.string().uuid(), q: z.string().trim().min(1).max(128) });
+const searchQuery = z.object({ libraryId: z.string().uuid().optional(), q: z.string().trim().min(1).max(128) });
+const categoryParams = z.object({ key: z.string().trim().min(1).max(120) });
+const adminItemsQuery = z.object({
+  archived: z.enum(['true', 'false']).optional(),
+  sort: z.enum(['title', 'archivedAt']).optional(),
+  direction: z.enum(['asc', 'desc']).optional(),
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+  offset: z.coerce.number().int().min(0).optional(),
+  q: z.string().trim().max(128).optional(),
+});
 const capabilities = z.object({
   containers: z.array(z.string().min(1).max(32)).max(32).default([]),
   videoCodecs: z.array(z.string().min(1).max(32)).max(32).default([]),
@@ -40,6 +53,7 @@ const imageQuery = z.object({
   quality: z.coerce.number().int().min(30).max(95).default(82),
 }).refine((value) => value.w != null || value.h != null, { message: 'A width or height is required' });
 const streamQuery = z.object({ plan: z.string().max(4096).optional() });
+const castStreamParams = z.object({ token: z.string().regex(/^[a-f0-9]{64}$/) });
 const IMAGE_TYPES: Record<string, string> = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif' };
 const userCreate = credentials.extend({ role: z.enum(['admin', 'member']).default('member') });
 const userUpdate = z.object({ role: z.enum(['admin', 'member']).optional(), disabled: z.boolean().optional(), password: z.string().min(10).max(256).optional() }).refine((value) => Object.keys(value).length > 0);
@@ -47,6 +61,8 @@ const pluginIdParams = z.object({ id: z.string().min(1).max(64) });
 const pluginConfigBody = z.object({ enabled: z.boolean().optional(), schedule: z.string().trim().max(200).nullable().optional(), settings: z.record(z.string(), z.unknown()).optional() });
 const tmdbImagePath = z.string().regex(/^\/[A-Za-z0-9._/-]{1,255}$/);
 const artworkBody = z.object({ posterPath: tmdbImagePath.nullable().optional(), backdropPath: tmdbImagePath.nullable().optional() }).refine((value) => value.posterPath !== undefined || value.backdropPath !== undefined, { message: 'posterPath or backdropPath is required' });
+const tmdbSearchQuery = z.object({ type: z.enum(['movie', 'series']), q: z.string().trim().max(128).default('') });
+const tmdbMatchBody = z.object({ tmdbId: z.number().int().positive() });
 
 function setSession(reply: FastifyReply, token: string, production: boolean) {
   reply.setCookie(SESSION_COOKIE, token, { path: '/', httpOnly: true, sameSite: 'lax', secure: production, maxAge: SESSION_TTL_MS / 1000 });
@@ -63,8 +79,13 @@ function requireAdmin(user: PublicUser, reply: FastifyReply) {
   return true;
 }
 
-export async function registerApiRoutes(app: FastifyInstance, service: AuthService, production: boolean, filesystem: LibraryFilesystem = nodeLibraryFilesystem, scanner?: ScanCoordinator, catalog?: CatalogService, imagesDir = '/config/images', nativeLibraryPaths = false, plugins?: PluginService, pluginScheduler?: PluginScheduler, artwork?: ArtworkService, subtitleStore?: SubtitleStore) {
+export async function registerApiRoutes(app: FastifyInstance, service: AuthService, production: boolean, filesystem: LibraryFilesystem = nodeLibraryFilesystem, scanner?: ScanCoordinator, catalog?: CatalogService, imagesDir = '/config/images', nativeLibraryPaths = false, plugins?: PluginService, pluginScheduler?: PluginScheduler, artwork?: ArtworkService, subtitleStore?: SubtitleStore, metadataMatch?: MetadataMatchService, libraryWatcher?: Pick<LibraryWatcher, 'synchronize'>, spriteStore?: PreviewSpriteStore) {
   const imageVariants = new ImageVariantStore(imagesDir);
+  const synchronizeWatchers = async () => {
+    try { await libraryWatcher?.synchronize(); }
+    catch (error) { app.log.error(error, 'library watcher synchronization failed'); }
+  };
+  const castStreams = new Map<string, { itemId: string; plan?: string; expiresAt: number }>();
   app.get('/api/v1/setup/status', async () => ({ setupRequired: await service.setupRequired() }));
   app.post('/api/v1/setup', async (request, reply) => {
     const parsed = credentials.safeParse(request.body);
@@ -81,11 +102,47 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
   });
   app.post('/api/v1/auth/logout', async (request, reply) => { await service.logout(request.cookies[SESSION_COOKIE]); reply.clearCookie(SESSION_COOKIE, { path: '/' }); return reply.status(204).send(); });
   app.get('/api/v1/auth/me', async (request, reply) => { const user = await requireUser(request, reply, service); if (user) return { user }; });
+  app.get('/api/v1/admin/tmdb/search', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user || !requireAdmin(user, reply)) return;
+    const parsed = tmdbSearchQuery.safeParse(request.query); if (!parsed.success) return reply.status(400).send({ error: 'Invalid TMDB search' });
+    if (!metadataMatch) return reply.status(503).send({ error: 'Metadata matching unavailable' });
+    if (!parsed.data.q) return { results: [] };
+    return { results: await metadataMatch.search(parsed.data.type, parsed.data.q) };
+  });
+  app.post('/api/v1/admin/items/:id/match', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user || !requireAdmin(user, reply)) return;
+    const params = idParams.safeParse(request.params); const body = tmdbMatchBody.safeParse(request.body);
+    if (!params.success || !body.success) return reply.status(400).send({ error: 'Invalid item or TMDB id' });
+    if (!metadataMatch) return reply.status(503).send({ error: 'Metadata matching unavailable' });
+    try { return { item: await metadataMatch.match(params.data.id, body.data.tmdbId) }; }
+    catch (error) {
+      if (error instanceof MatchItemNotFoundError) return reply.status(404).send({ error: 'Item not found' });
+      if (error instanceof MatchUnsupportedKindError) return reply.status(400).send({ error: 'Only movies and series can be matched' });
+      if (error instanceof TmdbMatchNotFoundError) return reply.status(404).send({ error: 'TMDB title not found' });
+      throw error;
+    }
+  });
+  app.get('/api/v1/admin/items', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user || !requireAdmin(user, reply)) return;
+    const parsed = adminItemsQuery.safeParse(request.query); if (!parsed.success) return reply.status(400).send({ error: 'Invalid item filter' });
+    if (!catalog) return reply.status(503).send({ error: 'Catalog unavailable' });
+    return catalog.adminMediaList({
+      archived: parsed.data.archived === undefined ? undefined : parsed.data.archived === 'true',
+      sort: parsed.data.sort, direction: parsed.data.direction, limit: parsed.data.limit, offset: parsed.data.offset, query: parsed.data.q,
+    });
+  });
+  app.delete('/api/v1/admin/items/:id', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user || !requireAdmin(user, reply)) return;
+    const params = idParams.safeParse(request.params); if (!params.success) return reply.status(400).send({ error: 'Invalid item id' });
+    if (!catalog) return reply.status(503).send({ error: 'Catalog unavailable' });
+    const removed = await catalog.removeItem(params.data.id); if (!removed) return reply.status(404).send({ error: 'Item not found' });
+    return reply.status(204).send();
+  });
   app.get('/api/v1/libraries', async (request, reply) => { const user = await requireUser(request, reply, service); if (user) return { libraries: await service.listLibraries() }; });
   app.post('/api/v1/libraries', async (request, reply) => {
     const user = await requireUser(request, reply, service); if (!user || !requireAdmin(user, reply)) return;
     const parsed = libraryInput.safeParse(request.body); if (!parsed.success) return reply.status(400).send({ error: 'Invalid library' });
-    try { const rootPath = nativeLibraryPaths ? await resolveNativeLibraryRoot(parsed.data.rootPath, filesystem) : await resolveLibraryRoot(parsed.data.rootPath, filesystem); return reply.status(201).send({ library: await service.createLibrary({ ...parsed.data, rootPath }) }); }
+    try { const rootPath = nativeLibraryPaths ? await resolveNativeLibraryRoot(parsed.data.rootPath, filesystem) : await resolveLibraryRoot(parsed.data.rootPath, filesystem); const library = await service.createLibrary({ ...parsed.data, rootPath }); await synchronizeWatchers(); return reply.status(201).send({ library }); }
     catch (error) {
       if (error instanceof DuplicateLibraryError) return reply.status(409).send({ error: 'A library with that name or root already exists' });
       if (error instanceof Error && (error.message.startsWith('Library root') || error.message.includes('ENOENT') || error.message.includes('EACCES'))) return reply.status(400).send({ error: error.message.startsWith('Library root') ? error.message : 'Library root must be an accessible directory' });
@@ -96,6 +153,7 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
     const user = await requireUser(request, reply, service); if (!user || !requireAdmin(user, reply)) return;
     const parsed = idParams.safeParse(request.params); if (!parsed.success) return reply.status(400).send({ error: 'Invalid library id' });
     if (!await service.deleteLibrary(parsed.data.id)) return reply.status(404).send({ error: 'Library not found' });
+    await synchronizeWatchers();
     return reply.status(204).send();
   });
   app.post('/api/v1/libraries/:id/scan', async (request, reply) => {
@@ -197,6 +255,20 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
     const genre = await catalog.genre(parsed.data.id); if (!genre) return reply.status(404).send({ error: 'Genre not found' });
     return { genre };
   });
+  app.get('/api/v1/catalog/categories', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    const parsed = homeQuery.safeParse(request.query); if (!parsed.success) return reply.status(400).send({ error: 'Invalid library filter' });
+    if (!catalog) return reply.status(503).send({ error: 'Catalog unavailable' });
+    return { categories: await catalog.categories(parsed.data.libraryId) };
+  });
+  app.get('/api/v1/catalog/categories/:key', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    const params = categoryParams.safeParse(request.params); const query = homeQuery.safeParse(request.query);
+    if (!params.success || !query.success) return reply.status(400).send({ error: 'Invalid category' });
+    if (!catalog) return reply.status(503).send({ error: 'Catalog unavailable' });
+    const category = await catalog.category(params.data.key, query.data.libraryId); if (!category) return reply.status(404).send({ error: 'Category not found' });
+    return { category };
+  });
   app.get('/api/v1/catalog/people/:id', async (request, reply) => {
     const user = await requireUser(request, reply, service); if (!user) return;
     const parsed = idParams.safeParse(request.params); if (!parsed.success) return reply.status(400).send({ error: 'Invalid person id' });
@@ -220,7 +292,9 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
     if (plan.mode === 'transcode' && plan.container !== 'mp4') return reply.status(406).send({ error: 'No supported transcode container; client must support mp4' });
     const baseUrl = `/api/v1/catalog/items/${params.data.id}/stream`;
     const url = plan.mode === 'direct' ? baseUrl : `${baseUrl}?plan=${encodeURIComponent(encodePlaybackPlan(plan))}`;
-    return { plan, durationSeconds: source.durationSeconds, stream: { url, direct: plan.mode === 'direct' } };
+    const castToken = randomBytes(32).toString('hex');
+    castStreams.set(castToken, { itemId: params.data.id, plan: plan.mode === 'direct' ? undefined : encodePlaybackPlan(plan), expiresAt: Date.now() + 6 * 60 * 60 * 1000 });
+    return { plan, durationSeconds: source.durationSeconds, stream: { url, castUrl: `/api/v1/cast/${castToken}/stream`, direct: plan.mode === 'direct' } };
   });
   app.get('/api/v1/images/:name', async (request, reply) => {
     const parsed = imageParams.safeParse(request.params); if (!parsed.success) return reply.status(400).send({ error: 'Invalid image name' });
@@ -263,6 +337,55 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
     const range = resolveRange(request.headers.range, info.size);
     if (range.status === 416) { reply.header('Content-Range', `bytes */${info.size}`); return reply.status(416).send(); }
     reply.header('Accept-Ranges', 'bytes'); reply.header('Content-Type', contentTypeFor(absolute)); reply.header('Content-Length', String(range.length));
+    if (range.status === 206) { reply.header('Content-Range', `bytes ${range.start}-${range.end}/${info.size}`); reply.status(206); }
+    return reply.send(createReadStream(absolute, { start: range.start, end: range.end }));
+  });
+  app.get('/api/v1/media/:id/trailer', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    const params = idParams.safeParse(request.params); if (!params.success) return reply.status(400).send({ error: 'Invalid item id' });
+    if (!catalog) return reply.status(503).send({ error: 'Catalog unavailable' });
+    const source = await catalog.localTrailerSource(params.data.id); if (!source) return reply.status(404).send({ error: 'Trailer not found' });
+    let info; try { info = await stat(source.localPath); } catch { return reply.status(404).send({ error: 'Trailer not found' }); }
+    if (!info.isFile()) return reply.status(404).send({ error: 'Trailer not found' });
+    const range = resolveRange(request.headers.range, info.size);
+    if (range.status === 416) { reply.header('Content-Range', `bytes */${info.size}`); return reply.status(416).send(); }
+    reply.header('Accept-Ranges', 'bytes'); reply.header('Content-Type', contentTypeFor(source.localPath)); reply.header('Content-Length', String(range.length)); reply.header('Cache-Control', 'private, max-age=3600');
+    if (range.status === 206) { reply.header('Content-Range', `bytes ${range.start}-${range.end}/${info.size}`); reply.status(206); }
+    return reply.send(createReadStream(source.localPath, { start: range.start, end: range.end }));
+  });
+  app.get('/api/v1/media/:id/sprites', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    const params = idParams.safeParse(request.params); if (!params.success) return reply.status(400).send({ error: 'Invalid item id' });
+    if (!catalog) return reply.status(503).send({ error: 'Catalog unavailable' });
+    const sprite = await catalog.previewSprite(params.data.id); if (!sprite) return reply.status(404).send({ error: 'Preview sprite not found' });
+    return { sprite: { src: `/api/v1/media/${encodeURIComponent(params.data.id)}/sprites/sheet`, columns: sprite.columns, rows: sprite.rows, interval: sprite.interval, tileWidth: sprite.tileWidth, tileHeight: sprite.tileHeight } };
+  });
+  app.get('/api/v1/media/:id/sprites/sheet', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    const params = idParams.safeParse(request.params); if (!params.success) return reply.status(400).send({ error: 'Invalid item id' });
+    if (!catalog || !spriteStore) return reply.status(503).send({ error: 'Previews unavailable' });
+    const sprite = await catalog.previewSprite(params.data.id); if (!sprite) return reply.status(404).send({ error: 'Preview sprite not found' });
+    let body; try { body = await spriteStore.read(sprite.storageKey); } catch { return reply.status(404).send({ error: 'Preview sprite not found' }); }
+    reply.header('Content-Type', 'image/jpeg'); reply.header('Cache-Control', 'private, max-age=86400'); return reply.send(body);
+  });
+  app.get('/api/v1/cast/:token/stream', async (request, reply) => {
+    const params = castStreamParams.safeParse(request.params); if (!params.success) return reply.status(404).send({ error: 'Stream not found' });
+    const grant = castStreams.get(params.data.token);
+    if (!grant || grant.expiresAt <= Date.now()) { castStreams.delete(params.data.token); return reply.status(404).send({ error: 'Stream not found' }); }
+    if (!catalog) return reply.status(503).send({ error: 'Catalog unavailable' });
+    const source = await catalog.playbackSource(grant.itemId); if (!source) return reply.status(404).send({ error: 'Stream not found' });
+    const absolute = resolveWithin(source.rootPath, source.relativePath); if (!absolute) return reply.status(404).send({ error: 'Stream not found' });
+    let info; try { info = await stat(absolute); } catch { return reply.status(404).send({ error: 'Stream not found' }); }
+    if (!info.isFile()) return reply.status(404).send({ error: 'Stream not found' });
+    if (grant.plan) {
+      const plan = decodePlaybackPlan(grant.plan); if (!plan) return reply.status(404).send({ error: 'Stream not found' });
+      const child = spawn('ffmpeg', buildTranscodeArgs(plan, absolute), { stdio: ['ignore', 'pipe', 'ignore'] });
+      child.on('error', () => { request.raw.destroy(); }); request.raw.on('close', () => child.kill('SIGKILL'));
+      reply.header('Content-Type', 'video/mp4'); reply.header('Cache-Control', 'private, no-store'); return reply.send(child.stdout);
+    }
+    const range = resolveRange(request.headers.range, info.size);
+    if (range.status === 416) { reply.header('Content-Range', `bytes */${info.size}`); return reply.status(416).send(); }
+    reply.header('Accept-Ranges', 'bytes'); reply.header('Content-Type', contentTypeFor(absolute)); reply.header('Content-Length', String(range.length)); reply.header('Cache-Control', 'private, no-store');
     if (range.status === 206) { reply.header('Content-Range', `bytes ${range.start}-${range.end}/${info.size}`); reply.status(206); }
     return reply.send(createReadStream(absolute, { start: range.start, end: range.end }));
   });

@@ -90,10 +90,14 @@ export const mediaItems = pgTable('media_items', {
   enrichmentLastAttemptAt: timestamp('enrichment_last_attempt_at', { withTimezone: true }),
   enrichmentLastSuccessAt: timestamp('enrichment_last_success_at', { withTimezone: true }),
   available: boolean('available').notNull().default(true),
+  /** Set when an item has no available files (its media was deleted): hidden from
+   * members, retained and editable by admins. Cleared when a file reappears. */
+  archivedAt: timestamp('archived_at', { withTimezone: true }),
   ...timestamps,
 }, (table) => [
   index('media_items_library_id_index').on(table.libraryId),
   index('media_items_parent_id_index').on(table.parentId),
+  index('media_items_archived_at_index').on(table.archivedAt),
   uniqueIndex('media_items_library_natural_key_unique').on(table.libraryId, table.naturalKey),
 ]);
 
@@ -129,6 +133,20 @@ export const mediaTechnicalProfiles = pgTable('media_technical_profiles', {
 }, (table) => [
   index('media_technical_profiles_resolution_index').on(table.resolutionLabel),
 ]);
+
+export const mediaPreviewSprites = pgTable('media_preview_sprites', {
+  mediaFileId: uuid('media_file_id').primaryKey().references(() => mediaFiles.id, { onDelete: 'cascade' }),
+  storageKey: text('storage_key').notNull(),
+  columns: integer('columns').notNull(),
+  rows: integer('rows').notNull(),
+  /** Seconds of video represented by each tile. */
+  interval: integer('interval').notNull(),
+  tileWidth: integer('tile_width').notNull(),
+  tileHeight: integer('tile_height').notNull(),
+  /** Fingerprint of the source file + settings so unchanged sprites are skipped. */
+  signature: text('signature').notNull(),
+  ...timestamps,
+});
 
 export const genres = pgTable('genres', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -307,7 +325,9 @@ export const mediaTrailers = pgTable('media_trailers', {
   providerId: text('provider_id').notNull(), site: text('site').notNull(), key: text('key').notNull(),
   name: text('name').notNull(), type: text('type').notNull(), official: boolean('official').notNull().default(false),
   language: text('language'), country: text('country'), publishedAt: timestamp('published_at', { withTimezone: true }),
-  preferred: boolean('preferred').notNull().default(false), ...timestamps,
+  preferred: boolean('preferred').notNull().default(false),
+  localPath: text('local_path'), downloadedAt: timestamp('downloaded_at', { withTimezone: true }),
+  status: text('status').notNull().default('metadata'), ...timestamps,
 }, (table) => [
   uniqueIndex('media_trailers_item_provider_unique').on(table.mediaItemId, table.providerSource, table.providerId),
   index('media_trailers_item_preferred_index').on(table.mediaItemId, table.preferred),

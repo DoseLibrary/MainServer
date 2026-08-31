@@ -9,3 +9,9 @@ coverage/
 *.log
 *.tsbuildinfo
 .DS_Store
+
+# Bundled runtime binaries fetched at setup, never committed
+yt-dlp
+yt-dlp.exe
+ffmpeg
+ffmpeg.exe

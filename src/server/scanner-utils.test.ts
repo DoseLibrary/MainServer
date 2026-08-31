@@ -40,6 +40,7 @@ function mediaItemFixture(overrides: Partial<MediaItem> = {}): MediaItem {
     enrichmentLastAttemptAt: null,
     enrichmentLastSuccessAt: null,
     available: true,
+    archivedAt: null,
     createdAt: now,
     updatedAt: now,
     ...overrides,

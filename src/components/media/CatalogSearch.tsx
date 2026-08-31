@@ -9,7 +9,7 @@ export function CatalogSearch({ libraryId }: { libraryId?: string }) {
 
   useEffect(() => {
     const term = query.trim();
-    if (!libraryId || !term) {
+    if (!term) {
       return;
     }
     const controller = new AbortController();

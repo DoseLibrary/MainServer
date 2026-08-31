@@ -4,6 +4,17 @@ import { TmdbClient } from './tmdb.ts';
 const json = (value: unknown) => new Response(JSON.stringify(value), { status: 200 });
 
 describe('TmdbClient rich metadata', () => {
+  it('searches lightweight movie and series candidates and skips the network for an empty query', async () => {
+    const fetcher = vi.fn().mockResolvedValueOnce(json({ results: [
+      { id: 10, name: 'The Flash', first_air_date: '2014-10-07', overview: 'Fast.', poster_path: '/flash.jpg' },
+      { id: 'bad', name: 'Ignored' },
+    ] }));
+    const client = new TmdbClient('token', 1, 1000, 1000, fetcher, async () => undefined);
+    await expect(client.searchTitles('series', 'The Flash')).resolves.toEqual([{ id: 10, title: 'The Flash', year: 2014, overview: 'Fast.', posterPath: '/flash.jpg' }]);
+    expect(fetcher.mock.calls[0]?.[0]).toContain('/search/tv?query=The+Flash');
+    await expect(client.searchTitles('movie', '   ')).resolves.toEqual([]);
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
   it('fetches videos directly by provider id without title search', async () => {
     const fetcher = vi.fn().mockResolvedValueOnce(json({ results: [{ id: 'v1', key: 'abc', site: 'YouTube', name: 'Official Trailer', type: 'Trailer', official: true, iso_639_1: 'en', published_at: '2024-01-01T00:00:00Z' }] }));
     const client = new TmdbClient('token', 1, 1000, 1000, fetcher, async () => undefined);
@@ -42,6 +53,22 @@ describe('TmdbClient rich metadata', () => {
     await expect(client.find('series', 'Show')).resolves.toMatchObject({ kind: 'series', year: 2020, runtimeMinutes: 47, contentRating: 'TV-MA', genres: [], cast: [], recommendations: [] });
     expect((await client.find('series', 'Show'))?.posterPath).toBeUndefined();
     expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+  it('prefers English title-bearing artwork, then neutral artwork', async () => {
+    const fetcher = vi.fn().mockResolvedValueOnce(json({ id: 10, title: 'Film', poster_path: '/default.jpg', backdrop_path: '/default-bg.jpg', credits: { cast: [] }, recommendations: { results: [] }, images: {
+      posters: [{ file_path: '/fr.jpg', iso_639_1: 'fr', vote_average: 9 }, { file_path: '/neutral.jpg', iso_639_1: null, vote_average: 8 }, { file_path: '/en.jpg', iso_639_1: 'en', vote_average: 3 }],
+      backdrops: [{ file_path: '/neutral-bg.jpg', iso_639_1: null }, { file_path: '/de-bg.jpg', iso_639_1: 'de' }],
+    } }));
+    const client = new TmdbClient('token', 1, 1000, 1000, fetcher, async () => undefined);
+    await expect(client.getById('movie', 10)).resolves.toMatchObject({ posterPath: '/en.jpg', backdropPath: '/neutral-bg.jpg' });
+  });
+  it('retains foreign-only artwork and logos as the final default fallback', async () => {
+    const fetcher = vi.fn().mockResolvedValueOnce(json({ id: 11, title: 'Film', credits: { cast: [] }, recommendations: { results: [] }, images: {
+      posters: [{ file_path: '/ja.jpg', iso_639_1: 'ja' }], backdrops: [{ file_path: '/fr-bg.jpg', iso_639_1: 'fr' }], logos: [{ file_path: '/ko-logo.png', iso_639_1: 'ko' }],
+    } }));
+    const client = new TmdbClient('token', 1, 1000, 1000, fetcher, async () => undefined);
+    await expect(client.getById('movie', 11)).resolves.toMatchObject({ posterPath: '/ja.jpg', backdropPath: '/fr-bg.jpg', logoPath: '/ko-logo.png' });
+    expect(fetcher.mock.calls[0]?.[0]).not.toContain('include_image_language');
   });
 
   it('maps season, episode and collection detail endpoints and caches them', async () => {

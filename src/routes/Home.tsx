@@ -106,13 +106,12 @@ export function Home() {
   }
 
   if (state.name === 'login') {
-    return <AuthPage mode="login" brand="DOSE" heading="Welcome back" description="Sign in to your local library." alternateLabel="Accounts are managed by your administrator" submitting={submitting} formError={formError} onSubmit={authenticate} />;
+    return <AuthPage mode="login" brand="DOSE" backdropImageSrc="/login-backdrop.webp" backdropImageAlt="A dark home cinema with a wall of film stills" heading="Welcome back" description="Sign in to your local library." alternateLabel="Accounts are managed by your administrator" submitting={submitting} formError={formError} onSubmit={authenticate} />;
   }
 
-  const searchLibraryId = selectedLibraryId ?? state.libraries[0]?.id;
   const episodeLabel = (item: CatalogHome['sections'][number]['items'][number]) => (typeof item.seasonNumber === 'number' && typeof item.episodeNumber === 'number' ? `S${String(item.seasonNumber).padStart(2, '0')}E${String(item.episodeNumber).padStart(2, '0')}` : undefined);
   const sections = (catalog?.sections ?? []).map((section) => ({ id: section.id, title: section.title, layout: section.layout ?? 'poster', items: section.items.map((item) => ({ id: item.id, title: item.title, posterSrc: imageVariant(item.posterUrl, { width: 384, height: 576, fit: 'cover', format: 'webp' }), backdropSrc: imageVariant(item.backdropUrl, { width: 640, height: 360, fit: 'cover', format: 'webp' }), subtitle: episodeLabel(item) ?? ([item.year, item.genres?.[0]].filter(Boolean).join(' · ') || undefined), badge: item.badge, progress: typeof item.progress === 'number' ? Math.min(1, Math.max(0, item.progress)) : undefined, interaction: { href: `/media/${encodeURIComponent(item.id)}` } })) }));
-  const featured = catalog?.featured ? { title: catalog.featured.title, logoSrc: imageVariant(catalog.featured.logoUrl, { width: 500, format: 'webp' }), description: catalog.featured.overview, imageSrc: imageVariant(catalog.featured.backdropUrl, { width: 1920, height: 1080, fit: 'cover', format: 'webp', quality: 85 }), metadata: catalog.featured.year, primaryAction: { label: 'View details', href: `/media/${encodeURIComponent(catalog.featured.id)}` } } : undefined;
+  const featured = catalog?.featured ? { title: catalog.featured.title, logoSrc: imageVariant(catalog.featured.logoUrl, { width: 500, format: 'webp' }), description: catalog.featured.overview, imageSrc: imageVariant(catalog.featured.backdropUrl, { width: 1920, height: 1080, fit: 'cover', format: 'webp', quality: 85 }), videoSrc: catalog.featured.hasLocalTrailer ? api.trailerUrl(catalog.featured.id) : undefined, metadata: catalog.featured.year, primaryAction: { label: 'View details', href: `/media/${encodeURIComponent(catalog.featured.id)}` }, secondaryAction: catalog.featured.hasLocalTrailer ? { label: 'Fullscreen trailer', href: `/trailer/${encodeURIComponent(catalog.featured.id)}` } : undefined } : undefined;
   return <>
     <LibraryPage
       title="Your library"
@@ -124,8 +123,8 @@ export function Home() {
       navigation={{
         brandLabel: 'DOSE',
         brandHref: '/',
-        items: [],
-        actions: <><CatalogSearch libraryId={searchLibraryId} /><Button asChild variant="outline" size="sm"><a href="/profile">{state.user.username}</a></Button><Button variant="outline" size="sm" onClick={() => void logout()}>Sign out</Button></>,
+        items: [{ id: 'categories', label: 'Categories', href: '/categories' }],
+        actions: <><CatalogSearch libraryId={selectedLibraryId} /><Button asChild variant="outline" size="sm"><a href="/profile" aria-label={`Profile (${state.user.username})`}>Profile</a></Button><Button variant="outline" size="sm" onClick={() => void logout()}>Sign out</Button></>,
       }}
       featured={featured}
       sections={sections}

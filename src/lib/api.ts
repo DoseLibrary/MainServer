@@ -36,6 +36,8 @@ export interface CatalogItem {
   genres?: string[];
   /** Collection name, when the title belongs to one. */
   collection?: string;
+  /** Set on the home hero when a locally-downloaded trailer can play as its background. */
+  hasLocalTrailer?: boolean;
   children?: CatalogItem[];
 }
 
@@ -44,9 +46,14 @@ export interface CatalogCollection { id: string; name: string; posterUrl?: strin
 export interface CatalogCastMember { id?: string; name: string; character?: string; profileUrl?: string; order: number }
 export interface CatalogPerson { id: string; name: string; profileUrl?: string; titles: Array<CatalogItem & { character?: string }> }
 export interface CatalogGenreView { id: string; name: string; titles: CatalogItem[] }
+export interface CatalogCategorySummary { key: string; name: string; count: number }
+export interface CatalogCategoryView { key: string; name: string; titles: CatalogItem[] }
 export interface CatalogCollectionView { id: string; name: string; posterUrl?: string; titles: CatalogItem[] }
 export interface ArtworkOption { path: string; previewUrl: string }
 export interface ArtworkOptions { posters: ArtworkOption[]; backdrops: ArtworkOption[] }
+export interface TmdbTitleCandidate { id: number; title: string; year?: number; overview?: string; posterPath?: string }
+export interface AdminMediaItem { id: string; title: string; year?: number; kind: string; library: string; archived: boolean; archivedAt: string | null; posterUrl?: string; tmdbId?: string }
+export interface AdminMediaList { items: AdminMediaItem[]; total: number }
 export interface CatalogQuality { badge?: string; resolutionLabel: string | null; dynamicRange: string | null; videoCodec: string | null; audioCodec: string | null; audioChannels: string | null }
 
 /** Full detail view model; every enriched field is optional so partial metadata renders. */
@@ -73,8 +80,9 @@ export interface CatalogItemDetails extends Omit<CatalogItem, 'genres' | 'collec
   watched?: boolean;
 }
 
-export interface CatalogTrailer { site: string; key: string; name: string; type: string; official: boolean; preferred: boolean }
+export interface CatalogTrailer { site: string; key: string; name: string; type: string; official: boolean; preferred: boolean; localAvailable?: boolean }
 export interface CatalogSubtitle { id: string; language?: string; label: string; forced: boolean; url: string }
+export interface MediaSprite { src: string; columns: number; rows: number; interval: number; tileWidth: number; tileHeight: number }
 
 export interface CatalogSection { id: string; title: string; items: CatalogItem[]; layout?: 'poster' | 'card' }
 export interface CatalogHome { sections: CatalogSection[]; featured?: CatalogItem }
@@ -84,7 +92,7 @@ export interface ClientCapabilities { containers: string[]; videoCodecs: string[
 export interface PlaybackResponse {
   plan: { mode: 'direct' | 'transcode'; container: string; remux: boolean; reasons: string[] };
   durationSeconds?: number;
-  stream: { url: string; direct: boolean };
+  stream: { url: string; castUrl?: string; direct: boolean };
 }
 export interface HealthStatus { status: 'ok' | 'degraded'; database: 'ok' | 'unavailable'; metadata?: { tmdb: 'configured' | 'not_configured' } }
 export interface LibraryScan {
@@ -140,6 +148,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  trailerUrl: (id: string) => `/api/v1/media/${encodeURIComponent(id)}/trailer`,
+  mediaSprites: (id: string) => request<{ sprite: MediaSprite }>(`/api/v1/media/${encodeURIComponent(id)}/sprites`),
   health: () => request<HealthStatus>('/api/v1/health'),
   setupStatus: () => request<{ setupRequired: boolean }>('/api/v1/setup/status'),
   setup: (credentials: { username: string; password: string }) =>
@@ -152,15 +162,31 @@ export const api = {
   createLibrary: (library: { name: string; kind: 'movies' | 'shows'; rootPath: string }) =>
     request<{ library: Library }>('/api/v1/libraries', { method: 'POST', body: JSON.stringify(library) }),
   deleteLibrary: (id: string) => request<void>(`/api/v1/libraries/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  searchTmdb: (type: 'movie' | 'series', query: string) => request<{ results: TmdbTitleCandidate[] }>(`/api/v1/admin/tmdb/search?type=${type}&q=${encodeURIComponent(query)}`),
+  matchTmdb: (id: string, tmdbId: number) => request<{ item: { id: string; providerIds: Record<string, string> } }>(`/api/v1/admin/items/${encodeURIComponent(id)}/match`, { method: 'POST', body: JSON.stringify({ tmdbId }) }),
+  adminMediaItems: (params: { archived?: boolean; sort?: 'title' | 'archivedAt'; direction?: 'asc' | 'desc'; limit?: number; offset?: number; q?: string } = {}) => {
+    const query = new URLSearchParams();
+    if (params.archived !== undefined) query.set('archived', String(params.archived));
+    if (params.sort) query.set('sort', params.sort);
+    if (params.direction) query.set('direction', params.direction);
+    if (params.limit != null) query.set('limit', String(params.limit));
+    if (params.offset != null) query.set('offset', String(params.offset));
+    if (params.q?.trim()) query.set('q', params.q.trim());
+    const suffix = query.toString();
+    return request<AdminMediaList>(`/api/v1/admin/items${suffix ? `?${suffix}` : ''}`);
+  },
+  deleteItem: (id: string) => request<void>(`/api/v1/admin/items/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   catalogHome: (libraryId?: string) => request<CatalogHome>(`/api/v1/catalog/home${libraryId ? `?libraryId=${encodeURIComponent(libraryId)}` : ''}`),
   catalogItem: (id: string) => request<{ item: CatalogItemDetails }>(`/api/v1/catalog/items/${encodeURIComponent(id)}`),
   catalogPerson: (id: string) => request<{ person: CatalogPerson }>(`/api/v1/catalog/people/${encodeURIComponent(id)}`),
   catalogGenre: (id: string) => request<{ genre: CatalogGenreView }>(`/api/v1/catalog/genres/${encodeURIComponent(id)}`),
+  catalogCategories: (libraryId?: string) => request<{ categories: CatalogCategorySummary[] }>(`/api/v1/catalog/categories${libraryId ? `?libraryId=${encodeURIComponent(libraryId)}` : ''}`),
+  catalogCategory: (key: string) => request<{ category: CatalogCategoryView }>(`/api/v1/catalog/categories/${encodeURIComponent(key)}`),
   catalogCollection: (id: string) => request<{ collection: CatalogCollectionView }>(`/api/v1/catalog/collections/${encodeURIComponent(id)}`),
   artworkOptions: (id: string) => request<ArtworkOptions>(`/api/v1/catalog/items/${encodeURIComponent(id)}/artwork`),
   setArtwork: (id: string, change: { posterPath?: string | null; backdropPath?: string | null }) =>
     request<{ item: { id: string; posterUrl?: string; backdropUrl?: string } }>(`/api/v1/catalog/items/${encodeURIComponent(id)}/artwork`, { method: 'PATCH', body: JSON.stringify(change) }),
-  catalogSearch: (libraryId: string, query: string) => request<CatalogSearch>(`/api/v1/catalog/search?libraryId=${encodeURIComponent(libraryId)}&q=${encodeURIComponent(query)}`),
+  catalogSearch: (libraryId: string | undefined, query: string) => request<CatalogSearch>(`/api/v1/catalog/search?${libraryId ? `libraryId=${encodeURIComponent(libraryId)}&` : ''}q=${encodeURIComponent(query)}`),
   playback: (id: string, capabilities: ClientCapabilities) => request<PlaybackResponse>(`/api/v1/catalog/items/${encodeURIComponent(id)}/playback`, { method: 'POST', body: JSON.stringify(capabilities) }),
   saveProgress: (id: string, positionSeconds: number, watched?: boolean) => request<{ mediaItemId: string; positionSeconds: number; watched: boolean }>(`/api/v1/catalog/items/${encodeURIComponent(id)}/progress`, { method: 'POST', body: JSON.stringify({ positionSeconds: Math.round(positionSeconds), ...(watched != null ? { watched } : {}) }) }),
   markWatched: (id: string, watched: boolean) => request<{ mediaItemId: string; positionSeconds: number; watched: boolean }>(`/api/v1/catalog/items/${encodeURIComponent(id)}/progress`, { method: 'POST', body: JSON.stringify({ watched }) }),

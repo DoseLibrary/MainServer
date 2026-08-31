@@ -12,6 +12,7 @@ import type { ScanCoordinator } from './scanner.ts';
 import type { CatalogService } from './catalog-service.ts';
 import type { PluginService } from './plugin-service.ts';
 import sharp from 'sharp';
+import type { MetadataMatchService } from './metadata-match-service.ts';
 
 function service(overrides: Partial<Record<keyof AuthService, unknown>> = {}) {
   return {
@@ -23,12 +24,67 @@ function service(overrides: Partial<Record<keyof AuthService, unknown>> = {}) {
   } as unknown as AuthService;
 }
 
-async function appWith(auth: AuthService, scanner?: ScanCoordinator, catalog?: CatalogService, imagesDir?: string, nativeLibraryPaths = false) {
+async function appWith(auth: AuthService, scanner?: ScanCoordinator, catalog?: CatalogService, imagesDir?: string, nativeLibraryPaths = false, metadataMatch?: MetadataMatchService) {
   const filesystem: LibraryFilesystem = { realpath: async (path) => path, isDirectory: async () => true };
-  const app = Fastify(); await app.register(cookie); await registerApiRoutes(app, auth, false, filesystem, scanner, catalog, imagesDir, nativeLibraryPaths); return app;
+  const app = Fastify(); await app.register(cookie); await registerApiRoutes(app, auth, false, filesystem, scanner, catalog, imagesDir, nativeLibraryPaths, undefined, undefined, undefined, undefined, metadataMatch); return app;
 }
 
 describe('API authorization', () => {
+  it('streams a local trailer with ranges and returns 404 when unavailable', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dose-trailer-route-')); const file = join(dir, 'trailer.mp4'); await writeFile(file, '0123456789');
+    try {
+      const auth = service({ authenticate: vi.fn(async () => ({ id: 'user-id', username: 'member', role: 'member' })) });
+      const localTrailerSource = vi.fn().mockResolvedValueOnce({ localPath: file }).mockResolvedValueOnce({ localPath: file }).mockResolvedValueOnce(null);
+      const app = await appWith(auth, undefined, { localTrailerSource } as unknown as CatalogService); const headers = { cookie: 'dose_session=token' }; const id = '11111111-1111-4111-8111-111111111111';
+      const full = await app.inject({ method: 'GET', url: `/api/v1/media/${id}/trailer`, headers });
+      expect(full.statusCode).toBe(200); expect(full.headers['content-type']).toContain('video/mp4'); expect(full.body).toBe('0123456789');
+      const ranged = await app.inject({ method: 'GET', url: `/api/v1/media/${id}/trailer`, headers: { ...headers, range: 'bytes=2-5' } });
+      expect(ranged.statusCode).toBe(206); expect(ranged.headers['content-range']).toBe('bytes 2-5/10'); expect(ranged.body).toBe('2345');
+      expect((await app.inject({ method: 'GET', url: `/api/v1/media/${id}/trailer`, headers })).statusCode).toBe(404); await app.close();
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+  it('lists and removes admin media items for admins only', async () => {
+    const adminMediaList = vi.fn(async () => ({ items: [{ id: 'm1', title: 'One', year: 2020, kind: 'movie', library: 'Movies', archived: false, archivedAt: null }], total: 1 }));
+    const removeItem = vi.fn(async (id: string) => id === '11111111-1111-4111-8111-111111111111');
+    const admin = service({ authenticate: vi.fn(async () => ({ id: 'a', username: 'admin', role: 'admin' })) });
+    const app = await appWith(admin, undefined, { adminMediaList, removeItem } as unknown as CatalogService);
+    const headers = { cookie: 'dose_session=token' }; const id = '11111111-1111-4111-8111-111111111111';
+    const list = await app.inject({ method: 'GET', url: '/api/v1/admin/items?archived=true&sort=archivedAt&direction=desc&limit=25', headers });
+    expect(list.statusCode).toBe(200); expect(list.json().total).toBe(1);
+    expect(adminMediaList).toHaveBeenCalledWith(expect.objectContaining({ archived: true, sort: 'archivedAt', direction: 'desc', limit: 25 }));
+    expect((await app.inject({ method: 'DELETE', url: `/api/v1/admin/items/${id}`, headers })).statusCode).toBe(204);
+    expect((await app.inject({ method: 'DELETE', url: '/api/v1/admin/items/22222222-2222-4222-8222-222222222222', headers })).statusCode).toBe(404);
+    const member = service({ authenticate: vi.fn(async () => ({ id: 'u', username: 'm', role: 'member' })) });
+    const memberApp = await appWith(member, undefined, { adminMediaList, removeItem } as unknown as CatalogService);
+    expect((await memberApp.inject({ method: 'GET', url: '/api/v1/admin/items', headers })).statusCode).toBe(403);
+    await app.close(); await memberApp.close();
+  });
+  it('serves a preview sprite descriptor and 404s when none exists', async () => {
+    const auth = service({ authenticate: vi.fn(async () => ({ id: 'user-id', username: 'member', role: 'member' })) });
+    const previewSprite = vi.fn().mockResolvedValueOnce({ storageKey: 'sprite.jpg', columns: 5, rows: 2, interval: 10, tileWidth: 160, tileHeight: 90 }).mockResolvedValueOnce(null);
+    const app = await appWith(auth, undefined, { previewSprite } as unknown as CatalogService);
+    const headers = { cookie: 'dose_session=token' }; const id = '11111111-1111-4111-8111-111111111111';
+    const ok = await app.inject({ method: 'GET', url: `/api/v1/media/${id}/sprites`, headers });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json()).toEqual({ sprite: { src: `/api/v1/media/${id}/sprites/sheet`, columns: 5, rows: 2, interval: 10, tileWidth: 160, tileHeight: 90 } });
+    expect((await app.inject({ method: 'GET', url: `/api/v1/media/${id}/sprites`, headers })).statusCode).toBe(404);
+    const anonymous = await appWith(service(), undefined, { previewSprite } as unknown as CatalogService);
+    expect((await anonymous.inject({ method: 'GET', url: `/api/v1/media/${id}/sprites` })).statusCode).toBe(401);
+    await app.close(); await anonymous.close();
+  });
+  it('restricts TMDB search and single-item matching to admins', async () => {
+    const matcher = { search: vi.fn(async () => [{ id: 42, title: 'Dune', year: 2021 }]), match: vi.fn(async () => ({ id: '11111111-1111-4111-8111-111111111111', providerIds: { tmdb: '42', tmdbUserMatched: 'true' } })) } as unknown as MetadataMatchService;
+    const member = await appWith(service({ authenticate: vi.fn(async () => ({ id: 'user-id', username: 'member', role: 'member' })) }), undefined, undefined, undefined, false, matcher);
+    expect((await member.inject({ method: 'GET', url: '/api/v1/admin/tmdb/search?type=movie&q=Dune', headers: { cookie: 'dose_session=token' } })).statusCode).toBe(403);
+    await member.close();
+    const admin = await appWith(service({ authenticate: vi.fn(async () => ({ id: 'user-id', username: 'admin', role: 'admin' })) }), undefined, undefined, undefined, false, matcher);
+    expect((await admin.inject({ method: 'GET', url: '/api/v1/admin/tmdb/search?type=movie&q=', headers: { cookie: 'dose_session=token' } })).json()).toEqual({ results: [] });
+    expect((await admin.inject({ method: 'GET', url: '/api/v1/admin/tmdb/search?type=movie&q=Dune', headers: { cookie: 'dose_session=token' } })).json()).toEqual({ results: [{ id: 42, title: 'Dune', year: 2021 }] });
+    const response = await admin.inject({ method: 'POST', url: '/api/v1/admin/items/11111111-1111-4111-8111-111111111111/match', headers: { cookie: 'dose_session=token' }, payload: { tmdbId: 42 } });
+    expect(response.statusCode).toBe(200); expect(matcher.match).toHaveBeenCalledWith('11111111-1111-4111-8111-111111111111', 42);
+    expect((await admin.inject({ method: 'POST', url: '/api/v1/admin/items/11111111-1111-4111-8111-111111111111/match', headers: { cookie: 'dose_session=token' }, payload: { tmdbId: 0 } })).statusCode).toBe(400);
+    await admin.close();
+  });
   it('rejects anonymous library access', async () => {
     const app = await appWith(service());
     expect((await app.inject({ method: 'GET', url: '/api/v1/libraries' })).statusCode).toBe(401);
@@ -146,6 +202,24 @@ describe('API authorization', () => {
     expect((await app.inject({ method: 'GET', url: `/api/v1/catalog/search?libraryId=${id}&q=`, headers })).statusCode).toBe(400);
     const anonymous = await appWith(service(), undefined, { search } as unknown as CatalogService);
     expect((await anonymous.inject({ method: 'GET', url: `/api/v1/catalog/search?libraryId=${id}&q=inc` })).statusCode).toBe(401);
+    await app.close(); await anonymous.close();
+  });
+
+  it('lists categories and opens one for authenticated users', async () => {
+    const categories = vi.fn(async () => [{ key: 'action', name: 'Action', count: 3 }]);
+    const category = vi.fn(async (key: string) => key === 'action' ? { key: 'action', name: 'Action', titles: [] } : null);
+    const member = service({ authenticate: vi.fn(async () => ({ id: 'user-id', username: 'member', role: 'member' })) });
+    const app = await appWith(member, undefined, { categories, category } as unknown as CatalogService);
+    const headers = { cookie: 'dose_session=token' };
+    const list = await app.inject({ method: 'GET', url: '/api/v1/catalog/categories', headers });
+    expect(list.statusCode).toBe(200); expect(list.json()).toEqual({ categories: [{ key: 'action', name: 'Action', count: 3 }] });
+    expect(categories).toHaveBeenCalledWith(undefined);
+    const opened = await app.inject({ method: 'GET', url: '/api/v1/catalog/categories/action', headers });
+    expect(opened.statusCode).toBe(200); expect(opened.json()).toEqual({ category: { key: 'action', name: 'Action', titles: [] } });
+    const missing = await app.inject({ method: 'GET', url: '/api/v1/catalog/categories/nope', headers });
+    expect(missing.statusCode).toBe(404);
+    const anonymous = await appWith(service(), undefined, { categories, category } as unknown as CatalogService);
+    expect((await anonymous.inject({ method: 'GET', url: '/api/v1/catalog/categories' })).statusCode).toBe(401);
     await app.close(); await anonymous.close();
   });
 

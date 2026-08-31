@@ -23,9 +23,19 @@ const pathParts = (path: string) => path.split(/[\\/]+/u).filter(Boolean);
 /** Produce natural-key text without depending on the host's configured locale. */
 const normalizeKeyPart = (value: string) => value.normalize('NFKC').toLowerCase();
 
+/** A folder that names a season: `Season 1`, `Season 01`, British `Series 3`, or short `S01`. */
+const SEASON_FOLDER = /^(?:season|series|s)[\s._-]*(\d{1,2})$/iu;
+
+/** A stem that unambiguously identifies an episode, regardless of library kind. */
+const INLINE_EPISODE = /(?:\bs\d{1,2}[\s._-]*e\d{1,3}\b|\b\d{1,2}x\d{1,3}\b)/iu;
+
+/** True when a path clearly belongs to a TV episode (inline marker or season-folder ancestor). */
+const looksLikeEpisode = (stem: string, parts: string[]) =>
+  INLINE_EPISODE.test(stem) || parts.slice(0, -1).some((part) => SEASON_FOLDER.test(part));
+
 const findLastSeasonFolderIndex = (parts: string[]) => {
   for (let index = parts.length - 1; index >= 0; index -= 1) {
-    if (/^season[\s._-]*\d{1,2}$/iu.test(parts[index])) return index;
+    if (SEASON_FOLDER.test(parts[index])) return index;
   }
   return -1;
 };
@@ -40,6 +50,10 @@ export function parseMediaPath(relativePath: string, kind: 'movies' | 'shows'): 
     const stem = basename(path, extname(path));
 
     if (kind === 'movies') {
+      // A file that clearly identifies as an episode does not belong in a movies
+      // library. Skip it rather than importing a bogus movie — this is a common
+      // cause of shows appearing as movies when a library is mistyped.
+      if (looksLikeEpisode(stem, pathParts(path))) return null;
       // Require separators around the year so digits belonging to a title are not
       // mistaken for a release year. Brackets and parentheses are separators too.
       const match = /^(.*?)(?:[\s._[(]+)((?:19|20)\d{2})(?=$|[\s._)\]-])/u.exec(stem);
@@ -57,8 +71,11 @@ export function parseMediaPath(relativePath: string, kind: 'movies' | 'shows'): 
     let episodeTitle = '';
 
     // Keep the marker explicit. This prevents an unrelated number in a show name
-    // from silently becoming an episode identity.
-    const marked = /^(.*?)[\s._-]*(?:s(\d{1,2})e(\d{1,3})|(\d{1,2})x(\d{1,3}))(?=$|[\s._-])(?:[\s._-]+(.*))?$/iu.exec(stem);
+    // from silently becoming an episode identity. A separator is allowed between
+    // the season and episode markers (`S01.E01`), and trailing markers from a
+    // multi-episode file (`S01E01-E02`, `S01E01E02`) are consumed but only the
+    // first episode identifies the file.
+    const marked = /^(.*?)[\s._-]*(?:s(\d{1,2})[\s._-]*e(\d{1,3})(?:[\s._-]*-?[\s._-]*e\d{1,3})*|(\d{1,2})x(\d{1,3}))(?=$|[\s._-])(?:[\s._-]+(.*))?$/iu.exec(stem);
     if (marked) {
       seriesSource = marked[1] ?? '';
       season = Number(marked[2] ?? marked[4]);
@@ -67,8 +84,10 @@ export function parseMediaPath(relativePath: string, kind: 'movies' | 'shows'): 
     } else {
       const seasonFolderIndex = findLastSeasonFolderIndex(parentParts);
       if (seasonFolderIndex < 0) return null;
-      const folderMatch = /^season[\s._-]*(\d{1,2})$/iu.exec(parentParts[seasonFolderIndex]);
-      const numbered = /^(\d{1,3})(?=$|[\s._-])(?:[\s._-]+(.*))?$/u.exec(stem);
+      const folderMatch = SEASON_FOLDER.exec(parentParts[seasonFolderIndex]);
+      // A season-folder episode file: a bare number (`04 - Title`) or an explicit
+      // `Episode 4` / `Ep 4` / `E4` prefix.
+      const numbered = /^(?:(?:episode|ep|e)[\s._-]*)?(\d{1,3})(?=$|[\s._-])(?:[\s._-]+(.*))?$/iu.exec(stem);
       if (!folderMatch || !numbered) return null;
       season = Number(folderMatch[1]);
       episode = Number(numbered[1]);

@@ -77,6 +77,66 @@ describe('EnrichmentService', () => {
     expect(await count('recommendation_edges', 'source_media_item_id = $1', [MOVIE])).toBe(1);
   });
 
+  it('explicit matching marks the provider and clears stale metadata and relationships', async () => {
+    await service.enrich(LIBRARY, MOVIE, 'movie', 'One', 2020);
+    const replacement: TmdbMetadata = { id: 321, kind: 'movie', title: 'Replacement', genres: [], cast: [], recommendations: [], externalIds: {} };
+    const explicit = new EnrichmentService(database, { getById: vi.fn(async () => replacement) } as unknown as TmdbClient, { cache: vi.fn(async () => undefined) } as unknown as ImageStore);
+    await expect(explicit.enrich(LIBRARY, MOVIE, 'movie', 'One', 2020, 321, true)).resolves.toBe(true);
+    const row = (await client.query<{ provider_ids: Record<string, string>; overview: string | null; poster_path: string | null }>(`select provider_ids, overview, poster_path from media_items where id = $1`, [MOVIE])).rows[0];
+    expect(row).toMatchObject({ provider_ids: { tmdb: '321', tmdbUserMatched: 'true' }, overview: null, poster_path: null });
+    expect(await count('media_item_genres', 'media_item_id = $1', [MOVIE])).toBe(0);
+    expect(await count('cast_credits', 'media_item_id = $1', [MOVIE])).toBe(0);
+    expect(await count('collection_members', 'media_item_id = $1', [MOVIE])).toBe(0);
+    expect(await count('recommendation_edges', 'source_media_item_id = $1', [MOVIE])).toBe(0);
+
+    const find = vi.fn(async () => ({ ...metadata, id: 999 }));
+    const getById = vi.fn(async () => replacement);
+    const rescan = new EnrichmentService(database, { find, getById } as unknown as TmdbClient, { cache: vi.fn(async () => undefined) } as unknown as ImageStore);
+    await rescan.enrich(LIBRARY, MOVIE, 'movie', 'Changed Filename', 1999);
+    const afterRescan = (await client.query<{ provider_ids: Record<string, string> }>(`select provider_ids from media_items where id = $1`, [MOVIE])).rows[0];
+    expect(afterRescan?.provider_ids).toMatchObject({ tmdb: '321', tmdbUserMatched: 'true' });
+    expect(getById).toHaveBeenCalledWith('movie', 321);
+    expect(find).not.toHaveBeenCalled();
+  });
+
+  it('enriches a season and episode from the parent series TMDB id', async () => {
+    const SERIES = '30000000-0000-4000-8000-000000000001';
+    const SEASON = '30000000-0000-4000-8000-000000000002';
+    const EPISODE = '30000000-0000-4000-8000-000000000003';
+    await client.query(`insert into media_items (id, library_id, kind, natural_key, title, sort_title, provider_ids) values ($1, $2, 'series', 'series:show', 'Show', 'show', '{"tmdb":"500"}')`, [SERIES, LIBRARY]);
+    await client.query(`insert into media_items (id, library_id, parent_id, kind, natural_key, title, sort_title, season_number) values ($1, $2, $3, 'season', 'series:show:season:1', 'Season 1', '001', 1)`, [SEASON, LIBRARY, SERIES]);
+    await client.query(`insert into media_items (id, library_id, parent_id, kind, natural_key, title, sort_title, season_number, episode_number) values ($1, $2, $3, 'episode', 'episode:show:1:1', 'Episode 1', 'episode 1', 1, 1)`, [EPISODE, LIBRARY, SEASON]);
+
+    const tmdb = {
+      getSeason: vi.fn(async () => ({ id: 800, seriesId: 500, seasonNumber: 1, title: 'Season One', overview: 'S1', airDate: '2010-01-01', year: 2010, posterPath: '/sp.jpg', episodes: [] })),
+      getEpisode: vi.fn(async () => ({ id: 900, seriesId: 500, seasonNumber: 1, episodeNumber: 1, title: 'Pilot', overview: 'E1', airDate: '2010-01-02', year: 2010, rating: 8.1, stillPath: '/still.jpg' })),
+    } as unknown as TmdbClient;
+    const local = new EnrichmentService(database, tmdb, { cache: vi.fn(async (path?: string | null) => { cached.push(path ?? undefined); }) } as unknown as ImageStore);
+
+    await local.enrichEpisode(SERIES, SEASON, EPISODE, 1, 1);
+
+    const ep = (await client.query<{ title: string; overview: string; backdrop_path: string; provider_ids: Record<string, string>; metadata_source: string }>(
+      `select title, overview, backdrop_path, provider_ids, metadata_source from media_items where id = $1`, [EPISODE])).rows[0];
+    expect(ep).toMatchObject({ title: 'Pilot', overview: 'E1', backdrop_path: '/still.jpg', metadata_source: 'tmdb' });
+    expect(ep?.provider_ids).toMatchObject({ tmdb: '900' });
+    const season = (await client.query<{ title: string; poster_path: string; overview: string }>(
+      `select title, poster_path, overview from media_items where id = $1`, [SEASON])).rows[0];
+    expect(season).toMatchObject({ title: 'Season One', poster_path: '/sp.jpg', overview: 'S1' });
+    expect(cached).toEqual(expect.arrayContaining(['/sp.jpg', '/still.jpg']));
+  });
+
+  it('skips episode enrichment when the parent series has no TMDB id', async () => {
+    const SERIES = '31000000-0000-4000-8000-000000000001';
+    const EPISODE = '31000000-0000-4000-8000-000000000003';
+    await client.query(`insert into media_items (id, library_id, kind, natural_key, title, sort_title) values ($1, $2, 'series', 'series:noid', 'NoId', 'noid')`, [SERIES, LIBRARY]);
+    await client.query(`insert into media_items (id, library_id, parent_id, kind, natural_key, title, sort_title) values ($1, $2, $3, 'episode', 'episode:noid:1:1', 'Episode 1', 'episode 1')`, [EPISODE, LIBRARY, SERIES]);
+    const getEpisode = vi.fn(async () => null);
+    const local = new EnrichmentService(database, { getSeason: vi.fn(async () => null), getEpisode } as unknown as TmdbClient, { cache: vi.fn(async () => {}) } as unknown as ImageStore);
+
+    await local.enrichEpisode(SERIES, SERIES, EPISODE, 1, 1);
+    expect(getEpisode).not.toHaveBeenCalled();
+  });
+
   it('records an attempt without clobbering data when the provider returns nothing', async () => {
     const tmdb = { find: vi.fn(async () => null) } as unknown as TmdbClient;
     const images = { cache: vi.fn(async () => {}) } as unknown as ImageStore;

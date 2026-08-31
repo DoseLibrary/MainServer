@@ -187,7 +187,7 @@ export function Hero({
   return (
     <section
       className={cn(
-        'relative isolate flex min-h-[24rem] w-full overflow-hidden rounded-lg bg-muted sm:min-h-[30rem] lg:min-h-[36rem]',
+        'relative isolate flex h-[66vh] min-h-[20rem] max-h-[56rem] w-full overflow-hidden rounded-lg bg-muted max-[420px]:min-h-[16rem]',
         centered ? 'items-center' : 'items-end',
         className,
       )}

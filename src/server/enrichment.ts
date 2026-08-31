@@ -25,29 +25,37 @@ function normalizeGenre(name: string): string {
 export class EnrichmentService {
   constructor(private readonly database: Database, private readonly tmdb: TmdbClient, private readonly images: ImageStore) {}
 
-  async enrich(libraryId: string, itemId: string, kind: 'movie' | 'series', title: string, year?: number, providerId?: number): Promise<void> {
+  async enrich(libraryId: string, itemId: string, kind: 'movie' | 'series', title: string, year?: number, providerId?: number, userMatched = false): Promise<boolean> {
     const attemptAt = new Date();
     let metadata: TmdbMetadata | null = null;
+    // Explicit admin matches survive later scans. Normal enrichment discovers the
+    // marker itself so every caller (including filesystem ingestion) follows the
+    // stored provider id instead of accidentally title-searching a new match.
+    const [existing] = await this.database.select({ providerIds: mediaItems.providerIds }).from(mediaItems).where(eq(mediaItems.id, itemId)).limit(1);
+    const storedId = Number(existing?.providerIds.tmdb);
+    const hasStoredUserMatch = existing?.providerIds.tmdbUserMatched === 'true' && Number.isInteger(storedId) && storedId > 0;
+    const preserveUserMatch = userMatched || hasStoredUserMatch;
+    const effectiveProviderId = hasStoredUserMatch ? storedId : providerId;
     // A refresh with a known provider id re-fetches the same title; a first pass searches by name.
-    try { metadata = providerId ? await this.tmdb.getById(kind, providerId) : await this.tmdb.find(kind, title, year); } catch { metadata = null; }
+    try { metadata = effectiveProviderId ? await this.tmdb.getById(kind, effectiveProviderId) : await this.tmdb.find(kind, title, year); } catch { metadata = null; }
     if (!metadata) {
       // Record the attempt but preserve any previously valid metadata.
       await this.database.update(mediaItems).set({ enrichmentLastAttemptAt: attemptAt, updatedAt: new Date() }).where(eq(mediaItems.id, itemId));
-      return;
+      return false;
     }
     await this.database.transaction(async (tx) => {
       await tx.update(mediaItems).set({
-        originalTitle: metadata.originalTitle,
-        releaseDate: metadata.releaseDate,
-        year: metadata.year ?? undefined,
-        overview: metadata.overview,
-        tagline: metadata.tagline,
-        providerRating: metadata.rating,
-        contentRating: metadata.contentRating,
-        posterPath: metadata.posterPath,
-        backdropPath: metadata.backdropPath,
-        logoPath: metadata.logoPath,
-        providerIds: { tmdb: String(metadata.id), ...metadata.externalIds },
+        originalTitle: preserveUserMatch ? metadata.originalTitle ?? null : metadata.originalTitle,
+        releaseDate: preserveUserMatch ? metadata.releaseDate ?? null : metadata.releaseDate,
+        year: preserveUserMatch ? metadata.year ?? null : metadata.year ?? undefined,
+        overview: preserveUserMatch ? metadata.overview ?? null : metadata.overview,
+        tagline: preserveUserMatch ? metadata.tagline ?? null : metadata.tagline,
+        providerRating: preserveUserMatch ? metadata.rating ?? null : metadata.rating,
+        contentRating: preserveUserMatch ? metadata.contentRating ?? null : metadata.contentRating,
+        posterPath: preserveUserMatch ? metadata.posterPath ?? null : metadata.posterPath,
+        backdropPath: preserveUserMatch ? metadata.backdropPath ?? null : metadata.backdropPath,
+        logoPath: preserveUserMatch ? metadata.logoPath ?? null : metadata.logoPath,
+        providerIds: { tmdb: String(metadata.id), ...metadata.externalIds, ...(preserveUserMatch ? { tmdbUserMatched: 'true' } : {}) },
         metadataSource: 'tmdb',
         enrichmentVersion: ENRICHMENT_VERSION,
         enrichmentLastAttemptAt: attemptAt,
@@ -62,6 +70,72 @@ export class EnrichmentService {
     });
 
     await this.cacheArtwork(metadata);
+    return true;
+  }
+
+  /**
+   * Enriches a scanned episode and its season with TMDB metadata (episode name,
+   * overview, air date, still; season poster/overview). Requires the parent
+   * series to already carry a TMDB provider id — otherwise there is nothing to
+   * resolve against and the call is a no-op. Only defined fields are written so
+   * a partial provider response never wipes existing data.
+   */
+  async enrichEpisode(
+    seriesItemId: string,
+    seasonItemId: string,
+    episodeItemId: string,
+    seasonNumber: number,
+    episodeNumber: number,
+  ): Promise<void> {
+    const [series] = await this.database.select({ providerIds: mediaItems.providerIds }).from(mediaItems).where(eq(mediaItems.id, seriesItemId)).limit(1);
+    const seriesTmdb = Number(series?.providerIds.tmdb);
+    if (!Number.isInteger(seriesTmdb) || seriesTmdb < 1) return;
+
+    const attemptAt = new Date();
+    const [season, episode] = await Promise.all([
+      this.tmdb.getSeason(seriesTmdb, seasonNumber).catch(() => null),
+      this.tmdb.getEpisode(seriesTmdb, seasonNumber, episodeNumber).catch(() => null),
+    ]);
+
+    if (season) {
+      await this.database.update(mediaItems).set({
+        title: season.title,
+        overview: season.overview,
+        releaseDate: season.airDate,
+        year: season.year ?? undefined,
+        posterPath: season.posterPath,
+        providerIds: { tmdb: String(season.id) },
+        metadataSource: 'tmdb',
+        enrichmentVersion: ENRICHMENT_VERSION,
+        enrichmentLastAttemptAt: attemptAt,
+        enrichmentLastSuccessAt: attemptAt,
+        updatedAt: new Date(),
+      }).where(eq(mediaItems.id, seasonItemId));
+    }
+
+    if (episode) {
+      await this.database.update(mediaItems).set({
+        title: episode.title,
+        overview: episode.overview,
+        releaseDate: episode.airDate,
+        year: episode.year ?? undefined,
+        providerRating: episode.rating,
+        backdropPath: episode.stillPath,
+        providerIds: { tmdb: String(episode.id) },
+        metadataSource: 'tmdb',
+        enrichmentVersion: ENRICHMENT_VERSION,
+        enrichmentLastAttemptAt: attemptAt,
+        enrichmentLastSuccessAt: attemptAt,
+        updatedAt: new Date(),
+      }).where(eq(mediaItems.id, episodeItemId));
+    } else {
+      await this.database.update(mediaItems).set({ enrichmentLastAttemptAt: attemptAt, updatedAt: new Date() }).where(eq(mediaItems.id, episodeItemId));
+    }
+
+    for (const path of [season?.posterPath, episode?.stillPath]) {
+      if (!path) continue;
+      try { await this.images.cache(path); } catch { /* offline-first best effort */ }
+    }
   }
 
   private async replaceGenres(tx: Tx, libraryId: string, itemId: string, metadata: TmdbMetadata) {

@@ -34,7 +34,10 @@ describe('catalog enrichment migration', () => {
       'enrichment_version',
       'enrichment_last_attempt_at',
       'enrichment_last_success_at',
+      'archived_at',
     ]));
+    const trailerColumns = await client.query<{ column_name: string }>(`select column_name from information_schema.columns where table_schema='public' and table_name='media_trailers'`);
+    expect(trailerColumns.rows.map((row) => row.column_name)).toEqual(expect.arrayContaining(['local_path', 'downloaded_at', 'status']));
 
     const tables = await client.query<{ table_name: string }>(`
       select table_name
@@ -51,6 +54,13 @@ describe('catalog enrichment migration', () => {
       'recommendation_edges',
       'media_technical_profiles',
     ]));
+  });
+
+  it('can safely re-run the guarded archive migration statements', async () => {
+    await client.exec(`alter table media_items add column if not exists archived_at timestamptz`);
+    await client.exec(`create index if not exists media_items_archived_at_index on media_items (archived_at)`);
+    await client.exec(`alter table media_items add column if not exists archived_at timestamptz`);
+    await client.exec(`create index if not exists media_items_archived_at_index on media_items (archived_at)`);
   });
 
   it('enforces idempotent relationships and cascades enrichment when a library is deleted', async () => {

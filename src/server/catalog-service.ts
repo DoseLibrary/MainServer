@@ -1,9 +1,11 @@
-import { and, count, desc, eq, ilike, inArray, isNull } from 'drizzle-orm';
+import { and, asc, count, desc, eq, ilike, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import type { Database } from './db/client.ts';
-import { castCredits, collectionMembers, collections, genres, libraries, mediaFiles, mediaItemGenres, mediaItems, mediaSubtitles, mediaTechnicalProfiles, mediaTrailers, people, playbackProgress, recommendationEdges, watchlistEntries } from './db/schema.ts';
+import { castCredits, collectionMembers, collections, genres, libraries, mediaFiles, mediaItemGenres, mediaItems, mediaPreviewSprites, mediaSubtitles, mediaTechnicalProfiles, mediaTrailers, people, playbackProgress, recommendationEdges, watchlistEntries } from './db/schema.ts';
 import type { Probe } from './playback.ts';
 import { imageLocalUrl } from './images.ts';
+import { isAbsolute, relative, resolve } from 'node:path';
+import { stat } from 'node:fs/promises';
 
 const SEARCH_LIMIT = 20;
 const CAST_LIMIT = 20;
@@ -41,7 +43,85 @@ export interface SearchResult {
 }
 
 export class CatalogService {
-  constructor(private readonly database: Database) {}
+  constructor(private readonly database: Database, private readonly trailerStorageRoot?: string) {}
+
+  /** Soft-archive an item and roll availability up through its parent hierarchy. */
+  async archiveItem(itemId: string, archivedAt = new Date()): Promise<void> {
+    const [item] = await this.database.select({ id: mediaItems.id, parentId: mediaItems.parentId })
+      .from(mediaItems).where(eq(mediaItems.id, itemId)).limit(1);
+    if (!item) return;
+    await this.database.update(mediaItems).set({ available: false, archivedAt, updatedAt: archivedAt }).where(eq(mediaItems.id, item.id));
+    let parentId = item.parentId;
+    while (parentId) {
+      const [parent] = await this.database.select({ id: mediaItems.id, parentId: mediaItems.parentId }).from(mediaItems).where(eq(mediaItems.id, parentId)).limit(1);
+      if (!parent) break;
+      const [availableChild] = await this.database.select({ id: mediaItems.id }).from(mediaItems)
+        .where(and(eq(mediaItems.parentId, parent.id), eq(mediaItems.available, true), isNull(mediaItems.archivedAt))).limit(1);
+      if (availableChild) break;
+      await this.database.update(mediaItems).set({ available: false, archivedAt, updatedAt: archivedAt }).where(eq(mediaItems.id, parent.id));
+      parentId = parent.parentId;
+    }
+  }
+
+  /** Restore an item and every ancestor needed to make it member-visible again. */
+  async unarchiveItem(itemId: string, restoredAt = new Date()): Promise<void> {
+    let currentId: string | null = itemId;
+    while (currentId) {
+      const [item] = await this.database.select({ id: mediaItems.id, parentId: mediaItems.parentId }).from(mediaItems).where(eq(mediaItems.id, currentId)).limit(1);
+      if (!item) break;
+      await this.database.update(mediaItems).set({ available: true, archivedAt: null, updatedAt: restoredAt }).where(eq(mediaItems.id, item.id));
+      currentId = item.parentId;
+    }
+  }
+
+  /** Admin inventory, optionally restricted to archived/active rows and sortable by archive time. */
+  async adminItems(options: { archived?: boolean; sort?: 'archivedAt' | 'title'; direction?: 'asc' | 'desc' } = {}) {
+    const filter = options.archived === true ? isNotNull(mediaItems.archivedAt)
+      : options.archived === false ? and(eq(mediaItems.available, true), isNull(mediaItems.archivedAt)) : undefined;
+    const sortColumn = options.sort === 'title' ? mediaItems.sortTitle : mediaItems.archivedAt;
+    return this.database.select().from(mediaItems).where(filter)
+      .orderBy(options.direction === 'asc' ? asc(sortColumn) : desc(sortColumn), mediaItems.sortTitle);
+  }
+
+  /** Paged, sortable admin listing of top-level titles for the media management table. */
+  async adminMediaList(options: { archived?: boolean; sort?: 'archivedAt' | 'title'; direction?: 'asc' | 'desc'; limit?: number; offset?: number; query?: string } = {}) {
+    const clauses = [inArray(mediaItems.kind, ['movie', 'series'] as const)];
+    if (options.archived === true) clauses.push(isNotNull(mediaItems.archivedAt));
+    else if (options.archived === false) clauses.push(and(eq(mediaItems.available, true), isNull(mediaItems.archivedAt))!);
+    const term = options.query?.trim();
+    if (term) clauses.push(ilike(mediaItems.title, `%${term}%`));
+    const where = and(...clauses);
+    const limit = Math.min(Math.max(options.limit ?? 50, 1), 200);
+    const offset = Math.max(options.offset ?? 0, 0);
+    const sortColumn = options.sort === 'archivedAt' ? mediaItems.archivedAt : mediaItems.sortTitle;
+    const order = options.direction === 'desc' ? desc(sortColumn) : asc(sortColumn);
+    const rows = await this.database.select({ item: mediaItems, libraryName: libraries.name })
+      .from(mediaItems).innerJoin(libraries, eq(libraries.id, mediaItems.libraryId))
+      .where(where).orderBy(order, asc(mediaItems.sortTitle)).limit(limit).offset(offset);
+    const [{ value: total } = { value: 0 }] = await this.database.select({ value: count() }).from(mediaItems).where(where);
+    return {
+      total: Number(total),
+      items: rows.map(({ item, libraryName }) => ({
+        id: item.id,
+        title: item.userTitle ?? item.title,
+        year: item.userYear ?? item.year ?? undefined,
+        kind: item.kind,
+        library: libraryName,
+        archived: item.archivedAt != null,
+        archivedAt: item.archivedAt ? item.archivedAt.toISOString() : null,
+        posterUrl: item.posterPath ? imageLocalUrl(item.posterPath) : undefined,
+        tmdbId: item.providerIds.tmdb,
+      })),
+    };
+  }
+
+  /** Permanently remove a top-level title; files, progress, and relationships cascade. */
+  async removeItem(id: string) {
+    const rows = await this.database.delete(mediaItems)
+      .where(and(eq(mediaItems.id, id), inArray(mediaItems.kind, ['movie', 'series'] as const)))
+      .returning({ id: mediaItems.id });
+    return rows.length > 0;
+  }
 
   /** One query: quality profile per media item id (via its available file). */
   private async qualityByItem(itemIds: string[]): Promise<Map<string, QualityProfile>> {
@@ -91,7 +171,7 @@ export class CatalogService {
     const seasons = alias(mediaItems, 'season_scope');
     const rows = await this.database.select({ id: mediaItems.id, seasonNumber: mediaItems.seasonNumber, episodeNumber: mediaItems.episodeNumber })
       .from(mediaItems).innerJoin(seasons, eq(seasons.id, mediaItems.parentId))
-      .where(and(eq(seasons.parentId, season.seriesId), eq(mediaItems.kind, 'episode'), eq(mediaItems.available, true)))
+      .where(and(eq(seasons.parentId, season.seriesId), eq(mediaItems.kind, 'episode'), eq(mediaItems.available, true), isNull(mediaItems.archivedAt)))
       .orderBy(mediaItems.seasonNumber, mediaItems.episodeNumber);
     const index = rows.findIndex((row) => row.id === episode.id);
     return index >= 0 && index + 1 < rows.length ? rows[index + 1].id : undefined;
@@ -101,7 +181,8 @@ export class CatalogService {
   async subtitlesForItem(itemId: string) {
     const rows = await this.database.select({ id: mediaSubtitles.id, language: mediaSubtitles.language, label: mediaSubtitles.label, forced: mediaSubtitles.forced })
       .from(mediaSubtitles).innerJoin(mediaFiles, eq(mediaFiles.id, mediaSubtitles.mediaFileId))
-      .where(and(eq(mediaFiles.mediaItemId, itemId), eq(mediaFiles.available, true)))
+      .innerJoin(mediaItems, eq(mediaItems.id, mediaFiles.mediaItemId))
+      .where(and(eq(mediaFiles.mediaItemId, itemId), eq(mediaFiles.available, true), eq(mediaItems.available, true), isNull(mediaItems.archivedAt)))
       .orderBy(desc(mediaSubtitles.forced), mediaSubtitles.label);
     return rows.map((row) => ({ id: row.id, language: row.language ?? undefined, label: row.label, forced: row.forced, url: `/api/v1/subtitles/${row.id}` }));
   }
@@ -118,7 +199,7 @@ export class CatalogService {
     if (!collection) return null;
     const rows = await this.database.select({ item: mediaItems }).from(collectionMembers)
       .innerJoin(mediaItems, eq(mediaItems.id, collectionMembers.mediaItemId))
-      .where(and(eq(collectionMembers.collectionId, collectionId), eq(mediaItems.available, true)))
+      .where(and(eq(collectionMembers.collectionId, collectionId), eq(mediaItems.available, true), isNull(mediaItems.archivedAt)))
       .orderBy(collectionMembers.position, mediaItems.sortTitle);
     const items = rows.map(({ item }) => item);
     const quality = await this.qualityByItem(items.map((item) => item.id));
@@ -132,12 +213,47 @@ export class CatalogService {
     if (!genre) return null;
     const rows = await this.database.select({ item: mediaItems }).from(mediaItemGenres)
       .innerJoin(mediaItems, eq(mediaItems.id, mediaItemGenres.mediaItemId))
-      .where(and(eq(mediaItemGenres.genreId, genreId), eq(mediaItems.available, true), isNull(mediaItems.parentId), inArray(mediaItems.kind, ['movie', 'series'])))
+      .where(and(eq(mediaItemGenres.genreId, genreId), eq(mediaItems.available, true), isNull(mediaItems.archivedAt), isNull(mediaItems.parentId), inArray(mediaItems.kind, ['movie', 'series'])))
       .orderBy(mediaItems.sortTitle);
     const items = rows.map(({ item }) => item);
     const quality = await this.qualityByItem(items.map((item) => item.id));
     const titles = items.map((item) => ({ ...toCatalogItem(item, null), badge: qualityBadge(quality.get(item.id)) }));
     return { id: genre.id, name: genre.name, titles };
+  }
+
+  /**
+   * Categories for the browse index, merged by normalized name so a genre that
+   * exists in several libraries (Movies and Shows both have "Action") appears
+   * once and aggregates their titles. A missing libraryId spans every library.
+   */
+  async categories(libraryId?: string) {
+    const scope = libraryId ? eq(genres.libraryId, libraryId) : undefined;
+    const rows = await this.database
+      .select({ key: genres.normalizedName, name: sql<string>`min(${genres.name})`, total: sql<number>`count(distinct ${mediaItems.id})` })
+      .from(genres)
+      .innerJoin(mediaItemGenres, eq(mediaItemGenres.genreId, genres.id))
+      .innerJoin(mediaItems, eq(mediaItems.id, mediaItemGenres.mediaItemId))
+      .where(and(eq(mediaItems.available, true), isNull(mediaItems.archivedAt), isNull(mediaItems.parentId), inArray(mediaItems.kind, ['movie', 'series']), ...(scope ? [scope] : [])))
+      .groupBy(genres.normalizedName)
+      .orderBy(sql`min(${genres.name})`);
+    return rows.map((row) => ({ key: row.key, name: row.name, count: Number(row.total) }));
+  }
+
+  /** Every available top-level title in a category, merged across same-named genres. */
+  async category(key: string, libraryId?: string) {
+    const scope = libraryId ? eq(genres.libraryId, libraryId) : undefined;
+    const genreRows = await this.database.select({ id: genres.id, name: genres.name })
+      .from(genres).where(and(eq(genres.normalizedName, key), ...(scope ? [scope] : [])));
+    if (genreRows.length === 0) return null;
+    const genreIds = genreRows.map((genre) => genre.id);
+    const rows = await this.database.selectDistinct({ item: mediaItems }).from(mediaItemGenres)
+      .innerJoin(mediaItems, eq(mediaItems.id, mediaItemGenres.mediaItemId))
+      .where(and(inArray(mediaItemGenres.genreId, genreIds), eq(mediaItems.available, true), isNull(mediaItems.archivedAt), isNull(mediaItems.parentId), inArray(mediaItems.kind, ['movie', 'series'])))
+      .orderBy(mediaItems.sortTitle);
+    const items = rows.map(({ item }) => item);
+    const quality = await this.qualityByItem(items.map((item) => item.id));
+    const titles = items.map((item) => ({ ...toCatalogItem(item, null), badge: qualityBadge(quality.get(item.id)) }));
+    return { key, name: genreRows[0].name, titles };
   }
 
   /** A person and every local title they are credited in, for actor pages. */
@@ -146,7 +262,7 @@ export class CatalogService {
     if (!person) return null;
     const rows = await this.database.select({ item: mediaItems, character: castCredits.character })
       .from(castCredits).innerJoin(mediaItems, eq(mediaItems.id, castCredits.mediaItemId))
-      .where(and(eq(castCredits.personId, personId), eq(mediaItems.available, true), inArray(mediaItems.kind, ['movie', 'series'])))
+      .where(and(eq(castCredits.personId, personId), eq(mediaItems.available, true), isNull(mediaItems.archivedAt), inArray(mediaItems.kind, ['movie', 'series'])))
       .orderBy(castCredits.billingOrder, mediaItems.sortTitle);
     const titles = rows.map((row) => ({ ...toCatalogItem(row.item, null), character: row.character ?? undefined }));
     return { id: person.id, name: person.name, profileUrl: imageLocalUrl(person.profilePath), titles };
@@ -155,15 +271,18 @@ export class CatalogService {
   private async recommendationsForItem(itemId: string) {
     const rows = await this.database.select({ item: mediaItems })
       .from(recommendationEdges).innerJoin(mediaItems, eq(mediaItems.id, recommendationEdges.recommendedMediaItemId))
-      .where(and(eq(recommendationEdges.sourceMediaItemId, itemId), eq(mediaItems.available, true))).orderBy(recommendationEdges.position);
+      .where(and(eq(recommendationEdges.sourceMediaItemId, itemId), eq(mediaItems.available, true), isNull(mediaItems.archivedAt))).orderBy(recommendationEdges.position);
     return rows.map((row) => toCatalogItem(row.item, null));
   }
 
-  async search(libraryId: string, query: string) {
+  async search(libraryId: string | undefined, query: string) {
     const term = query.trim();
     if (term.length === 0) return { query: term, groups: [] as Array<{ id: string; label: string; items: SearchResult[] }> };
+    // A missing libraryId searches every library so movies and shows held in
+    // separate libraries are both reachable from one search box.
+    const itemScope = libraryId ? eq(mediaItems.libraryId, libraryId) : undefined;
     const rows = await this.database.select().from(mediaItems)
-      .where(and(eq(mediaItems.libraryId, libraryId), eq(mediaItems.available, true), isNull(mediaItems.parentId), ilike(mediaItems.title, `%${term}%`)))
+      .where(and(eq(mediaItems.available, true), isNull(mediaItems.archivedAt), isNull(mediaItems.parentId), ilike(mediaItems.title, `%${term}%`), ...(itemScope ? [itemScope] : [])))
       .orderBy(mediaItems.sortTitle).limit(SEARCH_LIMIT);
 
     const movieIds = rows.filter((item) => item.kind === 'movie').map((item) => item.id);
@@ -179,7 +298,7 @@ export class CatalogService {
     const seasonCounts = new Map<string, number>();
     if (seriesIds.length > 0) {
       const seasons = await this.database.select({ parentId: mediaItems.parentId, total: count() })
-        .from(mediaItems).where(and(inArray(mediaItems.parentId, seriesIds), eq(mediaItems.kind, 'season'), eq(mediaItems.available, true)))
+        .from(mediaItems).where(and(inArray(mediaItems.parentId, seriesIds), eq(mediaItems.kind, 'season'), eq(mediaItems.available, true), isNull(mediaItems.archivedAt)))
         .groupBy(mediaItems.parentId);
       for (const season of seasons) if (season.parentId) seasonCounts.set(season.parentId, season.total);
     }
@@ -196,8 +315,9 @@ export class CatalogService {
       return { id: base.id, title: base.title, year: base.year, posterUrl: base.posterUrl, kind: item.kind, meta, badge: qualityBadge(quality.get(item.id)), genres: (genreMap.get(item.id) ?? []).map((genre) => genre.name) };
     };
 
+    const peopleScope = libraryId ? eq(people.libraryId, libraryId) : undefined;
     const peopleRows = await this.database.select({ id: people.id, name: people.name, profilePath: people.profilePath })
-      .from(people).where(and(eq(people.libraryId, libraryId), ilike(people.name, `%${term}%`)))
+      .from(people).where(and(ilike(people.name, `%${term}%`), ...(peopleScope ? [peopleScope] : [])))
       .orderBy(people.name).limit(SEARCH_LIMIT);
     const peopleResults: SearchResult[] = peopleRows.map((person) => ({ id: person.id, title: person.name, year: null, posterUrl: imageLocalUrl(person.profilePath), kind: 'person' }));
 
@@ -225,17 +345,36 @@ export class CatalogService {
     const [row] = await this.database.select({ mediaItemId: watchlistEntries.mediaItemId }).from(watchlistEntries).where(and(eq(watchlistEntries.userId, userId), eq(watchlistEntries.mediaItemId, mediaItemId))).limit(1);
     return Boolean(row);
   }
+  /** The storyboard sprite descriptor for an item's playable file, if generated. */
+  async previewSprite(mediaItemId: string) {
+    const [row] = await this.database.select({ storageKey: mediaPreviewSprites.storageKey, columns: mediaPreviewSprites.columns, rows: mediaPreviewSprites.rows, interval: mediaPreviewSprites.interval, tileWidth: mediaPreviewSprites.tileWidth, tileHeight: mediaPreviewSprites.tileHeight })
+      .from(mediaPreviewSprites)
+      .innerJoin(mediaFiles, eq(mediaFiles.id, mediaPreviewSprites.mediaFileId))
+      .innerJoin(mediaItems, eq(mediaItems.id, mediaFiles.mediaItemId))
+      .where(and(eq(mediaFiles.mediaItemId, mediaItemId), eq(mediaFiles.available, true), eq(mediaItems.available, true), isNull(mediaItems.archivedAt))).limit(1);
+    return row ?? null;
+  }
+
   async playbackSource(mediaItemId: string) {
     const [file] = await this.database.select({ id: mediaFiles.id, relativePath: mediaFiles.relativePath, durationSeconds: mediaFiles.durationSeconds, probe: mediaFiles.probe, rootPath: libraries.rootPath })
       .from(mediaFiles).innerJoin(libraries, eq(libraries.id, mediaFiles.libraryId))
-      .where(and(eq(mediaFiles.mediaItemId, mediaItemId), eq(mediaFiles.available, true))).limit(1);
+      .innerJoin(mediaItems, eq(mediaItems.id, mediaFiles.mediaItemId))
+      .where(and(eq(mediaFiles.mediaItemId, mediaItemId), eq(mediaFiles.available, true), eq(mediaItems.available, true), isNull(mediaItems.archivedAt))).limit(1);
     if (!file) return null;
     return { fileId: file.id, relativePath: file.relativePath, rootPath: file.rootPath, durationSeconds: file.durationSeconds, probe: file.probe as Probe };
+  }
+  async localTrailerSource(mediaItemId: string) {
+    const [trailer] = await this.database.select({ localPath: mediaTrailers.localPath }).from(mediaTrailers)
+      .innerJoin(mediaItems, eq(mediaItems.id, mediaTrailers.mediaItemId))
+      .where(and(eq(mediaTrailers.mediaItemId, mediaItemId), eq(mediaTrailers.preferred, true), eq(mediaTrailers.status, 'ready'), isNotNull(mediaTrailers.localPath), eq(mediaItems.available, true), isNull(mediaItems.archivedAt))).limit(1);
+    if (!trailer?.localPath || !this.trailerStorageRoot || !managedTrailerPath(this.trailerStorageRoot, trailer.localPath)) return null;
+    try { if (!(await stat(resolve(trailer.localPath))).isFile()) return null; } catch { return null; }
+    return { localPath: resolve(trailer.localPath) };
   }
   async home(libraryId: string | undefined, userId: string) {
     // A missing libraryId aggregates every library so movies and shows share one home.
     const scope = libraryId ? eq(mediaItems.libraryId, libraryId) : undefined;
-    const items = await this.database.select({ item: mediaItems, progress: playbackProgress }).from(mediaItems).leftJoin(playbackProgress, and(eq(playbackProgress.mediaItemId, mediaItems.id), eq(playbackProgress.userId, userId))).where(and(eq(mediaItems.available, true), isNull(mediaItems.parentId), ...(scope ? [scope] : []))).orderBy(mediaItems.sortTitle);
+    const items = await this.database.select({ item: mediaItems, progress: playbackProgress }).from(mediaItems).leftJoin(playbackProgress, and(eq(playbackProgress.mediaItemId, mediaItems.id), eq(playbackProgress.userId, userId))).where(and(eq(mediaItems.available, true), isNull(mediaItems.archivedAt), isNull(mediaItems.parentId), ...(scope ? [scope] : []))).orderBy(mediaItems.sortTitle);
     const fileScope = libraryId ? eq(mediaFiles.libraryId, libraryId) : undefined;
     const files = await this.database.select({ mediaItemId: mediaFiles.mediaItemId, durationSeconds: mediaFiles.durationSeconds }).from(mediaFiles).where(and(eq(mediaFiles.available, true), ...(fileScope ? [fileScope] : [])));
     const durations = new Map(files.map((file) => [file.mediaItemId, file.durationSeconds]));
@@ -252,7 +391,7 @@ export class CatalogService {
 
     // Newest episodes across every series, shown as posters (never mixed with movies).
     const episodeRows = await this.database.select({ item: mediaItems }).from(mediaItems)
-      .where(and(eq(mediaItems.available, true), eq(mediaItems.kind, 'episode'), ...(scope ? [scope] : [])))
+      .where(and(eq(mediaItems.available, true), isNull(mediaItems.archivedAt), eq(mediaItems.kind, 'episode'), ...(scope ? [scope] : [])))
       .orderBy(desc(mediaItems.createdAt)).limit(HOME_ROW_LIMIT);
     const episodes = episodeRows.map(({ item }) => ({ ...toCatalogItem(item, null), badge: undefined as string | undefined, genres: [] as string[], collection: undefined as string | undefined }));
 
@@ -261,7 +400,7 @@ export class CatalogService {
       .from(playbackProgress)
       .innerJoin(mediaItems, eq(mediaItems.id, playbackProgress.mediaItemId))
       .leftJoin(mediaFiles, and(eq(mediaFiles.mediaItemId, mediaItems.id), eq(mediaFiles.available, true)))
-      .where(and(eq(playbackProgress.userId, userId), eq(mediaItems.kind, 'episode'), eq(mediaItems.available, true), eq(playbackProgress.watched, false), ...(scope ? [scope] : [])))
+      .where(and(eq(playbackProgress.userId, userId), eq(mediaItems.kind, 'episode'), eq(mediaItems.available, true), isNull(mediaItems.archivedAt), eq(playbackProgress.watched, false), ...(scope ? [scope] : [])))
       .orderBy(desc(playbackProgress.lastWatchedAt)).limit(HOME_ROW_LIMIT);
     const seenEpisode = new Set<string>();
     const ongoingEpisodes = ongoingEpRows
@@ -299,18 +438,21 @@ export class CatalogService {
     // Hero spotlights a random movie (backdrop preferred) so the home varies between visits.
     const heroPool = movies.filter((movie) => movie.backdropUrl);
     const pool = heroPool.length > 0 ? heroPool : movies;
-    const featured = pool.length > 0 ? pool[Math.floor(Math.random() * pool.length)] : series[0] ?? shape[0] ?? null;
+    const chosen = pool.length > 0 ? pool[Math.floor(Math.random() * pool.length)] : series[0] ?? shape[0] ?? null;
+    // Flag whether the hero can play a locally-downloaded trailer as its background.
+    const featured = chosen ? { ...chosen, hasLocalTrailer: (await this.localTrailerSource(chosen.id)) != null } : null;
     return { libraryId: libraryId ?? null, featured, sections };
   }
   async item(id: string, userId: string) {
-    const [row] = await this.database.select({ item: mediaItems, progress: playbackProgress }).from(mediaItems).leftJoin(playbackProgress, and(eq(playbackProgress.mediaItemId, mediaItems.id), eq(playbackProgress.userId, userId))).where(and(eq(mediaItems.id, id), eq(mediaItems.available, true))).limit(1); if (!row) return null;
-    const childRows = await this.database.select({ item: mediaItems, progress: playbackProgress }).from(mediaItems).leftJoin(playbackProgress, and(eq(playbackProgress.mediaItemId, mediaItems.id), eq(playbackProgress.userId, userId))).where(and(eq(mediaItems.parentId, id), eq(mediaItems.available, true))).orderBy(mediaItems.seasonNumber, mediaItems.episodeNumber, mediaItems.sortTitle);
+    const [row] = await this.database.select({ item: mediaItems, progress: playbackProgress }).from(mediaItems).leftJoin(playbackProgress, and(eq(playbackProgress.mediaItemId, mediaItems.id), eq(playbackProgress.userId, userId))).where(and(eq(mediaItems.id, id), eq(mediaItems.available, true), isNull(mediaItems.archivedAt))).limit(1); if (!row) return null;
+    const childRows = await this.database.select({ item: mediaItems, progress: playbackProgress }).from(mediaItems).leftJoin(playbackProgress, and(eq(playbackProgress.mediaItemId, mediaItems.id), eq(playbackProgress.userId, userId))).where(and(eq(mediaItems.parentId, id), eq(mediaItems.available, true), isNull(mediaItems.archivedAt))).orderBy(mediaItems.seasonNumber, mediaItems.episodeNumber, mediaItems.sortTitle);
     const childFiles = await this.database.select({ mediaItemId: mediaFiles.mediaItemId, durationSeconds: mediaFiles.durationSeconds }).from(mediaFiles).innerJoin(mediaItems, eq(mediaItems.id, mediaFiles.mediaItemId)).where(and(eq(mediaItems.parentId, id), eq(mediaFiles.available, true)));
     const children = serializeCatalogChildren(childRows, new Map(childFiles.map((file) => [file.mediaItemId, file.durationSeconds])));
     const files = await this.database.select({ id: mediaFiles.id, relativePath: mediaFiles.relativePath, durationSeconds: mediaFiles.durationSeconds }).from(mediaFiles).where(and(eq(mediaFiles.mediaItemId, id), eq(mediaFiles.available, true)));
-    const [quality, genreMap, collectionMap, cast, recommendations, inWatchlist, subtitles, nextEpisodeId, trailers] = await Promise.all([
+    const [quality, genreMap, collectionMap, cast, recommendations, inWatchlist, subtitles, nextEpisodeId, trailers, localTrailer] = await Promise.all([
       this.qualityByItem([id]), this.genresByItem([id]), this.collectionByItem([id]), this.castForItem(id), this.recommendationsForItem(id), this.isWatchlisted(userId, id), this.subtitlesForItem(id), this.nextEpisodeId(row.item),
-      this.database.select({ site: mediaTrailers.site, key: mediaTrailers.key, name: mediaTrailers.name, type: mediaTrailers.type, official: mediaTrailers.official, preferred: mediaTrailers.preferred }).from(mediaTrailers).where(eq(mediaTrailers.mediaItemId, id)).orderBy(desc(mediaTrailers.preferred), desc(mediaTrailers.publishedAt)),
+      this.database.select({ site: mediaTrailers.site, key: mediaTrailers.key, name: mediaTrailers.name, type: mediaTrailers.type, official: mediaTrailers.official, preferred: mediaTrailers.preferred, localAvailable: sql<boolean>`${mediaTrailers.status} = 'ready' and ${mediaTrailers.localPath} is not null` }).from(mediaTrailers).where(eq(mediaTrailers.mediaItemId, id)).orderBy(desc(mediaTrailers.preferred), desc(mediaTrailers.publishedAt)),
+      this.localTrailerSource(id),
     ]);
     const profile = quality.get(id) ?? null;
     return {
@@ -328,13 +470,19 @@ export class CatalogService {
       collection: collectionMap.get(id),
       cast,
       recommendations,
-      trailers,
+      hasLocalTrailer: localTrailer != null,
+      trailers: trailers.map((trailer) => ({ ...trailer, localAvailable: trailer.preferred && localTrailer != null })),
       subtitles,
       nextEpisodeId,
       children,
       files,
     };
   }
+}
+
+export function managedTrailerPath(storageRoot: string, path: string): boolean {
+  const relation = relative(resolve(storageRoot), resolve(path));
+  return relation !== '' && !relation.startsWith('..') && !isAbsolute(relation);
 }
 
 function seasonLabel(total: number): string | undefined {

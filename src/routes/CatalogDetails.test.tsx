@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { CatalogDetails } from './CatalogDetails';
 
@@ -60,5 +60,26 @@ describe('CatalogDetails', () => {
     expect(screen.getByRole('link', { name: 'Open Good News About Hell' })).toHaveAttribute('href', '/media/episode%2F1');
     expect(screen.getByRole('link', { name: 'Open Episode 2' })).toHaveAttribute('href', '/media/episode%2F2');
     expect(screen.getByText('Mark starts a new job.')).toBeInTheDocument();
+  });
+  it('uses only server-validated local trailers and hides stale remote-only records', async () => {
+    globalThis.fetch = vi.fn(async (input) => String(input).endsWith('/auth/me') ? new Response(JSON.stringify({ user: { id: 'u', role: 'member' } }), { status: 200 }) : new Response(JSON.stringify({ item: { id: 'm1', title: 'Offline', kind: 'movie', hasLocalTrailer: false, trailers: [{ site: 'YouTube', key: 'remote', preferred: true, localAvailable: false }] } }), { status: 200 }));
+    render(<MemoryRouter initialEntries={['/media/m1']}><Routes><Route path="/media/:id" element={<CatalogDetails />} /></Routes></MemoryRouter>);
+    expect(await screen.findByRole('heading', { name: 'Offline' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Play Trailer' })).not.toBeInTheDocument();
+  });
+
+  it('lets an admin re-match metadata then opens artwork selection', async () => {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input); if (url.endsWith('/auth/me')) return new Response(JSON.stringify({ user: { id: 'a', role: 'admin' } }), { status: 200 });
+      if (url.includes('/admin/tmdb/search')) return new Response(JSON.stringify({ results: [{ id: 42, title: 'Correct Film', year: 2024 }] }), { status: 200 });
+      if (url.endsWith('/admin/items/m1/match')) return new Response(JSON.stringify({ item: { id: 'm1', providerIds: { tmdb: '42' } } }), { status: 200 });
+      if (url.endsWith('/catalog/items/m1/artwork')) return new Response(JSON.stringify({ posters: [], backdrops: [] }), { status: 200 });
+      return new Response(JSON.stringify({ item: { id: 'm1', title: 'Wrong Film', kind: 'movie' } }), { status: 200 });
+    });
+    render(<MemoryRouter initialEntries={['/media/m1']}><Routes><Route path="/media/:id" element={<CatalogDetails />} /></Routes></MemoryRouter>);
+    await screen.findByRole('heading', { name: 'Wrong Film' });
+    fireEvent.pointerDown(await screen.findByRole('button', { name: 'Change artwork' }), { button: 0, ctrlKey: false }); fireEvent.click(await screen.findByText('Re-match metadata'));
+    fireEvent.click(screen.getByRole('button', { name: 'Search' })); fireEvent.click(await screen.findByRole('button', { name: 'Select' }));
+    await waitFor(() => expect(screen.getByText('Change artwork')).toBeInTheDocument());
   });
 });

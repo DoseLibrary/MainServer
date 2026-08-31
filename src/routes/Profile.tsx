@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Database, Film, HardDrive, Image, Puzzle, ShieldCheck, UserRound, UsersRound } from 'lucide-react';
+import { Clapperboard, Database, Film, HardDrive, Image, Puzzle, ShieldCheck, UserRound, UsersRound } from 'lucide-react';
 import { Navbar } from '@/components/media/Navbar';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { api, type HealthStatus, type Library, type User } from '@/lib/api';
 import { FamilyManager } from './FamilyManager';
 import { LibraryManager } from './LibraryManager';
-import { PluginManager } from './PluginManager';
+import { MediaAdmin } from './MediaAdmin';
 
 export function Profile() {
   const navigate = useNavigate();
@@ -17,7 +17,7 @@ export function Profile() {
   const [error, setError] = useState<string>();
   const [familyOpen, setFamilyOpen] = useState(false);
   const [librariesOpen, setLibrariesOpen] = useState(false);
-  const [pluginsOpen, setPluginsOpen] = useState(false);
+  const [mediaOpen, setMediaOpen] = useState(false);
   const [managerError, setManagerError] = useState<string>();
   const load = useCallback(async () => {
     setError(undefined);
@@ -48,14 +48,15 @@ export function Profile() {
         {isAdmin && <section aria-labelledby="admin-heading" className="border-t py-8"><div className="mb-4"><h2 id="admin-heading" className="text-xl font-semibold">Administration</h2><p className="mt-1 text-sm text-muted-foreground">Manage this Dose server without leaving your profile.</p></div><div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           <AdminCard icon={<Film />} title="Libraries" description={`${libraries.length} configured ${libraries.length === 1 ? 'library' : 'libraries'}`} action="Manage libraries" onClick={() => { setManagerError(undefined); setLibrariesOpen(true); }} />
           <AdminCard icon={<UsersRound />} title="Family accounts" description="Create accounts, roles, and passwords" action="Manage family" onClick={() => setFamilyOpen(true)} />
-          <AdminCard icon={<Puzzle />} title="Plugins" description="Schedule and configure internal plugins" action="Manage plugins" onClick={() => setPluginsOpen(true)} />
+          <AdminCard icon={<Puzzle />} title="Plugins" description="Schedule and configure internal plugins" action="Manage plugins" onClick={() => navigate('/profile/plugins')} />
+          <AdminCard icon={<Clapperboard />} title="Media" description="Review, re-match, or remove titles" action="Manage media" onClick={() => setMediaOpen(true)} />
           <Card><CardHeader><div className="mb-3 flex h-10 w-10 items-center justify-center rounded-lg bg-muted"><HardDrive className="h-5 w-5" /></div><CardTitle>Server status</CardTitle><CardDescription>Local service health</CardDescription></CardHeader><CardContent className="space-y-3"><StatusRow icon={<Database />} label="Database" ok={health?.database === 'ok'} /><StatusRow icon={<HardDrive />} label="Dose server" ok={health?.status === 'ok'} /><StatusRow icon={<Image />} label="TMDB metadata" ok={health?.metadata?.tmdb === 'configured'} unavailableLabel="Not configured" /><Button variant="outline" className="w-full" onClick={() => void load()}>Refresh status</Button></CardContent></Card>
         </div></section>}
 
         <div className="border-t pt-8"><Button asChild variant="outline"><Link to="/">Back to library</Link></Button></div>
       </>}
     </main>
-    {user && isAdmin && <><LibraryManager open={librariesOpen} libraries={libraries} onOpenChange={setLibrariesOpen} error={managerError} onError={setManagerError} onChanged={setLibraries} /><FamilyManager open={familyOpen} actorId={user.id} onOpenChange={setFamilyOpen} /><PluginManager open={pluginsOpen} onOpenChange={setPluginsOpen} /></>}
+    {user && isAdmin && <><LibraryManager open={librariesOpen} libraries={libraries} onOpenChange={setLibrariesOpen} error={managerError} onError={setManagerError} onChanged={setLibraries} /><FamilyManager open={familyOpen} actorId={user.id} onOpenChange={setFamilyOpen} /><MediaAdmin open={mediaOpen} onOpenChange={setMediaOpen} /></>}
   </div>;
 }
 

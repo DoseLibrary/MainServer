@@ -2,8 +2,11 @@ import { PGlite } from '@electric-sql/pglite';
 import { drizzle } from 'drizzle-orm/pglite';
 import { migrate } from 'drizzle-orm/pglite/migrator';
 import { resolve } from 'node:path';
+import { join } from 'node:path';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { CatalogService } from './catalog-service.ts';
+import { CatalogService, managedTrailerPath } from './catalog-service.ts';
 import type { Database } from './db/client.ts';
 
 const LIB = '10000000-0000-4000-8000-000000000001';
@@ -18,10 +21,11 @@ const USER = '70000000-0000-4000-8000-000000000001';
 describe('CatalogService enrichment serialization', () => {
   let client: PGlite;
   let service: CatalogService;
+  let database: Database;
 
   beforeEach(async () => {
     client = new PGlite('memory://');
-    const database = drizzle(client) as unknown as Database;
+    database = drizzle(client) as unknown as Database;
     await migrate(database as never, { migrationsFolder: resolve(process.cwd(), 'drizzle') });
     service = new CatalogService(database);
 
@@ -68,10 +72,131 @@ describe('CatalogService enrichment serialization', () => {
     expect(people?.items.find((item) => item.id === PERSON)).toMatchObject({ kind: 'person', title: 'Actor A' });
   });
 
+  it('archives without deleting metadata, progress, or watchlist and hides the item from member reads', async () => {
+    await client.query(`insert into users (id, username, password_hash, role) values ($1, 'member', 'hash', 'member')`, [USER]);
+    await client.query(`insert into media_subtitles (media_file_id, stream_index, storage_key, label) values ($1, 0, 'subtitles/one.vtt', 'English')`, [FILE]);
+    await service.saveProgress(USER, MOVIE, 120, false);
+    await service.setWatchlist(USER, MOVIE, true);
+    const archivedAt = new Date('2026-08-30T09:00:00Z');
+
+    await service.archiveItem(MOVIE, archivedAt);
+
+    expect(await service.item(MOVIE, USER)).toBeNull();
+    expect((await service.search(LIB, 'One')).groups.flatMap((group) => group.items)).toHaveLength(0);
+    expect((await service.home(LIB, USER)).sections.flatMap((section) => section.items).map((item) => item.id)).not.toContain(MOVIE);
+    expect((await service.genre(GENRE))?.titles).toHaveLength(0);
+    expect((await service.category('action'))?.titles).toHaveLength(0);
+    expect((await service.collection(COLLECTION))?.titles).toHaveLength(0);
+    expect((await service.person(PERSON))?.titles).toHaveLength(0);
+    // The file deliberately remains available: item visibility is still authoritative.
+    expect(await service.playbackSource(MOVIE)).toBeNull();
+    expect(await service.subtitlesForItem(MOVIE)).toEqual([]);
+
+    const archived = await service.adminItems({ archived: true, sort: 'archivedAt' });
+    expect(archived).toEqual(expect.arrayContaining([expect.objectContaining({ id: MOVIE, available: false, archivedAt })]));
+    for (const table of ['playback_progress', 'watchlist_entries', 'media_item_genres', 'cast_credits']) {
+      const result = await client.query<{ total: string }>(`select count(*)::text as total from ${table} where media_item_id = $1`, [MOVIE]);
+      expect(result.rows[0]?.total).toBe('1');
+    }
+
+    await service.unarchiveItem(MOVIE);
+    expect(await service.item(MOVIE, USER)).not.toBeNull();
+    expect((await service.adminItems({ archived: false })).find((item) => item.id === MOVIE)?.archivedAt).toBeNull();
+
+    await service.archiveItem(REC, archivedAt);
+    const details = await service.item(MOVIE, USER);
+    expect(details?.recommendations.map((item) => item.id)).not.toContain(REC);
+  });
+
+  it('rolls episode archive state up to its season and series and restores ancestors', async () => {
+    const SERIES = '25000000-0000-4000-8000-000000000001';
+    const SEASON = '25000000-0000-4000-8000-000000000002';
+    const EPISODE = '25000000-0000-4000-8000-000000000003';
+    await client.query(`insert into media_items (id, library_id, kind, natural_key, title, sort_title) values ($1, $2, 'series', 'series:archive', 'Archive Show', 'archive show')`, [SERIES, LIB]);
+    await client.query(`insert into media_items (id, library_id, parent_id, kind, natural_key, title, sort_title, season_number) values ($1, $2, $3, 'season', 'season:archive:1', 'Season 1', '001', 1)`, [SEASON, LIB, SERIES]);
+    await client.query(`insert into media_items (id, library_id, parent_id, kind, natural_key, title, sort_title, season_number, episode_number) values ($1, $2, $3, 'episode', 'episode:archive:1:1', 'Pilot', 'pilot', 1, 1)`, [EPISODE, LIB, SEASON]);
+
+    await service.archiveItem(EPISODE, new Date('2026-08-30T09:00:00Z'));
+    const rolledUp = await service.adminItems({ archived: true });
+    expect(rolledUp.map((item) => item.id)).toEqual(expect.arrayContaining([SERIES, SEASON, EPISODE]));
+
+    await service.unarchiveItem(EPISODE);
+    const restored = await service.adminItems({ archived: false });
+    expect(restored.map((item) => item.id)).toEqual(expect.arrayContaining([SERIES, SEASON, EPISODE]));
+  });
+
+  it('searches across every library when no library is specified', async () => {
+    const SHOWS = '11000000-0000-4000-8000-000000000001';
+    const SERIES = '21000000-0000-4000-8000-000000000001';
+    const SEASON = '21000000-0000-4000-8000-000000000002';
+    const EPISODE = '21000000-0000-4000-8000-000000000003';
+    const EPFILE = '31000000-0000-4000-8000-000000000002';
+    await client.query(`insert into libraries (id, name, kind, root_path) values ($1, 'Shows', 'shows', '/tv')`, [SHOWS]);
+    await client.query(`insert into media_items (id, library_id, kind, natural_key, title, sort_title) values ($1, $2, 'series', 'series:oneshow', 'One Show', 'one show')`, [SERIES, SHOWS]);
+    await client.query(`insert into media_items (id, library_id, parent_id, kind, natural_key, title, sort_title, season_number) values ($1, $2, $3, 'season', 'series:oneshow:season:1', 'Season 1', '001', 1)`, [SEASON, SHOWS, SERIES]);
+    await client.query(`insert into media_items (id, library_id, parent_id, kind, natural_key, title, sort_title, season_number, episode_number) values ($1, $2, $3, 'episode', 'episode:oneshow:1:1', 'Pilot', 'pilot', 1, 1)`, [EPISODE, SHOWS, SEASON]);
+    await client.query(`insert into media_files (id, media_item_id, library_id, relative_path, size_bytes, modified_at) values ($1, $2, $3, 'One Show S01E01.mkv', 1000, now())`, [EPFILE, EPISODE, SHOWS]);
+
+    // A movies-only scope never reaches the show in the other library.
+    const scoped = await service.search(LIB, 'One');
+    expect(scoped.groups.find((group) => group.id === 'shows')).toBeUndefined();
+    expect(scoped.groups.flatMap((group) => group.items).map((item) => item.id)).toContain(MOVIE);
+
+    // Aggregated search reaches both the movie and the show.
+    const all = await service.search(undefined, 'One');
+    const shows = all.groups.find((group) => group.id === 'shows');
+    expect(shows?.items.map((item) => item.id)).toContain(SERIES);
+    expect(all.groups.flatMap((group) => group.items).map((item) => item.id)).toEqual(expect.arrayContaining([MOVIE, SERIES]));
+  });
+
+  it('lists, searches, and removes titles for the admin media table', async () => {
+    const list = await service.adminMediaList({ sort: 'title', direction: 'asc' });
+    expect(list.total).toBeGreaterThanOrEqual(2);
+    const one = list.items.find((item) => item.id === MOVIE);
+    expect(one).toMatchObject({ title: 'One', kind: 'movie', library: 'Movies', archived: false, archivedAt: null });
+    expect(one?.posterUrl).toBe('/api/v1/images/p.jpg');
+
+    const filtered = await service.adminMediaList({ query: 'One' });
+    expect(filtered.items.map((item) => item.id)).toContain(MOVIE);
+    expect(filtered.items.every((item) => item.title.toLowerCase().includes('one'))).toBe(true);
+
+    expect(await service.removeItem(MOVIE)).toBe(true);
+    expect(await service.removeItem(MOVIE)).toBe(false);
+    expect((await service.adminMediaList()).items.map((item) => item.id)).not.toContain(MOVIE);
+    // Cascade removed the file too.
+    expect((await client.query(`select count(*)::text as c from media_files where id = $1`, [FILE])).rows[0]).toMatchObject({ c: '0' });
+  });
+
+  it('lists and opens categories merged by name across libraries', async () => {
+    const SHOWS = '12000000-0000-4000-8000-000000000001';
+    const SERIES = '22000000-0000-4000-8000-000000000001';
+    const G2 = '42000000-0000-4000-8000-000000000001';
+    await client.query(`insert into libraries (id, name, kind, root_path) values ($1, 'Shows', 'shows', '/tv')`, [SHOWS]);
+    await client.query(`insert into media_items (id, library_id, kind, natural_key, title, sort_title) values ($1, $2, 'series', 'series:actionshow', 'Action Show', 'action show')`, [SERIES, SHOWS]);
+    await client.query(`insert into genres (id, library_id, provider_id, name, normalized_name) values ($1, $2, '28', 'Action', 'action')`, [G2, SHOWS]);
+    await client.query(`insert into media_item_genres (media_item_id, genre_id, position) values ($1, $2, 0)`, [SERIES, G2]);
+
+    // One "Action" tile aggregating the movie (Movies lib) and the show (Shows lib).
+    const { categories } = { categories: await service.categories() };
+    const action = categories.find((category) => category.key === 'action');
+    expect(action).toMatchObject({ name: 'Action', count: 2 });
+
+    const opened = await service.category('action');
+    expect(opened?.name).toBe('Action');
+    expect(opened?.titles.map((title) => title.id)).toEqual(expect.arrayContaining([MOVIE, SERIES]));
+
+    // Library-scoped view only counts that library's titles.
+    const scoped = await service.categories(LIB);
+    expect(scoped.find((category) => category.key === 'action')).toMatchObject({ count: 1 });
+    expect(await service.category('nope')).toBeNull();
+  });
+
   it('adds badge, genres, and collection label to home items', async () => {
     const home = await service.home(LIB, USER);
     const item = home.sections.flatMap((section) => section.items).find((entry) => entry.id === MOVIE) as Record<string, unknown>;
     expect(item).toMatchObject({ badge: '4K HDR', genres: ['Action'], collection: 'Saga' });
+    // The hero exposes whether a local trailer can back it; none is configured here.
+    expect(home.featured).toMatchObject({ hasLocalTrailer: false });
   });
 
   it('builds single-kind home carousels: newly added movies as cards, new episodes as posters', async () => {
@@ -172,5 +297,26 @@ describe('CatalogService enrichment serialization', () => {
     expect(details.genres).toEqual([]);
     expect(details.cast).toEqual([]);
     expect(details.recommendations).toEqual([]);
+  });
+
+  it('serves only contained, existing regular-file trailers', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dose-trailers-'));
+    try {
+      const valid = join(root, 'valid.mp4'); const directory = join(root, 'directory'); const missing = join(root, 'missing.mp4'); const outside = `${root}-outside.mp4`;
+      await writeFile(valid, 'video'); await mkdir(directory); await writeFile(outside, 'video');
+      const trailerService = new CatalogService(database, root);
+      await client.query(`insert into media_trailers (media_item_id, provider_id, site, key, name, type, preferred, local_path, status) values ($1, 'trailer', 'YouTube', 'key', 'Trailer', 'Trailer', true, $2, 'ready')`, [MOVIE, missing]);
+      expect(await trailerService.localTrailerSource(MOVIE)).toBeNull();
+      await client.query(`update media_trailers set local_path=$1 where media_item_id=$2`, [directory, MOVIE]); expect(await trailerService.localTrailerSource(MOVIE)).toBeNull();
+      await client.query(`update media_trailers set local_path=$1 where media_item_id=$2`, [outside, MOVIE]); expect(await trailerService.localTrailerSource(MOVIE)).toBeNull();
+      await client.query(`update media_trailers set local_path=$1 where media_item_id=$2`, [valid, MOVIE]); expect(await trailerService.localTrailerSource(MOVIE)).toEqual({ localPath: resolve(valid) });
+    } finally { await rm(root, { recursive: true, force: true }); await rm(`${root}-outside.mp4`, { force: true }); }
+  });
+});
+
+describe('managed trailer paths', () => {
+  it('rejects persisted paths outside the configured trailer root', () => {
+    expect(managedTrailerPath('C:\\config\\trailers', 'C:\\config\\trailers\\movie.mp4')).toBe(true);
+    expect(managedTrailerPath('C:\\config\\trailers', 'C:\\config\\secrets.txt')).toBe(false);
   });
 });

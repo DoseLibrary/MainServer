@@ -5,8 +5,9 @@ import { Input } from '@/components/ui/input';
 import { Modal, ModalContent, ModalDescription, ModalHeader, ModalTitle } from '@/components/ui/modal';
 
 interface PluginManagerProps {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  embedded?: boolean;
 }
 
 // Common cron presets surfaced as a datalist so admins don't have to know cron by heart.
@@ -29,7 +30,7 @@ function formatWhen(value: string | null) {
   return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString();
 }
 
-export function PluginManager({ open, onOpenChange }: PluginManagerProps) {
+export function PluginManager({ open = true, onOpenChange = () => {}, embedded = false }: PluginManagerProps) {
   const [plugins, setPlugins] = useState<PluginSummary[]>();
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
   const [busy, setBusy] = useState<Record<string, boolean>>({});
@@ -76,13 +77,11 @@ export function PluginManager({ open, onOpenChange }: PluginManagerProps) {
     finally { setBusy((b) => ({ ...b, [plugin.id]: false })); }
   }
 
-  return (
-    <Modal open={open} onOpenChange={onOpenChange}>
-      <ModalContent aria-describedby="plugin-manager-description" className="max-w-2xl">
-        <ModalHeader>
+  const content = <>
+        {embedded ? <div className="mb-6"><h2 className="text-xl font-semibold">Installed plugins</h2><p id="plugin-manager-description" className="text-sm text-muted-foreground">Enable internal plugins, schedule them, and adjust their settings.</p></div> : <ModalHeader>
           <ModalTitle className="text-xl font-semibold">Plugins</ModalTitle>
           <ModalDescription id="plugin-manager-description">Enable internal plugins, schedule them, and adjust their settings.</ModalDescription>
-        </ModalHeader>
+        </ModalHeader>}
         {error && <div role="alert" className="mb-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div>}
         {!plugins ? <p role="status" className="py-8 text-center text-muted-foreground">Loading plugins…</p> : plugins.length === 0 ? <p className="py-8 text-center text-muted-foreground">No plugins are installed.</p> : (
           <ul className="space-y-4">
@@ -140,9 +139,9 @@ export function PluginManager({ open, onOpenChange }: PluginManagerProps) {
             })}
           </ul>
         )}
-      </ModalContent>
-    </Modal>
-  );
+  </>;
+  if (embedded) return <section aria-describedby="plugin-manager-description" className="w-full">{content}</section>;
+  return <Modal open={open} onOpenChange={onOpenChange}><ModalContent aria-describedby="plugin-manager-description" className="max-h-[90vh] max-w-2xl overflow-y-auto">{content}</ModalContent></Modal>;
 }
 
 function StatusBadge({ status }: { status: 'running' | 'succeeded' | 'failed' | null }) {

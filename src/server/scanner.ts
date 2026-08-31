@@ -12,6 +12,7 @@ import { parseMediaPath, VIDEO_EXTENSIONS } from './media-parser.ts';
 import { TmdbClient } from './tmdb.ts';
 import { ImageStore } from './images.ts';
 import { EnrichmentService, ENRICHMENT_VERSION } from './enrichment.ts';
+import { CatalogService } from './catalog-service.ts';
 
 const execFileAsync = promisify(execFile);
 type Scan = typeof scanRuns.$inferSelect;
@@ -36,6 +37,14 @@ export class ScanCoordinator {
     if (!scan) { const active = await this.database.query.scanRuns.findFirst({ where: and(eq(scanRuns.libraryId, libraryId), inArray(scanRuns.status, ['queued', 'running'])), orderBy: [desc(scanRuns.createdAt)] }); return active ? { scan: active, coalesced: true } : null; }
     const task = this.run(scan.id, library).catch(() => undefined).finally(() => this.active.delete(libraryId)); this.active.set(libraryId, task);
     return { scan, coalesced: false };
+  }
+  /** Run (or join) a complete scan/reconciliation pass for one library. */
+  async reconcileLibrary(libraryId: string): Promise<Scan | null> {
+    const started = await this.start(libraryId);
+    if (!started) return null;
+    const task = this.active.get(libraryId);
+    if (task) await task;
+    return (await this.latest(libraryId)) ?? null;
   }
   latest(libraryId: string) { return this.database.query.scanRuns.findFirst({ where: eq(scanRuns.libraryId, libraryId), orderBy: [desc(scanRuns.createdAt)] }); }
   /** Re-enrich existing titles without touching files. Version-gated unless `force`. */
@@ -71,11 +80,15 @@ export class ScanCoordinator {
       } };
       await Promise.all(Array.from({ length: Math.min(this.config.SCAN_INGEST_CONCURRENCY ?? 8, paths.length) }, worker));
       await this.cacheLibraryArtwork(library.id);
+      await this.database.update(mediaFiles).set({ available: false, updatedAt: new Date() }).where(missingFilePredicate(library.id, scanId));
+      const leaves = await this.database.select({ id: mediaItems.id, availableFile: sql<boolean>`exists (select 1 from ${mediaFiles} f where f.media_item_id = ${mediaItems.id} and f.available = true)` })
+        .from(mediaItems).where(and(eq(mediaItems.libraryId, library.id), inArray(mediaItems.kind, ['movie', 'episode'])));
+      const catalog = new CatalogService(this.database);
+      for (const leaf of leaves) {
+        if (leaf.availableFile) await catalog.unarchiveItem(leaf.id);
+        else await catalog.archiveItem(leaf.id);
+      }
       await this.database.transaction(async (tx) => {
-        await tx.update(mediaFiles).set({ available: false, updatedAt: new Date() }).where(missingFilePredicate(library.id, scanId));
-        await tx.update(mediaItems).set({ available: sql`exists (select 1 from ${mediaFiles} f where f.media_item_id = ${mediaItems.id} and f.available = true)`, updatedAt: new Date() }).where(and(eq(mediaItems.libraryId, library.id), inArray(mediaItems.kind, ['movie', 'episode'])));
-        await tx.update(mediaItems).set({ available: sql`exists (select 1 from ${mediaItems} child where child.parent_id = ${mediaItems.id} and child.available = true)`, updatedAt: new Date() }).where(and(eq(mediaItems.libraryId, library.id), eq(mediaItems.kind, 'season')));
-        await tx.update(mediaItems).set({ available: sql`exists (select 1 from ${mediaItems} child where child.parent_id = ${mediaItems.id} and child.available = true)`, updatedAt: new Date() }).where(and(eq(mediaItems.libraryId, library.id), eq(mediaItems.kind, 'series')));
         await tx.update(libraries).set({ lastScannedAt: new Date(), updatedAt: new Date() }).where(eq(libraries.id, library.id));
         await tx.update(scanRuns).set({ status: 'completed', processedFiles: processed, failedFiles: failed, heartbeatAt: new Date(), finishedAt: new Date() }).where(eq(scanRuns.id, scanId));
       });
@@ -112,7 +125,7 @@ export class ScanCoordinator {
     const unchanged = existing && existing.sizeBytes === fileStat.size && existing.modifiedAt.getTime() === fileStat.mtime.getTime();
     if (existing && unchanged) {
       await this.database.update(mediaFiles).set({ available: true, lastSeenScanId: scanId, updatedAt: new Date() }).where(eq(mediaFiles.id, existing.id));
-      await this.database.update(mediaItems).set({ available: true, updatedAt: new Date() }).where(sql`${mediaItems.id} = ${existing.mediaItemId} or ${mediaItems.id} in (select parent_id from ${mediaItems} where id = ${existing.mediaItemId}) or ${mediaItems.id} in (select p.parent_id from ${mediaItems} c join ${mediaItems} p on c.parent_id = p.id where c.id = ${existing.mediaItemId})`);
+      await new CatalogService(this.database).unarchiveItem(existing.mediaItemId);
       if (!this.tmdb) return;
       probe = existing.probe as Record<string, unknown>; durationSeconds = existing.durationSeconds ?? undefined;
     }
@@ -127,13 +140,20 @@ export class ScanCoordinator {
     const [mediaFile] = await this.database.insert(mediaFiles).values({ mediaItemId: item.id, libraryId: library.id, relativePath, sizeBytes: fileStat.size, modifiedAt: fileStat.mtime, durationSeconds, probe, available: true, lastSeenScanId: scanId }).onConflictDoUpdate({ target: [mediaFiles.libraryId, mediaFiles.relativePath], set: { mediaItemId: item.id, sizeBytes: fileStat.size, modifiedAt: fileStat.mtime, durationSeconds, probe, available: true, lastSeenScanId: scanId, updatedAt: new Date() } }).returning({ id: mediaFiles.id });
     if (mediaFile) { const profile = deriveTechnicalProfile(probe as Probe); await this.database.insert(mediaTechnicalProfiles).values({ mediaFileId: mediaFile.id, ...profile }).onConflictDoUpdate({ target: [mediaTechnicalProfiles.mediaFileId], set: { ...profile, updatedAt: new Date() } }); }
     if (this.enrichment) {
-      const enrichTitle = parsed.type === 'movie' ? parsed.title : parsed.series;
-      const enrichId = parsed.type === 'movie' ? item.id : metadataItemId!;
       // Enrichment failures are isolated per item and never abort unrelated files.
-      try { await this.enrichment.enrich(library.id, enrichId, parsed.type === 'movie' ? 'movie' : 'series', enrichTitle, parsed.type === 'movie' ? parsed.year : undefined); } catch { /* isolated per item */ }
+      if (parsed.type === 'movie') {
+        try { await this.enrichment.enrich(library.id, item.id, 'movie', parsed.title, parsed.year); } catch { /* isolated per item */ }
+      } else {
+        // Enrich the series first so it carries a TMDB id, then resolve this
+        // specific season/episode against it.
+        try {
+          await this.enrichment.enrich(library.id, metadataItemId!, 'series', parsed.series);
+          await this.enrichment.enrichEpisode(metadataItemId!, parentId!, item.id, parsed.season, parsed.episode);
+        } catch { /* isolated per item */ }
+      }
     }
   }
   private async upsertItem(libraryId: string, naturalKey: string, values: Omit<typeof mediaItems.$inferInsert, 'libraryId' | 'naturalKey'>) {
-    const [item] = await this.database.insert(mediaItems).values({ libraryId, naturalKey, ...values, available: true }).onConflictDoUpdate({ target: [mediaItems.libraryId, mediaItems.naturalKey], set: { ...values, available: true, updatedAt: new Date() } }).returning(); return item;
+    const [item] = await this.database.insert(mediaItems).values({ libraryId, naturalKey, ...values, available: true, archivedAt: null }).onConflictDoUpdate({ target: [mediaItems.libraryId, mediaItems.naturalKey], set: { ...values, available: true, archivedAt: null, updatedAt: new Date() } }).returning(); return item;
   }
 }
