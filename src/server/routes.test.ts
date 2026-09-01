@@ -707,3 +707,56 @@ describe('Subtitle delivery', () => {
     await app.close();
   });
 });
+
+describe('HLS delivery', () => {
+  const plan = { mode: 'transcode', container: 'mp4', remux: false, video: { action: 'transcode', codec: 'h264', height: 1080 }, audio: { action: 'transcode', codec: 'aac' }, audioTrackIndex: 0, reasons: [] };
+  const encoded = Buffer.from(JSON.stringify(plan), 'utf8').toString('base64url');
+
+  async function appWithHls(auth: AuthService) {
+    const app = Fastify(); await app.register(cookie);
+    const filesystem: LibraryFilesystem = { realpath: async (path) => path, isDirectory: async () => true };
+    const catalog = catalogStub({ playbackSource: vi.fn(async () => ({ fileId: 'f1', relativePath: 'One.mkv', rootPath: 'C:/media', durationSeconds: 100, probe: {} })) });
+    await registerApiRoutes(app, auth, false, filesystem, undefined, catalog);
+    return app;
+  }
+  const viewer = () => service({ authenticate: vi.fn(async () => ({ id: 'u1', username: 'viewer', role: 'member' })) });
+  const ID = '11111111-1111-4111-8111-111111111111';
+
+  it('serves a master playlist with the quality ladder', async () => {
+    const app = await appWithHls(viewer());
+    const response = await app.inject({ method: 'GET', url: `/api/v1/catalog/items/${ID}/hls/master.m3u8?plan=${encoded}`, headers: { cookie: 'dose_session=token' } });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-type']).toContain('mpegurl');
+    expect(response.body).toContain('NAME="1080p"');
+    expect(response.body).toContain('q=720');
+    await app.close();
+  });
+
+  it('serves a seekable VOD media playlist sized to the runtime', async () => {
+    const app = await appWithHls(viewer());
+    const response = await app.inject({ method: 'GET', url: `/api/v1/catalog/items/${ID}/hls/media.m3u8?plan=${encoded}&q=source`, headers: { cookie: 'dose_session=token' } });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain('#EXT-X-ENDLIST');
+    expect(response.body).toContain('16.ts'); // 100s / 6s = 17 segments, zero-based
+    expect(response.body).not.toContain('17.ts');
+    await app.close();
+  });
+
+  it('rejects segments out of range, bad plans, and unknown rungs', async () => {
+    const app = await appWithHls(viewer());
+    const headers = { cookie: 'dose_session=token' };
+
+    expect((await app.inject({ method: 'GET', url: `/api/v1/catalog/items/${ID}/hls/99.ts?plan=${encoded}&q=source`, headers })).statusCode).toBe(404);
+    expect((await app.inject({ method: 'GET', url: `/api/v1/catalog/items/${ID}/hls/0.ts?plan=nonsense&q=source`, headers })).statusCode).toBe(400);
+    expect((await app.inject({ method: 'GET', url: `/api/v1/catalog/items/${ID}/hls/0.ts?plan=${encoded}&q=1440`, headers })).statusCode).toBe(400);
+    await app.close();
+  });
+
+  it('requires a session like every other stream route', async () => {
+    const app = await appWithHls(service({ authenticate: vi.fn(async () => null) }));
+    expect((await app.inject({ method: 'GET', url: `/api/v1/catalog/items/${ID}/hls/master.m3u8?plan=${encoded}` })).statusCode).toBe(401);
+    await app.close();
+  });
+});

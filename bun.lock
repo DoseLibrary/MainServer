@@ -23,6 +23,7 @@
         "croner": "^10.0.1",
         "drizzle-orm": "^0.45.2",
         "fastify": "^5.12.1",
+        "hls.js": "^1.7.1",
         "lucide-react": "^1.35.0",
         "postgres": "^3.4.9",
         "qrcode": "^1.5.4",
@@ -706,6 +707,8 @@
     "hermes-estree": ["hermes-estree@0.25.1", "", {}, "sha512-0wUoCcLp+5Ev5pDW2OriHC2MJCbwLwuRx+gAqMTOkGKJJiBCLjtrvy4PWUGn6MIVefecRpzoOZ/UV6iGdOr+Cw=="],
 
     "hermes-parser": ["hermes-parser@0.25.1", "", { "dependencies": { "hermes-estree": "0.25.1" } }, "sha512-6pEjquH3rqaI6cYAXYPcz9MS4rY6R4ngRgrgfDshRptUZIc3lw0MCIJIGDj9++mfySOuPTHB4nrSW99BCvOPIA=="],
+
+    "hls.js": ["hls.js@1.7.1", "", {}, "sha512-DlzIkeBAS9IIQ432k3BUf3HlwbsR0+trB1i2lDdN2gUkNkrehFurh0/48M5c1/EjlDkdGng1gwZIpwyPxvdZ/g=="],
 
     "html-encoding-sniffer": ["html-encoding-sniffer@6.0.0", "", { "dependencies": { "@exodus/bytes": "^1.6.0" } }, "sha512-CV9TW3Y3f8/wT0BRFc1/KAVQ3TUHiXmaAb6VW9vtiMFf7SLoMd1PdAc4W3KFOFETBJUb90KatHqlsZMWV+R9Gg=="],
 

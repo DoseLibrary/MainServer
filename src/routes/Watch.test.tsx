@@ -169,3 +169,47 @@ describe('Up next countdown', () => {
     expect((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.some(([url]) => String(url).includes(TWO))).toBe(false);
   });
 });
+
+describe('Transcode seeking', () => {
+  const originalFetch = globalThis.fetch;
+  afterEach(() => { globalThis.fetch = originalFetch; });
+
+  /** A remuxed stream: progressive pipe, no HLS entry point. */
+  function mockRemux() {
+    return vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/playback')) return json({ plan: { mode: 'transcode', container: 'mp4', remux: true, reasons: [] }, durationSeconds: 100, stream: { url: `/api/v1/catalog/items/${ONE}/stream?plan=abc`, direct: false } });
+      if (url.includes('/sprites')) return json({ sprite: null });
+      if (url.includes('/intro')) return json({ intro: null });
+      return json({ item: { id: ONE, title: 'One', kind: 'movie' } });
+    });
+  }
+
+  it('restarts a remuxed stream at the seek target instead of stalling', async () => {
+    const fetchMock = mockRemux();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    renderWatch('');
+    const video = await findVideo();
+    expect(video.src).not.toContain('start=');
+
+    // jsdom buffers nothing, so any forward seek is outside the buffer.
+    fireEvent.change(screen.getByLabelText('Seek'), { target: { value: '50' } });
+
+    await waitFor(() => expect((document.querySelector('video') as HTMLVideoElement).src).toContain('start=50'));
+  });
+
+  it('drives a re-encoded transcode through the HLS entry point', async () => {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/playback')) return json({ plan: { mode: 'transcode', container: 'mp4', remux: false, reasons: [] }, durationSeconds: 100, stream: { url: '/stream?plan=abc', hlsUrl: `/api/v1/catalog/items/${ONE}/hls/master.m3u8?plan=abc`, direct: false } });
+      if (url.includes('/sprites')) return json({ sprite: null });
+      if (url.includes('/intro')) return json({ intro: null });
+      return json({ item: { id: ONE, title: 'One', kind: 'movie' } });
+    }) as unknown as typeof fetch;
+    renderWatch('');
+    const video = await findVideo();
+
+    // hls.js owns the element in browsers without native HLS; src stays unset.
+    expect(video.getAttribute('src')).toBeNull();
+  });
+});

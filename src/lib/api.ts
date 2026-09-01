@@ -178,7 +178,7 @@ export interface PlaybackResponse {
   audioTracks?: AudioTrack[];
   plan: { mode: 'direct' | 'transcode'; container: string; remux: boolean; audioTrackIndex?: number; reasons: string[] };
   durationSeconds?: number;
-  stream: { url: string; castUrl?: string; direct: boolean };
+  stream: { url: string; castUrl?: string; direct: boolean; /** HLS entry point for re-encoded transcodes: seekable, with a quality ladder. */ hlsUrl?: string };
 }
 export interface HealthStatus { status: 'ok' | 'degraded'; database: 'ok' | 'unavailable'; metadata?: { tmdb: 'configured' | 'not_configured' } }
 export interface LibraryScan {

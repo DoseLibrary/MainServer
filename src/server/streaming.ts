@@ -73,8 +73,11 @@ const AUDIO_ENCODERS: Record<string, string> = {
 };
 
 /** Build ffmpeg args that realise a negotiated plan, streaming a fragmented MP4 to stdout. */
-export function buildTranscodeArgs(plan: PlaybackPlan, inputPath: string): string[] {
-  const args = ['-hide_banner', '-loglevel', 'error', '-i', inputPath];
+export function buildTranscodeArgs(plan: PlaybackPlan, inputPath: string, startSeconds?: number): string[] {
+  // The input seek is frame-accurate when re-encoding and keyframe-accurate for
+  // copied tracks; either is what a seek-restart wants. Output timestamps stay
+  // zero-based, so the player offsets its timeline by the same start.
+  const args = ['-hide_banner', '-loglevel', 'error', ...(startSeconds && startSeconds > 0 ? ['-ss', String(startSeconds)] : []), '-i', inputPath];
 
   if (plan.video) {
     args.push('-map', '0:v:0');

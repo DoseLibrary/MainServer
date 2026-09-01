@@ -23,6 +23,9 @@ export function Watch() {
   // Playback preferences follow the account, so a chosen speed or caption size
   // is the same on the next device.
   const [settings, setSettings] = useState<UserSettings>();
+  // For remuxed streams (progressive, no byte ranges) a seek outside the buffer
+  // restarts the stream here; the player offsets its timeline to match.
+  const [streamStart, setStreamStart] = useState(0);
   // Per-title nudge, kept in memory: automatic timing is corrected on the server.
   const [subtitleOffsetMs, setSubtitleOffsetMs] = useState(0);
   // Live session id, so administrators can see this playback while it runs.
@@ -32,6 +35,10 @@ export function Watch() {
     setError(undefined); setPlayback(undefined); setThumbnails(undefined); setIntro(undefined);
     try {
       const [{ item: nextItem }, nextPlayback] = await Promise.all([api.catalogItem(id), api.playback(id, detectMediaCapabilities(), audioTrackIndex)]);
+      // A remux cannot seek by byte range, so it opens at the resume point instead.
+      const runtime = nextPlayback.durationSeconds ?? nextItem.files?.[0]?.durationSeconds;
+      const resume = typeof nextItem.progress === 'number' && nextItem.progress > 0 && nextItem.progress < 1 && runtime ? nextItem.progress * runtime : 0;
+      setStreamStart(!nextPlayback.stream.direct && !nextPlayback.stream.hlsUrl && resume > 5 ? Math.floor(resume) : 0);
       setItem(nextItem); setPlayback(nextPlayback);
       // Scrubber previews are optional; a title without a generated sprite just omits them.
       void api.mediaSprites(id).then(({ sprite }) => setThumbnails(sprite)).catch(() => setThumbnails(undefined));
@@ -94,8 +101,13 @@ export function Watch() {
       if (next) navigate(`/watch/${encodeURIComponent(next.id)}?queue=1`);
     } catch { /* a failed lookup simply ends the marathon */ }
   };
+  const progressiveTranscode = !playback.stream.direct && !playback.stream.hlsUrl;
+  const src = playback.stream.hlsUrl
+    ?? (progressiveTranscode && streamStart > 0
+      ? `${playback.stream.url}${playback.stream.url.includes('?') ? '&' : '?'}start=${streamStart}`
+      : playback.stream.url);
   return <main className="flex min-h-screen items-center bg-black"><VideoPlayer
-    src={playback.stream.url}
+    src={src}
     castSrc={playback.stream.castUrl ? new URL(playback.stream.castUrl, window.location.href).href : undefined}
     title={item.title}
     subtitles={subtitles}
@@ -105,7 +117,10 @@ export function Watch() {
     thumbnails={thumbnails}
     backHref={detailsHref}
     onBack={(event) => { event.preventDefault(); navigate(detailsHref); }}
-    startPositionSeconds={startPositionSeconds}
+    startPositionSeconds={progressiveTranscode ? undefined : startPositionSeconds}
+    timelineDurationSeconds={playback.stream.direct ? undefined : duration}
+    timeOffsetSeconds={progressiveTranscode ? streamStart : 0}
+    onRestartAt={progressiveTranscode ? (seconds) => setStreamStart(Math.max(0, Math.floor(seconds))) : undefined}
     onProgress={(positionSeconds) => {
       positionRef.current = positionSeconds;
       void api.saveProgress(id, positionSeconds).catch(() => {});

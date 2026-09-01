@@ -90,12 +90,28 @@ export interface VideoPlayerProps {
   /** Viewer nudge for captions that still run early or late, in milliseconds. */
   subtitleOffsetMs?: number;
   onSubtitleOffsetChange?: (offsetMs: number) => void;
+  /** Authoritative runtime for streams whose container reports none (transcodes). */
+  timelineDurationSeconds?: number;
+  /** Where in the timeline the current stream begins (after a seek-restart). */
+  timeOffsetSeconds?: number;
+  /** Asked to restart the stream at a timeline position the buffer cannot reach. */
+  onRestartAt?: (seconds: number) => void;
   /** When set, a "Next episode" control is shown to skip to the next item. */
   onNext?: () => void;
   /** Detected intro segment; a "Skip intro" button appears while inside it. */
   intro?: { startSeconds: number; endSeconds: number };
   autoPlay?: boolean;
   className?: string;
+}
+
+let nativeHlsSupport: boolean | undefined;
+/** Safari (and iOS WebViews) play HLS natively; everyone else needs hls.js. */
+function supportsNativeHls(): boolean {
+  if (nativeHlsSupport === undefined) {
+    nativeHlsSupport = typeof document !== 'undefined'
+      && document.createElement('video').canPlayType('application/vnd.apple.mpegurl') !== '';
+  }
+  return nativeHlsSupport;
 }
 
 function formatTime(seconds: number): string {
@@ -153,6 +169,9 @@ export function VideoPlayer({
   captionStyle,
   subtitleOffsetMs = 0,
   onSubtitleOffsetChange,
+  timelineDurationSeconds,
+  timeOffsetSeconds = 0,
+  onRestartAt,
   intro,
   autoPlay = false,
   className,
@@ -165,19 +184,62 @@ export function VideoPlayer({
   // Keep the latest callbacks in refs so the media-event listeners never resubscribe.
   const onProgressRef = useRef(onProgress);
   const onEndedRef = useRef(onEnded);
+  // Everything user-facing speaks timeline seconds; the element speaks stream
+  // seconds. These refs keep media-event handlers on the current mapping.
+  const offsetRef = useRef(timeOffsetSeconds);
+  const timelineRef = useRef(timelineDurationSeconds);
+  const hlsRef = useRef<{ destroy(): void; levels: Array<{ height?: number; name?: string }>; nextLevel: number } | null>(null);
+  const [hlsLevels, setHlsLevels] = useState<Array<{ id: string; label: string }>>([]);
+  const [hlsQuality, setHlsQuality] = useState('auto');
   // Cancelling the countdown must also stop the advance that would fire on 'ended'.
   const autoAdvanceCancelled = useRef(false);
   const lastReportRef = useRef(0);
   const resumeAppliedRef = useRef(false);
-  useEffect(() => { onProgressRef.current = onProgress; onEndedRef.current = onEnded; });
+  useEffect(() => { onProgressRef.current = onProgress; onEndedRef.current = onEnded; offsetRef.current = timeOffsetSeconds; timelineRef.current = timelineDurationSeconds; });
   useEffect(() => {
     const video = videoRef.current;
     if (video) video.playbackRate = speedPercent / 100;
   }, [speedPercent, src]);
 
+  const isHlsSource = src.includes('.m3u8');
+  const nativeHls = isHlsSource && supportsNativeHls();
+
+  useEffect(() => {
+    if (!isHlsSource) return;
+    const video = videoRef.current;
+    if (!video || video.canPlayType('application/vnd.apple.mpegurl')) return; // Safari plays it natively
+    let cancelled = false;
+    let instance: { destroy(): void } | undefined;
+    // hls.js is only paid for when a transcode actually streams HLS.
+    void import('hls.js').then(({ default: Hls }) => {
+      if (cancelled || !Hls.isSupported()) return;
+      const hls = new Hls({ maxBufferLength: 30 });
+      instance = hls;
+      hlsRef.current = hls as unknown as typeof hlsRef.current;
+      hls.loadSource(src);
+      hls.attachMedia(video);
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        setHlsLevels(hls.levels.map((level, index) => ({ id: String(index), label: level.name ?? (level.height ? `${level.height}p` : `Level ${index + 1}`) })));
+      });
+    }).catch(() => { /* without hls.js the browser may still manage natively */ });
+    return () => { cancelled = true; instance?.destroy(); hlsRef.current = null; setHlsLevels([]); setHlsQuality('auto'); };
+  }, [src, isHlsSource]);
+
+  const selectHlsQuality = useCallback((id: string) => {
+    setHlsQuality(id);
+    if (hlsRef.current) hlsRef.current.nextLevel = id === 'auto' ? -1 : Number(id);
+  }, []);
+
+  // The ladder from the stream wins over caller-provided quality options.
+  const qualityOptions = hlsLevels.length > 0 ? [{ id: 'auto', label: 'Auto' }, ...hlsLevels] : qualities;
+  const activeQuality = hlsLevels.length > 0 ? hlsQuality : activeQualityId;
+  const selectQuality = hlsLevels.length > 0 ? selectHlsQuality : onQualityChange;
+
   const [playing, setPlaying] = useState(false);
   const [waiting, setWaiting] = useState(false);
-  const [duration, setDuration] = useState(0);
+  const [elementDuration, setDuration] = useState(0);
+  // Transcoded containers report no runtime; the caller's figure is authoritative.
+  const duration = timelineDurationSeconds ?? elementDuration;
   const [current, setCurrent] = useState(0);
   // Remembering which source was cancelled means a new episode starts fresh
   // without an effect that resets state on every source change.
@@ -220,16 +282,26 @@ export function VideoPlayer({
     else video.pause();
   }, []);
 
+  const seekTo = useCallback((time: number) => {
+    const video = videoRef.current;
+    if (!video) return;
+    const target = time - offsetRef.current;
+    if (onRestartAt) {
+      // A restartable stream can only reach what it has buffered; anything else
+      // is a fresh stream starting at the requested position.
+      const len = video.buffered.length;
+      const bufferedEnd = len ? video.buffered.end(len - 1) : 0;
+      if (target < 0 || target > bufferedEnd + 0.5) { onRestartAt(Math.max(0, time)); return; }
+    }
+    video.currentTime = Math.max(0, target);
+  }, [onRestartAt]);
+
   const seekBy = useCallback((delta: number) => {
     const video = videoRef.current;
     if (!video) return;
-    video.currentTime = Math.min(Math.max(0, video.currentTime + delta), video.duration || 0);
-  }, []);
-
-  const seekTo = useCallback((time: number) => {
-    const video = videoRef.current;
-    if (video) video.currentTime = time;
-  }, []);
+    const limit = timelineRef.current ?? (Number.isFinite(video.duration) ? video.duration : Number.MAX_SAFE_INTEGER);
+    seekTo(Math.min(Math.max(0, offsetRef.current + video.currentTime + delta), limit));
+  }, [seekTo]);
 
   const onScrubHover = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
     const rail = scrubRef.current;
@@ -271,7 +343,7 @@ export function VideoPlayer({
     }
     setActiveCcId(id);
     setOpenMenu(null);
-  }, [subtitles]);
+  }, [subtitles, setOpenMenu]);
 
   // Sync UI state from the media element's own events (no setState-in-effect churn).
   useEffect(() => {
@@ -279,11 +351,11 @@ export function VideoPlayer({
     if (!video) return undefined;
     const onPlay = () => { setPlaying(true); showControls(); };
     const onPause = () => { setPlaying(false); setControlsVisible(true); };
-    const onTime = () => setCurrent(video.currentTime);
-    const onDuration = () => setDuration(video.duration || 0);
+    const onTime = () => setCurrent(offsetRef.current + video.currentTime);
+    const onDuration = () => setDuration(timelineRef.current ?? (Number.isFinite(video.duration) ? video.duration : 0));
     const onProgress = () => {
       const len = video.buffered.length;
-      setBuffered(len ? video.buffered.end(len - 1) : 0);
+      setBuffered(len ? offsetRef.current + video.buffered.end(len - 1) : 0);
     };
     const onVolume = () => { setVolume(video.volume); setMuted(video.muted); };
     const onWaiting = () => setWaiting(true);
@@ -314,22 +386,24 @@ export function VideoPlayer({
     const video = videoRef.current;
     if (!video) return undefined;
     const report = () => {
-      const dur = video.duration || 0;
-      if (!Number.isFinite(video.currentTime) || dur <= 0) return;
-      lastReportRef.current = video.currentTime;
-      onProgressRef.current?.(video.currentTime, dur);
+      const dur = timelineRef.current ?? (video.duration || 0);
+      const position = offsetRef.current + video.currentTime;
+      if (!Number.isFinite(position) || dur <= 0) return;
+      lastReportRef.current = position;
+      onProgressRef.current?.(position, dur);
     };
     const onLoaded = () => {
       if (resumeAppliedRef.current) return;
       resumeAppliedRef.current = true;
-      const dur = video.duration || 0;
+      if (offsetRef.current > 0) return; // an offset stream already starts at the resume point
+      const dur = timelineRef.current ?? (video.duration || 0);
       // Only resume when there is meaningful runtime left; ignore near-complete positions.
       if (startPositionSeconds && startPositionSeconds > 5 && dur > 0 && startPositionSeconds < dur - 5) {
         video.currentTime = startPositionSeconds;
       }
     };
     const onTime = () => {
-      if (Math.abs(video.currentTime - lastReportRef.current) >= 10) report();
+      if (Math.abs(offsetRef.current + video.currentTime - lastReportRef.current) >= 10) report();
     };
     const onEnded = () => { report(); onEndedRef.current?.({ autoAdvanceCancelled: autoAdvanceCancelled.current }); };
 
@@ -401,7 +475,7 @@ export function VideoPlayer({
           : 'background-color:transparent;text-shadow:0 2px 4px rgba(0,0,0,0.9);')
       + '}'
     : undefined;
-  const hasSettings = qualities.length > 0 || audioTracks.length > 0 || Boolean(onSpeedChange);
+  const hasSettings = qualityOptions.length > 0 || audioTracks.length > 0 || Boolean(onSpeedChange);
 
   let spriteStyle: React.CSSProperties | null = null;
   if (hover && thumbnails) {
@@ -435,7 +509,7 @@ export function VideoPlayer({
       {captionCss && <style>{captionCss}</style>}
       <video
         ref={videoRef}
-        src={src}
+        src={isHlsSource && !nativeHls ? undefined : src}
         poster={poster}
         autoPlay={autoPlay}
         playsInline
@@ -686,11 +760,11 @@ export function VideoPlayer({
                         ))}
                       </>
                     )}
-                    {qualities.length > 0 && (
+                    {qualityOptions.length > 0 && (
                       <>
                         <div className="px-3 pb-1 pt-2 text-xs uppercase tracking-wide text-white/50">Quality</div>
-                        {qualities.map((q) => (
-                          <MenuItem key={q.id} selected={q.id === activeQualityId} onClick={() => { onQualityChange?.(q.id); setOpenMenu(null); }}>{q.label}</MenuItem>
+                        {qualityOptions.map((q) => (
+                          <MenuItem key={q.id} selected={q.id === activeQuality} onClick={() => { selectQuality?.(q.id); setOpenMenu(null); }}>{q.label}</MenuItem>
                         ))}
                       </>
                     )}

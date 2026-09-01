@@ -20,6 +20,8 @@ import type { PreviewSpriteStore } from './sprites.ts';
 import { negotiatePlayback } from './playback.ts';
 import { buildTranscodeArgs, contentTypeFor, decodePlaybackPlan, encodePlaybackPlan, resolveRange, resolveWithin } from './streaming.ts';
 import { audioTracksOf } from './playback.ts';
+import { SEGMENT_SECONDS, buildSegmentArgs, ladderFor, masterPlaylist, mediaPlaylist, segmentCount } from './hls.ts';
+import { Semaphore } from './concurrency.ts';
 import { applyAlignment, parseSubtitles, serializeVtt } from './subtitle-sync.ts';
 import { ImageVariantStore } from './images.ts';
 import { MatchItemNotFoundError, MatchUnsupportedKindError, TmdbMatchNotFoundError, type MetadataMatchService } from './metadata-match-service.ts';
@@ -80,7 +82,9 @@ const imageQuery = z.object({
   format: z.enum(['jpeg', 'webp', 'avif']).default('webp'),
   quality: z.coerce.number().int().min(30).max(95).default(82),
 }).refine((value) => value.w != null || value.h != null, { message: 'A width or height is required' });
-const streamQuery = z.object({ plan: z.string().max(4096).optional() });
+const streamQuery = z.object({ plan: z.string().max(4096).optional(), start: z.coerce.number().min(0).max(360_000).optional() });
+const hlsQuery = z.object({ plan: z.string().max(4096), q: z.string().regex(/^[a-z0-9]{1,12}$/) });
+const hlsSegmentParams = z.object({ id: z.string().uuid(), index: z.coerce.number().int().min(0).max(100_000) });
 const castStreamParams = z.object({ token: z.string().regex(/^[a-f0-9]{64}$/) });
 const IMAGE_TYPES: Record<string, string> = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif' };
 const maturityLimit = z.number().int().min(0).max(21).nullable();
@@ -592,7 +596,11 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
     const url = plan.mode === 'direct' ? baseUrl : `${baseUrl}?plan=${encodeURIComponent(encodePlaybackPlan(plan))}`;
     const castToken = randomBytes(32).toString('hex');
     castStreams.set(castToken, { itemId: params.data.id, plan: plan.mode === 'direct' ? undefined : encodePlaybackPlan(plan), expiresAt: Date.now() + 6 * 60 * 60 * 1000, maturityLimit: user.maxMaturityLevel });
-    return { plan, durationSeconds: source.durationSeconds, audioTracks: audioTracksOf(source.probe), stream: { url, castUrl: `/api/v1/cast/${castToken}/stream`, direct: plan.mode === 'direct' } };
+    // Full transcodes stream over HLS (seek + quality ladder); remuxes stay on
+    // the progressive pipe with seek-restart, since their video is not re-encoded.
+    const canHls = plan.mode === 'transcode' && !plan.remux && plan.video != null && source.durationSeconds != null;
+    const hlsUrl = canHls ? `/api/v1/catalog/items/${params.data.id}/hls/master.m3u8?plan=${encodeURIComponent(encodePlaybackPlan(plan))}` : undefined;
+    return { plan, durationSeconds: source.durationSeconds, audioTracks: audioTracksOf(source.probe), stream: { url, hlsUrl, castUrl: `/api/v1/cast/${castToken}/stream`, direct: plan.mode === 'direct' } };
   });
   app.get('/api/v1/images/:name', async (request, reply) => {
     const parsed = imageParams.safeParse(request.params); if (!parsed.success) return reply.status(400).send({ error: 'Invalid image name' });
@@ -625,7 +633,9 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
     if (query.data.plan) {
       const plan = decodePlaybackPlan(query.data.plan);
       if (!plan) return reply.status(400).send({ error: 'Invalid playback plan' });
-      const child = spawn('ffmpeg', buildTranscodeArgs(plan, absolute), { stdio: ['ignore', 'pipe', 'ignore'] });
+      // A seek outside the buffer restarts the stream here rather than replaying
+      // everything from zero; the player offsets its timeline by the same amount.
+      const child = spawn('ffmpeg', buildTranscodeArgs(plan, absolute, query.data.start), { stdio: ['ignore', 'pipe', 'ignore'] });
       child.on('error', () => { request.raw.destroy(); });
       request.raw.on('close', () => child.kill('SIGKILL'));
       reply.header('Content-Type', 'video/mp4'); reply.header('Cache-Control', 'no-store');
@@ -638,6 +648,74 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
     if (range.status === 206) { reply.header('Content-Range', `bytes ${range.start}-${range.end}/${info.size}`); reply.status(206); }
     return reply.send(createReadStream(absolute, { start: range.start, end: range.end }));
   });
+  // HLS delivery for transcodes: a VOD playlist over deterministic segments.
+  // Seeking is the client fetching a different index; quality switching is the
+  // client moving between rungs. No server-side session exists to clean up.
+  const segmentEncodes = new Semaphore(3);
+  const hlsSource = async (reply: FastifyReply, user: PublicUser, itemId: string) => {
+    if (!catalog) { await reply.status(503).send({ error: 'Catalog unavailable' }); return null; }
+    const source = await catalog.forViewer(user.maxMaturityLevel).playbackSource(itemId);
+    if (!source) { await reply.status(404).send({ error: 'No playable file for this item' }); return null; }
+    const absolute = resolveWithin(source.rootPath, source.relativePath);
+    if (!absolute || !source.durationSeconds) { await reply.status(404).send({ error: 'File not found' }); return null; }
+    return { source, absolute };
+  };
+
+  app.get('/api/v1/catalog/items/:id/hls/master.m3u8', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    const params = idParams.safeParse(request.params); if (!params.success) return reply.status(400).send({ error: 'Invalid item id' });
+    const query = streamQuery.safeParse(request.query); if (!query.success || !query.data.plan) return reply.status(400).send({ error: 'Invalid stream options' });
+    const plan = decodePlaybackPlan(query.data.plan); if (!plan) return reply.status(400).send({ error: 'Invalid playback plan' });
+    const resolved = await hlsSource(reply, user, params.data.id); if (!resolved) return;
+    const variants = ladderFor(plan.video?.height);
+    reply.header('Content-Type', 'application/vnd.apple.mpegurl'); reply.header('Cache-Control', 'no-store');
+    return masterPlaylist(variants, (variant) => `media.m3u8?plan=${encodeURIComponent(query.data.plan!)}&q=${variant.id}`);
+  });
+
+  app.get('/api/v1/catalog/items/:id/hls/media.m3u8', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    const params = idParams.safeParse(request.params); if (!params.success) return reply.status(400).send({ error: 'Invalid item id' });
+    const query = hlsQuery.safeParse(request.query); if (!query.success) return reply.status(400).send({ error: 'Invalid stream options' });
+    if (!decodePlaybackPlan(query.data.plan)) return reply.status(400).send({ error: 'Invalid playback plan' });
+    const resolved = await hlsSource(reply, user, params.data.id); if (!resolved) return;
+    reply.header('Content-Type', 'application/vnd.apple.mpegurl'); reply.header('Cache-Control', 'no-store');
+    return mediaPlaylist(resolved.source.durationSeconds!, (index) => `${index}.ts?plan=${encodeURIComponent(query.data.plan)}&q=${query.data.q}`);
+  });
+
+  app.get('/api/v1/catalog/items/:id/hls/:index.ts', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    const params = hlsSegmentParams.safeParse(request.params); if (!params.success) return reply.status(400).send({ error: 'Invalid segment' });
+    const query = hlsQuery.safeParse(request.query); if (!query.success) return reply.status(400).send({ error: 'Invalid stream options' });
+    const plan = decodePlaybackPlan(query.data.plan); if (!plan) return reply.status(400).send({ error: 'Invalid playback plan' });
+    const resolved = await hlsSource(reply, user, params.data.id); if (!resolved) return;
+    const duration = resolved.source.durationSeconds!;
+    if (params.data.index >= segmentCount(duration)) return reply.status(404).send({ error: 'Segment out of range' });
+    const variant = ladderFor(plan.video?.height).find((entry) => entry.id === query.data.q);
+    if (!variant) return reply.status(400).send({ error: 'Unknown quality' });
+
+    // Bounded so a prefetching client cannot stampede the encoder.
+    const body = await segmentEncodes.run(() => new Promise<Buffer>((resolveSegment, rejectSegment) => {
+      const child = spawn('ffmpeg', buildSegmentArgs(resolved.absolute, plan, variant, params.data.index, duration), { stdio: ['ignore', 'pipe', 'pipe'] });
+      const chunks: Buffer[] = [];
+      const stderr: Buffer[] = [];
+      const timer = setTimeout(() => child.kill('SIGKILL'), SEGMENT_SECONDS * 10_000);
+      child.stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
+      child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk));
+      child.once('error', (cause) => { clearTimeout(timer); rejectSegment(cause); });
+      child.once('close', (code) => {
+        clearTimeout(timer);
+        if (code === 0 && chunks.length > 0) resolveSegment(Buffer.concat(chunks));
+        else rejectSegment(new Error(`ffmpeg exited with code ${code}: ${Buffer.concat(stderr).toString().slice(0, 200)}`));
+      });
+      request.raw.on('close', () => child.kill('SIGKILL'));
+    })).catch(() => null);
+    if (!body) return reply.status(502).send({ error: 'Segment could not be encoded' });
+    reply.header('Content-Type', 'video/mp2t');
+    // Deterministic output: the same segment at the same quality is cacheable.
+    reply.header('Cache-Control', 'private, max-age=3600');
+    return reply.send(body);
+  });
+
   app.get('/api/v1/media/:id/trailer', async (request, reply) => {
     const user = await requireUser(request, reply, service); if (!user) return;
     const params = idParams.safeParse(request.params); if (!params.success) return reply.status(400).send({ error: 'Invalid item id' });
