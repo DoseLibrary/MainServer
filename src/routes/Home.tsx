@@ -177,7 +177,7 @@ export function Home() {
         brand: 'DOSE',
         brandImage: { src: '/logo.svg', alt: '' },
         brandHref: '/',
-        items: [{ id: 'categories', label: 'Categories', href: '/categories' }],
+        items: [{ id: 'categories', label: 'Categories', href: '/categories' }, { id: 'collections', label: 'Collections', href: '/collections' }],
         actions: <><CatalogSearch libraryId={selectedLibraryId} /><Button variant="outline" size="sm" onClick={() => setRandomOpen(true)}>Random pick</Button><UserMenu user={state.user} onLogout={() => { clearCache(); setState({ name: 'login' }); }} /></>,
       }}
       featured={featured}

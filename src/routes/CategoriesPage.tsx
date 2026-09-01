@@ -18,7 +18,7 @@ export function CategoriesPage() {
 
   return (
     <div className="min-h-screen bg-background text-foreground">
-      <Navbar brandLabel="DOSE" brand="DOSE" brandImage={{ src: '/logo.svg', alt: '' }} brandHref="/" items={[{ id: 'library', label: 'Library', href: '/' }, { id: 'categories', label: 'Categories', href: '/categories' }]} activeId="categories" actions={<UserMenu />} />
+      <Navbar brandLabel="DOSE" brand="DOSE" brandImage={{ src: '/logo.svg', alt: '' }} brandHref="/" items={[{ id: 'library', label: 'Library', href: '/' }, { id: 'categories', label: 'Categories', href: '/categories' }, { id: 'collections', label: 'Collections', href: '/collections' }]} activeId="categories" actions={<UserMenu />} />
       <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
         <header className="border-b pb-6">
           <h1 className="text-3xl font-bold tracking-tight">Categories</h1>

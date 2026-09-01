@@ -650,6 +650,11 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
       return reply.send(serializeVtt(shifted));
     } catch { return reply.status(404).send({ error: 'Subtitle not found' }); }
   });
+  app.get('/api/v1/catalog/collections', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    if (!catalog) return reply.status(503).send({ error: 'Catalog unavailable' });
+    return { collections: await catalog.forViewer(user.maxMaturityLevel).collectionsOverview() };
+  });
   app.get('/api/v1/catalog/collections/:id', async (request, reply) => {
     const user = await requireUser(request, reply, service); if (!user) return;
     const parsed = idParams.safeParse(request.params); if (!parsed.success) return reply.status(400).send({ error: 'Invalid collection id' });

@@ -57,6 +57,18 @@ describe('API authorization', () => {
     expect((await app.inject({ method: 'GET', url: '/api/v1/me/settings' })).statusCode).toBe(401);
     await app.close();
   });
+  it('serves the viewer-gated collections overview', async () => {
+    const auth = service({ authenticate: vi.fn(async (token?: string) => token ? ({ id: 'user-id', username: 'member', role: 'member' }) : null) });
+    const collectionsOverview = vi.fn(async () => [{ id: 'c1', name: 'Saga', posterUrl: '/x.jpg', count: 2 }]);
+    const app = await appWith(auth, undefined, catalogStub({ collectionsOverview }));
+    const headers = { cookie: 'dose_session=token' };
+
+    const response = await app.inject({ method: 'GET', url: '/api/v1/catalog/collections', headers });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().collections).toEqual([{ id: 'c1', name: 'Saga', posterUrl: '/x.jpg', count: 2 }]);
+    expect((await app.inject({ method: 'GET', url: '/api/v1/catalog/collections' })).statusCode).toBe(401);
+    await app.close();
+  });
   it('passes the collection-gaps setting through to the catalog collection view', async () => {
     const auth = service({ authenticate: vi.fn(async () => ({ id: 'user-id', username: 'member', role: 'member' })) });
     const collection = vi.fn(async () => ({ id: 'c1', name: 'Saga', titles: [] }));

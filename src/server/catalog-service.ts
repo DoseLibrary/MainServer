@@ -288,6 +288,26 @@ export class CatalogService {
    * With `includeGaps`, the members TMDB lists but the library lacks are appended as
    * `inLibrary: false` placeholders; without it no expected-member query runs at all.
    */
+  /**
+   * Every provider collection the viewer can see something of, for the browse
+   * page. The member count is of visible titles, so a restricted account sees
+   * honest numbers — and no collection whose every member is above its limit.
+   */
+  async collectionsOverview() {
+    const rows = await this.database
+      .select({
+        id: collections.id, name: collections.name, posterPath: collections.posterPath,
+        total: sql<number>`count(distinct ${mediaItems.id})`,
+      })
+      .from(collections)
+      .innerJoin(collectionMembers, eq(collectionMembers.collectionId, collections.id))
+      .innerJoin(mediaItems, eq(mediaItems.id, collectionMembers.mediaItemId))
+      .where(and(eq(mediaItems.available, true), this.withinMaturity, isNull(mediaItems.archivedAt)))
+      .groupBy(collections.id, collections.name, collections.posterPath)
+      .orderBy(collections.name);
+    return rows.map((row) => ({ id: row.id, name: row.name, posterUrl: imageLocalUrl(row.posterPath), count: Number(row.total) }));
+  }
+
   async collection(collectionId: string, includeGaps = false) {
     const [collection] = await this.database.select({ id: collections.id, name: collections.name, posterPath: collections.posterPath }).from(collections).where(eq(collections.id, collectionId)).limit(1);
     if (!collection) return null;

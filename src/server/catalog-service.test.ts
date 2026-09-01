@@ -287,6 +287,17 @@ describe('CatalogService enrichment serialization', () => {
     expect(withGaps.missing[1]?.posterUrl).toBeUndefined();
   });
 
+  it('lists collections for the browse page, hiding those with no visible members', async () => {
+    expect(await service.collectionsOverview()).toEqual([
+      { id: COLLECTION, name: 'Saga', posterUrl: '/api/v1/images/c.jpg', count: 1 },
+    ]);
+
+    // Its only member sits above a restricted viewer's limit: the collection vanishes.
+    await client.query(`update media_items set maturity_level = 17 where id = $1`, [MOVIE]);
+    expect(await service.forViewer(13).collectionsOverview()).toEqual([]);
+    expect(await service.forViewer(17).collectionsOverview()).toHaveLength(1);
+  });
+
   it('returns a collection with its available parts', async () => {
     const collection = await service.collection(COLLECTION) as { id: string; name: string; posterUrl?: string; titles: Array<{ id: string; badge?: string }> };
     expect(collection).toMatchObject({ id: COLLECTION, name: 'Saga', posterUrl: '/api/v1/images/c.jpg' });

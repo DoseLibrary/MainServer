@@ -81,6 +81,7 @@ export interface QueueItem extends CatalogItem { unavailable?: boolean }
 export interface UserCollectionSummary { id: string; name: string; overview?: string; itemCount: number }
 export interface UserCollectionView { id: string; name: string; overview?: string; items: CatalogItem[] }
 export interface CatalogCollectionGap { tmdbId: string; title: string; year?: number; releaseDate?: string; posterUrl?: string; inLibrary: false }
+export interface CatalogCollectionSummary { id: string; name: string; posterUrl?: string; count: number }
 export interface CatalogCollectionView { id: string; name: string; posterUrl?: string; titles: CatalogItem[]; missing?: CatalogCollectionGap[] }
 export interface ArtworkOption { path: string; previewUrl: string }
 export interface ArtworkOptions { posters: ArtworkOption[]; backdrops: ArtworkOption[] }
@@ -349,6 +350,7 @@ export const api = {
   clearQueue: () => request<{ items: QueueItem[] }>('/api/v1/me/queue', { method: 'DELETE' }),
   reorderQueue: (mediaItemIds: string[]) => request<{ items: QueueItem[] }>('/api/v1/me/queue', { method: 'PUT', body: JSON.stringify({ mediaItemIds }) }),
   nextInQueue: (after?: string) => request<{ item: CatalogItem | null }>(`/api/v1/me/queue/next${after ? `?after=${encodeURIComponent(after)}` : ''}`),
+  catalogCollections: () => request<{ collections: CatalogCollectionSummary[] }>('/api/v1/catalog/collections'),
   userCollections: () => request<{ collections: UserCollectionSummary[] }>('/api/v1/me/collections'),
   userCollection: (id: string) => request<{ collection: UserCollectionView }>(`/api/v1/me/collections/${encodeURIComponent(id)}`),
   createUserCollection: (collection: { name: string; overview?: string }) =>

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { ChevronDown, ChevronUp, Trash2 } from 'lucide-react';
 import { Navbar } from '@/components/media/Navbar';
 import { UserMenu } from '@/components/media/UserMenu';
@@ -13,6 +13,8 @@ export function UserCollections() {
   const [selected, setSelected] = useState<UserCollectionView>();
   const [name, setName] = useState('');
   const [error, setError] = useState<string>();
+  const [searchParams] = useSearchParams();
+  const openParam = searchParams.get('open');
 
   const load = useCallback(async () => {
     setError(undefined);
@@ -20,6 +22,13 @@ export function UserCollections() {
     catch (caught) { setError(caught instanceof Error ? caught.message : 'Could not load your collections.'); }
   }, []);
   useEffect(() => { queueMicrotask(() => { void load(); }); }, [load]);
+  // A ?open= link from the collections browse page lands with that collection expanded.
+  useEffect(() => {
+    if (!openParam) return;
+    queueMicrotask(() => {
+      void api.userCollection(openParam).then(({ collection }) => setSelected(collection)).catch(() => undefined);
+    });
+  }, [openParam]);
 
   const guard = async (run: () => Promise<void>) => {
     setError(undefined);
