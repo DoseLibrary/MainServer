@@ -26,6 +26,8 @@ import { audioTracksOf } from './playback.ts';
 import { SEGMENT_SECONDS, buildSegmentArgs, ladderFor, masterPlaylist, mediaPlaylist, segmentCount, type HlsVariant } from './hls.ts';
 import { SegmentCache } from './hls-cache.ts';
 import { HardwareAccelerator } from './hwaccel.ts';
+import { SeerrClient, SeerrError, SeerrStateCache } from './seerr.ts';
+import { seerrConfigured, seerrSettingsSchema } from './plugins/seerr.ts';
 import { Semaphore } from './concurrency.ts';
 import { applyAlignment, parseSubtitles, serializeVtt } from './subtitle-sync.ts';
 import { ImageVariantStore } from './images.ts';
@@ -88,6 +90,10 @@ const imageQuery = z.object({
   quality: z.coerce.number().int().min(30).max(95).default(82),
 }).refine((value) => value.w != null || value.h != null, { message: 'A width or height is required' });
 const streamQuery = z.object({ plan: z.string().max(4096).optional(), start: z.coerce.number().min(0).max(360_000).optional() });
+const seerrRequestBody = z.object({
+  tmdbId: z.coerce.number().int().min(1).max(100_000_000),
+  mediaType: z.enum(['movie', 'tv']).default('movie'),
+});
 const hlsQuery = z.object({ plan: z.string().max(4096), q: z.string().regex(/^[a-z0-9]{1,12}$/) });
 const hlsSegmentParams = z.object({ id: z.string().uuid(), index: z.coerce.number().int().min(0).max(100_000) });
 const castStreamParams = z.object({ token: z.string().regex(/^[a-f0-9]{64}$/) });
@@ -652,6 +658,51 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
       return reply.send(serializeVtt(shifted));
     } catch { return reply.status(404).send({ error: 'Subtitle not found' }); }
   });
+  // Seerr: the request manager a household already runs. Its address and key
+  // live in the plugin configuration, so both are admin-set and the key is
+  // never echoed back to a browser.
+  const seerrStates = new SeerrStateCache();
+  const seerrFor = async () => {
+    if (!plugins?.isEnabled('seerr')) return null;
+    try {
+      const { configuration } = await plugins.get('seerr');
+      const settings = seerrSettingsSchema.parse(configuration.settings);
+      if (!seerrConfigured(settings)) return null;
+      return { client: new SeerrClient(settings), settings };
+    } catch { return null; }
+  };
+
+  app.get('/api/v1/requests', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    const seerr = await seerrFor();
+    if (!seerr) return { configured: false, requests: [] };
+    try {
+      const states = await seerrStates.get(seerr.client);
+      return { configured: true, requests: [...states].map(([tmdbId, state]) => ({ tmdbId, state })) };
+    } catch (error) {
+      // A request manager that is down must not break browsing; the page simply
+      // shows no request state.
+      app.log.warn(error, 'could not read Seerr requests');
+      return { configured: true, requests: [], error: error instanceof SeerrError ? error.message : 'Seerr is unreachable' };
+    }
+  });
+
+  app.post('/api/v1/requests', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    const body = seerrRequestBody.safeParse(request.body); if (!body.success) return reply.status(400).send({ error: 'Invalid request' });
+    const seerr = await seerrFor();
+    if (!seerr) return reply.status(503).send({ error: 'Seerr is not configured' });
+    try {
+      const { state } = await seerr.client.requestMedia({ mediaType: body.data.mediaType, tmdbId: body.data.tmdbId, is4k: seerr.settings.request4k });
+      seerrStates.invalidate();
+      app.log.info({ tmdbId: body.data.tmdbId, user: user.username }, 'requested a title through Seerr');
+      return reply.status(201).send({ request: { tmdbId: body.data.tmdbId, state } });
+    } catch (error) {
+      if (error instanceof SeerrError) return reply.status(502).send({ error: error.message });
+      throw error;
+    }
+  });
+
   app.get('/api/v1/catalog/collections', async (request, reply) => {
     const user = await requireUser(request, reply, service); if (!user) return;
     if (!catalog) return reply.status(503).send({ error: 'Catalog unavailable' });

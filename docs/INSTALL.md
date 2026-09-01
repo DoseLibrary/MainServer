@@ -109,9 +109,26 @@ in the field), and press *Run now* for a first pass:
 | Trailer Fetcher | Downloads trailers for matched titles (needs internet; yt-dlp ships in the container) |
 | Scrubber Previews | Generates the thumbnail strip shown when scrubbing |
 | Intro Detector | Finds intros across a season so the player can offer Skip intro |
+| Seerr | Connects a Seerr / Jellyseerr / Overseerr install so missing collection titles can be requested |
 
 Enabled plugins also react to new files as scans find them; the schedule is
-the backstop.
+the backstop. Seerr is the exception: it has no schedule, only settings.
+
+### Requesting missing titles
+
+Enrichment knows which parts of a film series you do not have, and shows them
+greyed out on a collection page (turn on *Show collection gaps* in profile
+settings). With the **Seerr** plugin configured, each of those gets a *Request*
+button that hands the title to Seerr, which passes it to Radarr or Sonarr as it
+normally would.
+
+Fill in the address Seerr is reachable at *from the Dose container* — usually
+`http://seerr:5055` on a shared Docker network, not `localhost` — and the API
+key from Seerr → Settings → General. Press **Test connection** to confirm both
+before relying on it.
+
+Anyone with an account can request; approval stays in Seerr, so set request
+limits and approval rules there if children have accounts here.
 
 ## 7. Phones: install the app, pair the TV, take titles offline
 

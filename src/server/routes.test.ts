@@ -536,6 +536,79 @@ describe('Plugin administration API', () => {
     return app;
   }
 
+  /** A plugin service whose only plugin is a configured, enabled Seerr. */
+  function seerrPluginsStub(settings: Record<string, unknown>, enabled = true) {
+    const configuration = { pluginId: 'seerr', enabled, schedule: null, settings, nextRunAt: null, lastRunAt: null, lastRunStatus: null, lastRunDurationMs: null, lastRunSummary: null, lastRunError: null, createdAt: new Date(), updatedAt: new Date() };
+    return {
+      isEnabled: (id: string) => id === 'seerr' && enabled,
+      get: vi.fn(async () => ({ plugin: { id: 'seerr' }, configuration })),
+    } as unknown as PluginService;
+  }
+
+  const seerrSettings = { baseUrl: 'http://seerr:5055', apiKey: 'k', request4k: false };
+
+  it('reports Seerr as unconfigured rather than failing when it is off or unset', async () => {
+    const auth = service({ authenticate: vi.fn(async () => ({ id: 'u', username: 'member', role: 'member' })) });
+    const headers = { cookie: 'dose_session=token' };
+
+    const none = await appWithPlugins(auth, seerrPluginsStub(seerrSettings, false));
+    expect((await none.inject({ method: 'GET', url: '/api/v1/requests', headers })).json()).toEqual({ configured: false, requests: [] });
+    expect((await none.inject({ method: 'POST', url: '/api/v1/requests', headers, payload: { tmdbId: 1 } })).statusCode).toBe(503);
+    await none.close();
+
+    // Enabled but with no address or key is still not something we can call.
+    const blank = await appWithPlugins(auth, seerrPluginsStub({ baseUrl: '', apiKey: '', request4k: false }));
+    expect((await blank.inject({ method: 'GET', url: '/api/v1/requests', headers })).json().configured).toBe(false);
+    await blank.close();
+  });
+
+  it('lists request state and creates a request through Seerr', async () => {
+    const auth = service({ authenticate: vi.fn(async (token?: string) => token ? ({ id: 'u', username: 'member', role: 'member' }) : null) });
+    const fetchMock = vi.fn(async (url: string) => url.includes('/request?')
+      ? new Response(JSON.stringify({ results: [{ media: { tmdbId: 603, status: 3 } }] }), { status: 200 })
+      : new Response(JSON.stringify({ media: { status: 2 } }), { status: 201 }));
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      const app = await appWithPlugins(auth, seerrPluginsStub(seerrSettings));
+      const headers = { cookie: 'dose_session=token' };
+
+      const listed = await app.inject({ method: 'GET', url: '/api/v1/requests', headers });
+      expect(listed.json()).toEqual({ configured: true, requests: [{ tmdbId: 603, state: 'processing' }] });
+
+      const created = await app.inject({ method: 'POST', url: '/api/v1/requests', headers, payload: { tmdbId: 604, mediaType: 'movie' } });
+      expect(created.statusCode).toBe(201);
+      expect(created.json()).toEqual({ request: { tmdbId: 604, state: 'pending' } });
+
+      // Requesting is a member action, but it still needs a session.
+      expect((await app.inject({ method: 'GET', url: '/api/v1/requests' })).statusCode).toBe(401);
+      expect((await app.inject({ method: 'POST', url: '/api/v1/requests', headers, payload: { tmdbId: 'nope' } })).statusCode).toBe(400);
+      await app.close();
+    } finally { globalThis.fetch = originalFetch; }
+  });
+
+  it('keeps browsing working when Seerr is unreachable', async () => {
+    const auth = service({ authenticate: vi.fn(async () => ({ id: 'u', username: 'member', role: 'member' })) });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async () => { throw new Error('ECONNREFUSED'); }) as unknown as typeof fetch;
+    try {
+      const app = await appWithPlugins(auth, seerrPluginsStub(seerrSettings));
+      const headers = { cookie: 'dose_session=token' };
+
+      // The list degrades to "nothing known" rather than erroring the page.
+      const listed = await app.inject({ method: 'GET', url: '/api/v1/requests', headers });
+      expect(listed.statusCode).toBe(200);
+      expect(listed.json()).toMatchObject({ configured: true, requests: [] });
+      expect(listed.json().error).toMatch(/Could not reach Seerr/);
+
+      // An actual request failing is reported, since the user asked for it.
+      const created = await app.inject({ method: 'POST', url: '/api/v1/requests', headers, payload: { tmdbId: 604 } });
+      expect(created.statusCode).toBe(502);
+      expect(created.json().error).toMatch(/Could not reach Seerr/);
+      await app.close();
+    } finally { globalThis.fetch = originalFetch; }
+  });
+
   it('lists plugins with their declared fields and never echoes secrets', async () => {
     const admin = service({ authenticate: vi.fn(async () => ({ id: 'a', username: 'admin', role: 'admin' })) });
     const app = await appWithPlugins(admin, pluginsStub());

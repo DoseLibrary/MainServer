@@ -39,6 +39,7 @@ import { PlexHistorySource } from './history-sources/plex.ts';
 import { TraktHistorySource } from './history-sources/trakt.ts';
 import { TautulliHistorySource } from './history-sources/tautulli.ts';
 import { HardwareAccelerator } from './hwaccel.ts';
+import { createSeerrPlugin } from './plugins/seerr.ts';
 
 export async function buildApp(config: AppConfig) {
   const app = Fastify({ logger: config.NODE_ENV !== 'test', trustProxy: config.TRUST_PROXY === true });
@@ -58,7 +59,8 @@ export async function buildApp(config: AppConfig) {
     .register(createSubtitleExtractorPlugin(database, ffmpegSubtitleTools(), subtitleStore))
     .register(createPreviewSpritePlugin(database, ffmpegSpriteTools(), spriteStore))
     .register(createIntroDetectorPlugin(database))
-    .register(createSubtitleSyncPlugin(database, subtitleStore)), undefined, pluginEvents);
+    .register(createSubtitleSyncPlugin(database, subtitleStore))
+    .register(createSeerrPlugin()), undefined, pluginEvents);
   const imageStore = new ImageStore(join(config.CONFIG_PATH, 'images'));
   const artwork = new ArtworkService(database, tmdb, imageStore);
   const metadataMatch = new MetadataMatchService(database, tmdb, new EnrichmentService(database, tmdb, imageStore, pluginEvents));

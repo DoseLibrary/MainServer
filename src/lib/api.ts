@@ -81,6 +81,9 @@ export interface QueueItem extends CatalogItem { unavailable?: boolean }
 export interface UserCollectionSummary { id: string; name: string; overview?: string; itemCount: number }
 export interface UserCollectionView { id: string; name: string; overview?: string; items: CatalogItem[] }
 export interface CatalogCollectionGap { tmdbId: string; title: string; year?: number; releaseDate?: string; posterUrl?: string; inLibrary: false }
+export type SeerrMediaState = 'unknown' | 'pending' | 'processing' | 'partial' | 'available' | 'deleted';
+export interface SeerrRequestState { tmdbId: number; state: SeerrMediaState }
+export interface SeerrRequests { configured: boolean; requests: SeerrRequestState[]; error?: string }
 export interface CatalogCollectionSummary { id: string; name: string; posterUrl?: string; count: number }
 export interface CatalogCollectionView { id: string; name: string; posterUrl?: string; titles: CatalogItem[]; missing?: CatalogCollectionGap[] }
 export interface EncoderProbeResult { family: string; encoder: string; codec: string; built: boolean; working: boolean; error?: string }
@@ -352,6 +355,9 @@ export const api = {
   clearQueue: () => request<{ items: QueueItem[] }>('/api/v1/me/queue', { method: 'DELETE' }),
   reorderQueue: (mediaItemIds: string[]) => request<{ items: QueueItem[] }>('/api/v1/me/queue', { method: 'PUT', body: JSON.stringify({ mediaItemIds }) }),
   nextInQueue: (after?: string) => request<{ item: CatalogItem | null }>(`/api/v1/me/queue/next${after ? `?after=${encodeURIComponent(after)}` : ''}`),
+  requests: () => request<SeerrRequests>('/api/v1/requests'),
+  requestTitle: (tmdbId: number, mediaType: 'movie' | 'tv' = 'movie') =>
+    request<{ request: SeerrRequestState }>('/api/v1/requests', { method: 'POST', body: JSON.stringify({ tmdbId, mediaType }) }),
   transcoding: () => request<{ hardware: HardwareReport }>('/api/v1/admin/transcoding'),
   detectTranscoding: () => request<{ hardware: HardwareReport }>('/api/v1/admin/transcoding/detect', { method: 'POST' }),
   catalogCollections: () => request<{ collections: CatalogCollectionSummary[] }>('/api/v1/catalog/collections'),
