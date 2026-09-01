@@ -51,7 +51,7 @@ describe('ArtworkService', () => {
 
   it('caches and applies a chosen poster, exposing a local URL', async () => {
     const result = await service.apply(MOVIE, { posterPath: '/p2.jpg' });
-    expect(cache).toHaveBeenCalledWith('/p2.jpg');
+    expect(cache).toHaveBeenCalledWith('/p2.jpg', 'poster');
     expect(result).toMatchObject({ id: MOVIE, posterUrl: '/api/v1/images/p2.jpg' });
     const { rows } = await client.query<{ poster_path: string }>(`select poster_path from media_items where id = $1`, [MOVIE]);
     expect(rows[0]?.poster_path).toBe('/p2.jpg');

@@ -86,6 +86,22 @@ export function Carousel<T = never>({
     return () => resizeObserver?.disconnect();
   }, [renderedItems.length, updateBoundaries]);
 
+  // A live update pushes the freshest title in at the head of the row, where a
+  // viewer scrolled along would never see it. Growing or re-led rows rewind so
+  // what just arrived is what is on screen.
+  const leadKey = renderedItems[0]?.key;
+  const previous = useRef({ leadKey, count: renderedItems.length });
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    const grew = renderedItems.length > previous.current.count;
+    const reled = leadKey !== previous.current.leadKey;
+    previous.current = { leadKey, count: renderedItems.length };
+    if (!viewport || (!grew && !reled) || viewport.scrollLeft === 0) return;
+    // jsdom and older engines have no smooth scroll; the jump still rewinds.
+    if (viewport.scrollTo) viewport.scrollTo({ left: 0, behavior: 'smooth' });
+    else viewport.scrollLeft = 0;
+  }, [leadKey, renderedItems.length]);
+
   const scroll = (direction: -1 | 1) => {
     const viewport = viewportRef.current;
     if (!viewport) return;

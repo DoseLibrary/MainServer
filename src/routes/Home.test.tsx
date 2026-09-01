@@ -157,6 +157,31 @@ describe('Live catalog updates', () => {
     // The title that was already on screen does not re-animate.
     expect(document.querySelector('[data-appearing]')?.textContent).not.toContain('Arrival');
   });
+
+  it('holds the hero steady while a scan updates the rows beneath it', async () => {
+    globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
+    // The server picks the billboard at random on every fetch, so a refetch
+    // mid-scan would otherwise swap out whatever the viewer is reading.
+    let payload: Record<string, unknown> = { featured: { id: 'id-Solaris', title: 'Solaris', kind: 'movie' }, ...catalogWith(['Solaris']) };
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/v1/setup/status') return json({ setupRequired: false });
+      if (url === '/api/v1/auth/me') return json({ user: { id: 'u1', username: 'filip', role: 'member' } });
+      if (url === '/api/v1/libraries') return json({ libraries: [{ id: 'l1', name: 'Movies', kind: 'movies' }] });
+      if (url.startsWith('/api/v1/catalog/home')) return json(payload);
+      throw new Error(`Unexpected request ${url}`);
+    }) as unknown as typeof fetch;
+
+    render(<Home />);
+    expect(await screen.findByRole('heading', { level: 1, name: 'Solaris' })).toBeInTheDocument();
+    await waitFor(() => expect(FakeWebSocket.instance).toBeDefined());
+
+    payload = { featured: { id: 'id-Stalker', title: 'Stalker', kind: 'movie' }, ...catalogWith(['Solaris', 'Stalker']) };
+    FakeWebSocket.instance!.push({ type: 'catalog.updated', reason: 'added' });
+
+    await screen.findAllByText('Stalker', undefined, { timeout: 5000 });
+    expect(screen.getByRole('heading', { level: 1, name: 'Solaris' })).toBeInTheDocument();
+  });
 });
 
 describe('Snappy navigation', () => {

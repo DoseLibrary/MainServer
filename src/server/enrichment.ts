@@ -2,7 +2,7 @@ import { and, eq, inArray, notInArray, sql } from 'drizzle-orm';
 import type { Database } from './db/client.ts';
 import { castCredits, collectionExpectedMembers, collectionMembers, collections, genres, mediaItemGenres, mediaItems, people, recommendationEdges } from './db/schema.ts';
 import type { TmdbClient, TmdbCollectionMetadata, TmdbMetadata } from './tmdb.ts';
-import type { ImageStore } from './images.ts';
+import type { ArtworkRole, ImageStore } from './images.ts';
 import { maturityLevel } from './maturity.ts';
 import type { PluginEventBus } from './plugins/events.ts';
 
@@ -160,9 +160,9 @@ export class EnrichmentService {
 
     if (episode) this.events?.emit('media.item.enriched', { libraryId: series!.libraryId, mediaItemId: episodeItemId, kind: 'episode', providerIds: { tmdb: String(episode.id) } });
 
-    for (const path of [season?.posterPath, episode?.stillPath]) {
+    for (const [path, role] of [[season?.posterPath, 'poster'], [episode?.stillPath, 'still']] as const) {
       if (!path) continue;
-      try { await this.images.cache(path); } catch { /* offline-first best effort */ }
+      try { await this.images.cache(path, role); } catch { /* offline-first best effort */ }
     }
   }
 
@@ -249,9 +249,16 @@ export class EnrichmentService {
 
   private async cacheArtwork(metadata: TmdbMetadata, expected: TmdbCollectionMetadata['parts'] | null = null) {
     // Expected-member posters are cached now so the offline "missing" placeholders still have art.
-    const paths = [metadata.posterPath, metadata.backdropPath, metadata.logoPath, metadata.collection?.posterPath, metadata.collection?.backdropPath, ...metadata.cast.slice(0, CAST_LIMIT).map((credit) => credit.profilePath), ...(expected ?? []).map((part) => part.posterPath)];
-    for (const path of paths) {
-      try { await this.images.cache(path); } catch { /* offline-first best effort; a failed download never aborts the scan */ }
+    // Each path is tagged with what it is for, so the sizes screens ask for are
+    // generated here rather than by whoever opens the title first.
+    const paths: Array<readonly [string | null | undefined, ArtworkRole]> = [
+      [metadata.posterPath, 'poster'], [metadata.backdropPath, 'backdrop'], [metadata.logoPath, 'logo'],
+      [metadata.collection?.posterPath, 'poster'], [metadata.collection?.backdropPath, 'backdrop'],
+      ...metadata.cast.slice(0, CAST_LIMIT).map((credit) => [credit.profilePath, 'profile'] as const),
+      ...(expected ?? []).map((part) => [part.posterPath, 'poster'] as const),
+    ];
+    for (const [path, role] of paths) {
+      try { await this.images.cache(path, role); } catch { /* offline-first best effort; a failed download never aborts the scan */ }
     }
   }
 }

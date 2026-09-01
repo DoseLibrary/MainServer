@@ -16,7 +16,7 @@ function CollectionTile({ to, name, posterUrl, count }: { to: string; name: stri
     >
       <div className="aspect-[2/3] w-full overflow-hidden bg-muted">
         {posterUrl
-          ? <img src={posterUrl} alt="" loading="lazy" className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105" />
+          ? <img src={posterUrl} alt="" loading="eager" decoding="async" className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105" />
           : <div className="flex h-full w-full items-center justify-center text-muted-foreground"><Layers aria-hidden="true" className="h-10 w-10" /></div>}
       </div>
       <div className="flex flex-1 flex-col justify-between p-3">

@@ -71,12 +71,15 @@ function PosterImage({
 
       {src && status !== 'error' && (
         <img
-          loading="lazy"
+          // Eager: rows sit in horizontal carousels, where a lazy tile only
+          // starts fetching once it is scrolled into view and so reads as slow.
+          loading="eager"
           decoding="async"
           src={src}
           alt={alt}
           className={cn(
-            'absolute inset-0 h-full w-full object-cover transition-[opacity,transform] duration-500 ease-out motion-reduce:transform-none motion-reduce:transition-none group-hover:scale-[1.04] group-focus-visible:scale-[1.04]',
+            // The image appears the moment it has loaded; only hover animates.
+            'absolute inset-0 h-full w-full object-cover transition-transform duration-500 ease-out motion-reduce:transform-none motion-reduce:transition-none group-hover:scale-[1.04] group-focus-visible:scale-[1.04]',
             status === 'loaded' ? 'opacity-100' : 'opacity-0',
             imageClassName,
           )}

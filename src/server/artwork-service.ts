@@ -33,7 +33,7 @@ export class ArtworkService {
       if (path === undefined) continue;
       if (path !== null && !TMDB_PATH.test(path)) throw new ArtworkPathError('Invalid image path');
       // Cache the chosen artwork so read paths stay offline; a download hiccup never blocks the choice.
-      if (path) await this.images.cache(path).catch(() => {});
+      if (path) await this.images.cache(path, field === 'posterPath' ? 'poster' : 'backdrop').catch(() => {});
       set[field] = path;
     }
     if (Object.keys(set).length === 0) return null;

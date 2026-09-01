@@ -32,11 +32,15 @@ export function Home() {
   // Ids that arrived through a live push, so their cards can fade in.
   const [appearingIds, setAppearingIds] = useState<ReadonlySet<string>>(new Set());
   const knownIdsRef = useRef<Set<string>>(new Set());
+  // The billboard the viewer is currently looking at. The server re-rolls it at
+  // random on every fetch, and a scan finishing must not swap it mid-read.
+  const featuredRef = useRef<CatalogHome['featured']>(undefined);
 
   const loadCatalog = useCallback(async (libraryId?: string) => {
     const key = cacheKeys.catalogHome(libraryId);
     const remember = (next: CatalogHome) => {
       knownIdsRef.current = new Set(next.sections.flatMap((section) => section.items.map((item) => item.id)));
+      featuredRef.current = next.featured;
       setCatalog(next); setCatalogStatus('loaded');
     };
     // A cached home renders immediately; the refresh behind it corrects rows in place.
@@ -55,8 +59,10 @@ export function Home() {
         for (const item of section.items) if (!knownIdsRef.current.has(item.id)) fresh.add(item.id);
       }
       for (const id of fresh) knownIdsRef.current.add(id);
-      primeCache(cacheKeys.catalogHome(libraryId), next);
-      setCatalog(next);
+      // Rows update in place, but the hero the viewer is on stays put.
+      const merged = featuredRef.current ? { ...next, featured: featuredRef.current } : next;
+      primeCache(cacheKeys.catalogHome(libraryId), merged);
+      setCatalog(merged);
       if (fresh.size > 0) setAppearingIds(fresh);
     } catch { /* the current view stays useful; the next push tries again */ }
   }, []);

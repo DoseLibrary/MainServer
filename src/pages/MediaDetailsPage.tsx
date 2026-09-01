@@ -209,7 +209,9 @@ function Backdrop({ src, alt }: { src?: string; alt: string }) {
   return (
     <div className="absolute inset-0 -z-10 bg-muted">
       {src ? (
-        <img src={src} alt={alt} className="h-full w-full object-cover" />
+        // The backdrop is the page's largest paint and is on screen from the
+        // first frame; it is fetched ahead of the posters below it.
+        <img src={src} alt={alt} loading="eager" fetchPriority="high" decoding="async" className="h-full w-full object-cover" />
       ) : (
         <div role="img" aria-label={`${alt} unavailable`} className="h-full w-full bg-gradient-to-br from-muted to-background" />
       )}

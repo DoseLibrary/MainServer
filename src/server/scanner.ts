@@ -124,7 +124,7 @@ export class ScanCoordinator {
     const worker = async () => {
       while (cursor < artwork.length) {
         const item = artwork[cursor++];
-        try { await Promise.all([this.images.cache(item.posterPath), this.images.cache(item.backdropPath)]); }
+        try { await Promise.all([this.images.cache(item.posterPath, 'poster'), this.images.cache(item.backdropPath, 'backdrop')]); }
         catch { /* metadata remains useful even when a provider is temporarily unavailable */ }
       }
     };

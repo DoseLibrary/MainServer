@@ -52,10 +52,15 @@ function HeroArtwork({ src, alt, imageClassName }: HeroArtworkProps) {
 
       {src && status !== 'error' && (
         <img
+          // The billboard is the page's largest paint and sits at the top of the
+          // viewport; it is fetched ahead of the rows below it, never deferred.
+          loading="eager"
+          fetchPriority="high"
+          decoding="async"
           src={src}
           alt={alt}
           className={cn(
-            'absolute inset-0 h-full w-full object-cover transition-opacity duration-500',
+            'absolute inset-0 h-full w-full object-cover',
             status === 'loaded' ? 'opacity-100' : 'opacity-0',
             imageClassName,
           )}
@@ -243,6 +248,9 @@ export function Hero({
           {logoSrc ? (
             <>
               <img
+                loading="eager"
+                fetchPriority="high"
+                decoding="async"
                 src={logoSrc}
                 alt={typeof title === 'string' ? title : ''}
                 className="max-h-24 w-auto max-w-full object-contain object-left drop-shadow-lg sm:max-h-32 lg:max-h-40"

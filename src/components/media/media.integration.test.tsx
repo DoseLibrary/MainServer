@@ -110,6 +110,25 @@ describe('media component integration', () => {
     expect(next).toBeDisabled();
   });
 
+  it('rewinds a scrolled row when a live update adds a title at its head', () => {
+    const row = (titles: string[]) => (
+      <Carousel label="Live titles" items={titles} getItemKey={(title) => title} renderItem={(title) => <span>{title}</span>} />
+    );
+    const { rerender } = render(row(['Two', 'Three']));
+    const list = screen.getByRole('list');
+    Object.defineProperty(list, 'scrollLeft', { configurable: true, writable: true, value: 700 });
+    const scrollTo = vi.fn();
+    Object.defineProperty(list, 'scrollTo', { configurable: true, value: scrollTo });
+
+    rerender(row(['One', 'Two', 'Three']));
+    expect(scrollTo).toHaveBeenCalledWith({ left: 0, behavior: 'smooth' });
+
+    // An unchanged row leaves the viewer where they were.
+    scrollTo.mockClear();
+    rerender(row(['One', 'Two', 'Three']));
+    expect(scrollTo).not.toHaveBeenCalled();
+  });
+
   it('uses viewport-relative hero height with short-screen mobile bounds', () => {
     const { container } = render(<Hero title="Responsive hero" />);
     expect(container.querySelector('section')).toHaveClass('h-[66vh]', 'min-h-[20rem]', 'max-[420px]:min-h-[16rem]');

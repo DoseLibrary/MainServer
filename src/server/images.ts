@@ -31,6 +31,27 @@ export interface ImageVariantOptions {
 
 const VARIANT_TYPES = { jpeg: 'image/jpeg', webp: 'image/webp', avif: 'image/avif' } as const;
 
+/** What a stored image is for, which decides the sizes worth generating up front. */
+export type ArtworkRole = 'poster' | 'backdrop' | 'still' | 'profile' | 'logo';
+
+/**
+ * The sizes screens actually ask for, generated when the artwork is downloaded.
+ * Resizing a TMDB original costs tens to hundreds of milliseconds, and left to
+ * the request it lands on whoever opens a title first — the page then waits on
+ * sharp before the browser has a byte to decode. Anything not listed here is
+ * still generated on demand by the route.
+ */
+export const VARIANT_PRESETS: Record<ArtworkRole, readonly ImageVariantOptions[]> = {
+  // Carousels and grids, then the details page's larger poster.
+  poster: [{ width: 384, height: 576, fit: 'cover', format: 'webp' }, { width: 600, height: 900, fit: 'cover', format: 'webp' }],
+  // The billboard on home, details and the player, then landscape cards.
+  backdrop: [{ width: 1920, height: 1080, fit: 'cover', format: 'webp', quality: 85 }, { width: 640, height: 360, fit: 'cover', format: 'webp' }],
+  // Episode stills: the season page's list, and a home tile when nothing else exists.
+  still: [{ width: 640, height: 360, fit: 'cover', format: 'webp' }, { width: 384, height: 576, fit: 'cover', format: 'webp' }],
+  profile: [{ width: 96, height: 96, fit: 'cover', format: 'webp' }, { width: 128, height: 128, fit: 'cover', format: 'webp' }],
+  logo: [{ width: 500, format: 'webp' }],
+};
+
 /** Generates each requested image size once and then serves it from disk. */
 export class ImageVariantStore {
   private readonly pending = new Map<string, Promise<void>>();
@@ -60,10 +81,16 @@ export class ImageVariantStore {
   private async generate(source: string, target: string, options: Required<Pick<ImageVariantOptions, 'format' | 'quality' | 'fit'>> & ImageVariantOptions) {
     await mkdir(join(this.directory, '.variants'), { recursive: true });
     const temporary = `${target}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
-    await sharp(source)
+    // Originals are large single-use reads, so stream them rather than holding
+    // the whole image; webp at a lower effort encodes about a third faster for
+    // a couple of percent of size, which is the better trade for artwork.
+    const encoding = options.format === 'webp' || options.format === 'avif'
+      ? { quality: options.quality, effort: 2 }
+      : { quality: options.quality };
+    await sharp(source, { sequentialRead: true })
       .rotate()
       .resize({ width: options.width, height: options.height, fit: options.fit, withoutEnlargement: true })
-      .toFormat(options.format, { quality: options.quality })
+      .toFormat(options.format, encoding)
       .toFile(temporary);
     await rename(temporary, target);
   }
@@ -71,29 +98,45 @@ export class ImageVariantStore {
 
 /** Downloads TMDB artwork into the local config directory during scans. */
 export class ImageStore {
-  constructor(private readonly directory: string, private readonly fetcher: Fetcher = fetch) {}
+  private readonly variants: ImageVariantStore;
+
+  constructor(private readonly directory: string, private readonly fetcher: Fetcher = fetch) {
+    this.variants = new ImageVariantStore(directory);
+  }
 
   path(name: string): string {
     return join(this.directory, name);
   }
 
-  /** Fetch and persist an image once; skips work if it already exists on disk. */
-  async cache(tmdbPath: string | null | undefined): Promise<void> {
+  /**
+   * Fetch and persist an image once, then generate the sizes screens ask for.
+   * A `role` is what makes the second half possible; without one the artwork is
+   * still stored, and the first viewer pays for the resize instead.
+   */
+  async cache(tmdbPath: string | null | undefined, role?: ArtworkRole): Promise<void> {
     if (!tmdbPath) return;
     const name = imageFileName(tmdbPath);
     if (!name) return;
     const target = this.path(name);
-    try {
-      await access(target);
-      return; // already cached
-    } catch {
-      // not cached yet
+    let stored = true;
+    try { await access(target); } catch { stored = false; }
+    if (!stored) {
+      const response = await this.fetcher(`${TMDB_IMAGE_BASE}${tmdbPath}`);
+      if (!response.ok) return;
+      const buffer = Buffer.from(await response.arrayBuffer());
+      await mkdir(this.directory, { recursive: true });
+      await writeFile(target, buffer);
     }
-    const response = await this.fetcher(`${TMDB_IMAGE_BASE}${tmdbPath}`);
-    if (!response.ok) return;
-    const buffer = Buffer.from(await response.arrayBuffer());
-    await mkdir(this.directory, { recursive: true });
-    await writeFile(target, buffer);
+    // Warming runs for artwork that was already on disk too, so a library
+    // scanned before this existed fills its variants on the next scan.
+    if (role) await this.warm(name, role);
+  }
+
+  /** Best effort: a source sharp cannot read must not fail a scan. */
+  private async warm(name: string, role: ArtworkRole): Promise<void> {
+    for (const preset of VARIANT_PRESETS[role]) {
+      try { await this.variants.get(name, preset); } catch { /* the route will try again on demand */ }
+    }
   }
 }
 

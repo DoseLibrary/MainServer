@@ -39,11 +39,15 @@ function CardArtwork({ src, title, alt, badge, subtitle, progress, interactive }
 
       {src && status !== 'error' && (
         <img
-          loading="lazy"
+          // Eager, like the poster: a carousel scrolls sideways, and a tile that
+          // only fetches once visible arrives after the viewer does.
+          loading="eager"
           decoding="async"
           src={src}
           alt={alt ?? title}
-          className={cn('absolute inset-0 h-full w-full object-cover transition-[opacity,transform] duration-500 ease-out motion-reduce:transform-none motion-reduce:transition-none group-hover:scale-[1.04] group-focus-visible:scale-[1.04]', status === 'loaded' ? 'opacity-100' : 'opacity-0')}
+          // No opacity transition: a cached image is decoded and ready, and half a
+          // second of fading in reads as the app being slow. Only hover animates.
+          className={cn('absolute inset-0 h-full w-full object-cover transition-transform duration-500 ease-out motion-reduce:transform-none motion-reduce:transition-none group-hover:scale-[1.04] group-focus-visible:scale-[1.04]', status === 'loaded' ? 'opacity-100' : 'opacity-0')}
           onLoad={() => setStatus('loaded')}
           onError={() => setStatus('error')}
         />
