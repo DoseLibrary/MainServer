@@ -206,7 +206,7 @@ function Backdrop({ src, alt }: { src?: string; alt: string }) {
 
 function DetailsShell({ navigation, children }: { navigation?: ComponentProps<typeof Navbar>; children: ReactNode }) {
   return (
-    <div className="min-h-screen bg-background text-foreground">
+    <div className="page-enter min-h-screen bg-background text-foreground">
       {navigation ? <Navbar {...navigation} /> : null}
       {children}
     </div>

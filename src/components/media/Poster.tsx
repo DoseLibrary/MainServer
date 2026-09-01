@@ -71,6 +71,8 @@ function PosterImage({
 
       {src && status !== 'error' && (
         <img
+          loading="lazy"
+          decoding="async"
           src={src}
           alt={alt}
           className={cn(

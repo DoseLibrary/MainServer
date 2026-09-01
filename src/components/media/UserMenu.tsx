@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Clapperboard, Film, History, LayoutDashboard, ListOrdered, ListVideo, LogOut, Puzzle, UserRound, UsersRound } from 'lucide-react';
 import { api, type User } from '@/lib/api';
+import { clearCache } from '@/lib/cache';
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem,
   DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
@@ -33,6 +34,8 @@ export function UserMenu({ user: providedUser, onLogout }: { user?: User; onLogo
   async function logout() {
     try { await api.logout(); }
     finally {
+      // The next account must not see anything cached for this one.
+      clearCache();
       // The host page may need to reset its own auth state (Home shows the login
       // form in place, no navigation involved).
       if (onLogout) onLogout();

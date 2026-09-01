@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import { cached, cacheKeys, cachedValue, primeCache } from '@/lib/cache';
 import { api, imageVariant, type CatalogItemDetails } from '@/lib/api';
 import { MediaDetailsPage } from '@/pages/MediaDetailsPage';
 import { ArtworkManager } from '@/routes/ArtworkManager';
@@ -9,21 +10,32 @@ import { AddToCollectionModal } from '@/components/media/AddToCollectionModal';
 export function CatalogDetails() {
   const { id = '' } = useParams();
   const navigate = useNavigate();
-  const [item, setItem] = useState<CatalogItemDetails>();
+  // Seeded from the cache: a title opened before renders at once, no spinner.
+  const cachedItem = cachedValue<CatalogItemDetails>(cacheKeys.catalogItem(id));
+  const [item, setItem] = useState<CatalogItemDetails | undefined>(cachedItem);
   const [error, setError] = useState<string>();
-  const [saved, setSaved] = useState(false);
-  const [watched, setWatched] = useState(false);
+  const [saved, setSaved] = useState(Boolean(cachedItem?.inWatchlist));
+  const [watched, setWatched] = useState(Boolean(cachedItem?.watched));
   const [isAdmin, setIsAdmin] = useState(false);
   const [artworkOpen, setArtworkOpen] = useState(false);
   const [rematchOpen, setRematchOpen] = useState(false);
   const [collectionOpen, setCollectionOpen] = useState(false);
   const [queued, setQueued] = useState(false);
+  const apply = useCallback((next: CatalogItemDetails) => {
+    setItem(next); setSaved(Boolean(next.inWatchlist)); setWatched(Boolean(next.watched));
+  }, []);
   const load = useCallback(async () => {
     setError(undefined);
-    try { const next = (await api.catalogItem(id)).item; setItem(next); setSaved(Boolean(next.inWatchlist)); setWatched(Boolean(next.watched)); }
+    try {
+      // A title opened before renders from cache immediately; the refresh that
+      // follows corrects progress and watchlist state in place.
+      apply(await cached(cacheKeys.catalogItem(id), async () => (await api.catalogItem(id)).item, apply));
+    }
     catch (caught) { setError(caught instanceof Error ? caught.message : 'Could not load this title.'); }
-  }, [id]);
+  }, [id, apply]);
   useEffect(() => { queueMicrotask(() => { void load(); }); }, [load]);
+  // Mutations below rewrite the cached copy so a later visit is not stale.
+  useEffect(() => { if (item) primeCache(cacheKeys.catalogItem(id), item); }, [id, item]);
   useEffect(() => { queueMicrotask(async () => { try { const { user } = await api.me(); setIsAdmin(user.role === 'admin'); } catch { setIsAdmin(false); } }); }, []);
 
   async function toggleWatchlist() {

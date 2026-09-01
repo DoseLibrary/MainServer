@@ -5,7 +5,8 @@ import { MediaCard } from '@/components/media/MediaCard';
 import { Navbar, type NavbarBrandImage } from '@/components/media/Navbar';
 import { Poster } from '@/components/media/Poster';
 import { Button } from '@/components/ui/button';
-import { Spinner } from '@/components/ui/spinner';
+import { Skeleton } from '@/components/ui/skeleton';
+import { cn } from '@/lib/utils';
 
 export interface LibraryNavigationItem<Id extends string = string> {
   id: Id;
@@ -63,6 +64,8 @@ export interface LibraryItem {
   progress?: number;
   /** True when the item arrived through a live update; its card fades in. */
   appearing?: boolean;
+  /** Warms this item's detail data on hover or focus, so the click is instant. */
+  onPrefetch?: () => void;
   interaction?: LibraryItemInteraction;
 }
 
@@ -99,11 +102,33 @@ function ActionButton({ action, variant = 'default' }: { action: LibraryAction; 
   return <Button type="button" variant={variant} onClick={action.onClick}>{action.label}</Button>;
 }
 
+/**
+ * The shape of the page, drawn before its content arrives. A spinner tells the
+ * viewer to wait; a skeleton tells them what is coming, and the swap to real
+ * rows reads as the page filling in rather than replacing itself.
+ */
 function LibraryLoading({ title }: { title: string }) {
   return (
-    <main aria-busy="true" className="mx-auto flex min-h-[60vh] max-w-7xl items-center justify-center px-4 py-16 sm:px-6 lg:px-8">
-      <h1 className="sr-only">{title}</h1>
-      <Spinner className="h-10 w-10 text-muted-foreground" label={`Loading ${title}`} />
+    <main aria-busy="true" className="min-h-screen">
+      <h1 className="sr-only">Loading {title}</h1>
+      <Skeleton className="h-[42vh] w-full rounded-none sm:h-[52vh]" />
+      <div className="space-y-10 px-4 py-8 sm:px-6 lg:px-8">
+        {[0, 1].map((row) => (
+          <div key={row} className="space-y-3">
+            <Skeleton className="h-6 w-40" />
+            <div className="flex gap-4 overflow-hidden">
+              {Array.from({ length: 8 }, (_, index) => (
+                <Skeleton
+                  key={index}
+                  // Fades the row in left-to-right so the wait has direction.
+                  style={{ animationDelay: `${index * 60}ms` }}
+                  className={cn('shrink-0 rounded-lg', row === 0 ? 'aspect-video w-60 sm:w-72 lg:w-80' : 'aspect-[2/3] w-36 sm:w-44 lg:w-48')}
+                />
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
     </main>
   );
 }
@@ -162,7 +187,8 @@ export function LibraryPage<NavigationId extends string = string>({
         )}
 
         <div className="space-y-10 px-4 py-8 sm:px-6 lg:px-8">
-          {sections.map((section) => (
+          {sections.map((section, index) => (
+            <div key={section.id} className="row-enter" style={{ animationDelay: `${Math.min(index, 4) * 70}ms` }}>
             <Carousel
               key={section.id}
               label={section.carouselLabel ?? section.title}
@@ -171,7 +197,12 @@ export function LibraryPage<NavigationId extends string = string>({
               items={section.items}
               getItemKey={(item) => item.id}
               itemClassName={section.layout === 'card' ? 'w-60 sm:w-72 lg:w-80' : 'w-36 sm:w-44 lg:w-48'}
-              renderItem={(item) => <div className={item.appearing ? 'media-appear' : undefined} data-appearing={item.appearing || undefined}>{section.layout === 'card' ? (
+              renderItem={(item) => <div
+                className={item.appearing ? 'media-appear' : undefined}
+                data-appearing={item.appearing || undefined}
+                onPointerEnter={item.onPrefetch}
+                onFocusCapture={item.onPrefetch}
+              >{section.layout === 'card' ? (
                 <MediaCard
                   title={item.title}
                   imageSrc={item.backdropSrc ?? item.posterSrc}
@@ -192,6 +223,7 @@ export function LibraryPage<NavigationId extends string = string>({
                 />
               )}</div>}
             />
+            </div>
           ))}
         </div>
       </main>

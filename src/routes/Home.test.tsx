@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { Home } from './Home';
+import { cacheKeys, cachedValue } from '@/lib/cache';
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -153,5 +154,63 @@ describe('Live catalog updates', () => {
     expect(appearing[0].textContent).toContain('Dune');
     // The title that was already on screen does not re-animate.
     expect(document.querySelector('[data-appearing]')?.textContent).not.toContain('Arrival');
+  });
+});
+
+describe('Snappy navigation', () => {
+  const originalFetch = globalThis.fetch;
+  afterEach(() => { globalThis.fetch = originalFetch; });
+
+  function library(handler?: (url: string) => Response | undefined) {
+    return vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      const custom = handler?.(url);
+      if (custom) return custom;
+      if (url === '/api/v1/setup/status') return json({ setupRequired: false });
+      if (url === '/api/v1/auth/me') return json({ user: { id: 'u1', username: 'filip', role: 'member' } });
+      if (url === '/api/v1/libraries') return json({ libraries: [{ id: 'l1', name: 'Movies', kind: 'movies' }] });
+      if (url.startsWith('/api/v1/catalog/home')) return json({ sections: [{ id: 'newly-added', title: 'Newly Added', layout: 'card', items: [{ id: 'm1', title: 'Arrival', kind: 'movie' }] }] });
+      if (url === '/api/v1/catalog/items/m1') return json({ item: { id: 'm1', title: 'Arrival', kind: 'movie' } });
+      throw new Error(`Unexpected request ${url}`);
+    });
+  }
+
+  it('shows the shape of the page while it loads, not a bare spinner', async () => {
+    let release!: (value: Response) => void;
+    const fetchMock = library((url) => {
+      if (!url.startsWith('/api/v1/catalog/home')) return undefined;
+      return undefined;
+    });
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith('/api/v1/catalog/home')) return new Promise<Response>((resolve) => { release = resolve; });
+      return fetchMock(input);
+    }) as unknown as typeof fetch;
+
+    const { container } = render(<Home />);
+
+    await waitFor(() => expect(container.querySelectorAll('.animate-pulse').length).toBeGreaterThan(4));
+    release(json({ sections: [] }));
+  });
+
+  it('warms a title on hover so opening it needs no round trip', async () => {
+    const fetchMock = library();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    render(<Home />);
+
+    const card = (await screen.findAllByText('Arrival'))[0];
+    const requested = () => fetchMock.mock.calls.filter(([url]) => String(url) === '/api/v1/catalog/items/m1').length;
+    expect(requested()).toBe(0);
+
+    const wrapper = card.closest('div')!;
+    fireEvent.pointerEnter(wrapper);
+    await waitFor(() => expect(requested()).toBeGreaterThan(0));
+
+    // Once warm, hovering again costs nothing: the click will read from cache.
+    // Once warm, hovering again costs nothing: the click reads from cache.
+    const settled = requested();
+    await waitFor(() => expect(cachedValue(cacheKeys.catalogItem('m1'))).toBeDefined());
+    fireEvent.pointerEnter(wrapper);
+    expect(requested()).toBe(settled);
   });
 });

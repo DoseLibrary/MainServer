@@ -39,6 +39,8 @@ function CardArtwork({ src, title, alt, badge, subtitle, progress, interactive }
 
       {src && status !== 'error' && (
         <img
+          loading="lazy"
+          decoding="async"
           src={src}
           alt={alt ?? title}
           className={cn('absolute inset-0 h-full w-full object-cover transition-[opacity,transform] duration-500 ease-out motion-reduce:transform-none motion-reduce:transition-none group-hover:scale-[1.04] group-focus-visible:scale-[1.04]', status === 'loaded' ? 'opacity-100' : 'opacity-0')}

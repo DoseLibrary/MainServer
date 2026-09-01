@@ -1,5 +1,10 @@
 import '@testing-library/jest-dom/vitest';
-import { vi } from 'vitest';
+import { beforeEach, vi } from 'vitest';
+import { clearCache } from '@/lib/cache';
+
+// The API cache is module state shared by every test in a file; each case
+// starts from an empty one so a fixture cannot leak into the next.
+beforeEach(() => { clearCache(); });
 
 if (!window.matchMedia) {
   window.matchMedia = vi.fn().mockImplementation((query: string) => ({
