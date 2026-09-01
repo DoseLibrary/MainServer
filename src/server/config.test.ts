@@ -19,6 +19,7 @@ describe('loadConfig', () => {
       FFPROBE_TIMEOUT_MS: 20000,
       TMDB_CONCURRENCY: 4,
       TMDB_IMAGE_CONCURRENCY: 12,
+      TRUST_PROXY: false,
       TMDB_REQUESTS_PER_SECOND: 8,
       TMDB_TIMEOUT_MS: 8000,
       YT_DLP_PATH: 'yt-dlp',

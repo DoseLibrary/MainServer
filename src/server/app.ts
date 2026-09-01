@@ -40,7 +40,7 @@ import { TraktHistorySource } from './history-sources/trakt.ts';
 import { TautulliHistorySource } from './history-sources/tautulli.ts';
 
 export async function buildApp(config: AppConfig) {
-  const app = Fastify({ logger: config.NODE_ENV !== 'test' });
+  const app = Fastify({ logger: config.NODE_ENV !== 'test', trustProxy: config.TRUST_PROXY === true });
   const connection = createDatabase(config);
   const { database } = connection;
   const tmdb = new TmdbClient(config.TMDB_API_TOKEN ?? '', config.TMDB_CONCURRENCY, config.TMDB_REQUESTS_PER_SECOND, config.TMDB_TIMEOUT_MS);
@@ -81,6 +81,27 @@ export async function buildApp(config: AppConfig) {
   const realtime = new RealtimeService();
   // Without a TMDB token nothing ever enriches, so ingest is the only signal.
   realtime.attach(pluginEvents, { announceOnIngest: !config.TMDB_API_TOKEN });
+
+  // Baseline browser protections on every response. The CSP allows exactly the
+  // one external script the app uses (the Google Cast sender) and nothing else;
+  // media/blob sources cover the player and the offline service worker.
+  app.addHook('onSend', async (_request, reply, payload) => {
+    reply.header('X-Content-Type-Options', 'nosniff');
+    reply.header('X-Frame-Options', 'DENY');
+    reply.header('Referrer-Policy', 'same-origin');
+    reply.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    reply.header('Content-Security-Policy', [
+      "default-src 'self'",
+      "script-src 'self' https://www.gstatic.com",
+      "style-src 'self' 'unsafe-inline'",
+      "img-src 'self' data: blob:",
+      "media-src 'self' blob:",
+      "connect-src 'self' ws: wss:",
+      "frame-ancestors 'none'",
+      "base-uri 'self'",
+    ].join('; '));
+    return payload;
+  });
 
   await app.register(fastifyCookie);
   await app.register(fastifyWebsocket);

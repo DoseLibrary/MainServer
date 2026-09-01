@@ -1,0 +1,30 @@
+# Reverse proxy for Dose.
+#
+# Serves https://dose.local with a locally-generated certificate. HTTPS is not
+# cosmetic here: installing Dose as an app and holding offline downloads both
+# require a secure context on iOS, so plain http would quietly disable them.
+#
+# Point dose.local at this machine first — either a DNS entry on your router,
+# or a line in each device's hosts file:
+#   192.168.x.x  dose.local
+#
+# The certificate is Caddy's own local CA. Trust it once per device
+# (Settings > General > About > Certificate Trust on iOS) or accept the
+# browser warning; a LAN hostname cannot get a public certificate.
+
+dose.local {
+	tls internal
+
+	encode gzip
+
+	# WebSockets (live catalog updates) are proxied transparently.
+	reverse_proxy dose:3000 {
+		# Streaming and downloads move gigabytes; never buffer them in the proxy.
+		flush_interval -1
+	}
+}
+
+# Plain HTTP redirects to HTTPS so a typed address still lands somewhere useful.
+http://dose.local {
+	redir https://dose.local{uri} permanent
+}

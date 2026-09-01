@@ -14,6 +14,7 @@ import { DeviceAuthError, DEVICE_POLL_INTERVAL_MS, type DeviceAuthService } from
 import { UnknownSessionError, type PlaybackSessionService } from './playback-session-service.ts';
 import { GrantNotReadyError, UnknownGrantError, type DownloadService } from './download-service.ts';
 import { DOWNLOAD_PROFILES, estimateTotalBytes, isDownloadProfile } from './download-profiles.ts';
+import { LoginThrottle } from './login-throttle.ts';
 import type { PluginScheduler } from './plugin-scheduler.ts';
 import { UnknownPluginError } from './plugins/registry.ts';
 import { ArtworkPathError, type ArtworkService } from './artwork-service.ts';
@@ -149,11 +150,22 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
     try { const result = await service.setup(parsed.data.username, parsed.data.password); setSession(reply, result.token, production); return reply.status(201).send({ user: result.user }); }
     catch (error) { if (error instanceof Error && error.message === 'SETUP_COMPLETE') return reply.status(409).send({ error: 'Setup already completed' }); throw error; }
   });
+  const loginThrottle = new LoginThrottle();
   app.post('/api/v1/auth/login', async (request, reply) => {
     const parsed = loginCredentials.safeParse(request.body);
     if (!parsed.success) return reply.status(400).send({ error: 'Invalid credentials' });
+    // Volume is the only thing a password guesser has; take it away.
+    const waitMs = loginThrottle.retryAfterMs(request.ip, parsed.data.username);
+    if (waitMs > 0) {
+      reply.header('Retry-After', String(Math.ceil(waitMs / 1000)));
+      return reply.status(429).send({ error: 'Too many attempts. Try again later.' });
+    }
     const result = await service.login(parsed.data.username, parsed.data.password, describeUserAgent(request.headers['user-agent']));
-    if (!result) return reply.status(401).send({ error: 'Invalid credentials' });
+    if (!result) {
+      loginThrottle.recordFailure(request.ip, parsed.data.username);
+      return reply.status(401).send({ error: 'Invalid credentials' });
+    }
+    loginThrottle.recordSuccess(parsed.data.username);
     setSession(reply, result.token, production); return { user: result.user };
   });
   app.post('/api/v1/auth/logout', async (request, reply) => { await service.logout(request.cookies[SESSION_COOKIE]); reply.clearCookie(SESSION_COOKIE, { path: '/' }); return reply.status(204).send(); });

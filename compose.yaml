@@ -13,8 +13,14 @@ services:
       CONFIG_PATH: /config
       TRANSCODE_PATH: /transcode
       TMDB_API_TOKEN: ${TMDB_API_TOKEN:-}
+      # The Caddy proxy in this compose is the only way in; trust its
+      # X-Forwarded-For so login throttling sees real client addresses.
+      TRUST_PROXY: "true"
+
+    # Reached through the proxy; expose a port directly only if you need to
+    # bypass it (DOSE_PORT=3000 restores the old behaviour).
     ports:
-      - "${DOSE_PORT:-3000}:3000"
+      - "${DOSE_PORT:-127.0.0.1:3000}:3000"
     volumes:
       - dose-config:/config
       - dose-transcode:/transcode
@@ -46,7 +52,25 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      dose:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - dose-caddy-data:/data
+      - dose-caddy-config:/config
+    security_opt:
+      - no-new-privileges:true
+
 volumes:
   dose-postgres:
   dose-config:
   dose-transcode:
+  dose-caddy-data:
+  dose-caddy-config:
