@@ -12,6 +12,8 @@ import type { CatalogService } from './catalog-service.ts';
 import { PluginAlreadyRunningError, PluginNotRunnableError, UnknownPluginActionError, type PluginService } from './plugin-service.ts';
 import { DeviceAuthError, DEVICE_POLL_INTERVAL_MS, type DeviceAuthService } from './device-auth-service.ts';
 import { UnknownSessionError, type PlaybackSessionService } from './playback-session-service.ts';
+import { GrantNotReadyError, UnknownGrantError, type DownloadService } from './download-service.ts';
+import { DOWNLOAD_PROFILES, estimateTotalBytes, isDownloadProfile } from './download-profiles.ts';
 import type { PluginScheduler } from './plugin-scheduler.ts';
 import { UnknownPluginError } from './plugins/registry.ts';
 import { ArtworkPathError, type ArtworkService } from './artwork-service.ts';
@@ -91,6 +93,8 @@ const maturityLimit = z.number().int().min(0).max(21).nullable();
 const userCreate = credentials.extend({ role: z.enum(['admin', 'member']).default('member'), maxMaturityLevel: maturityLimit.optional() });
 const userUpdate = z.object({ role: z.enum(['admin', 'member']).optional(), disabled: z.boolean().optional(), password: z.string().min(10).max(256).optional(), maxMaturityLevel: maturityLimit.optional() }).refine((value) => Object.keys(value).length > 0);
 const playbackSessionStart = z.object({ mediaItemId: z.string().uuid(), playMethod: z.enum(['direct', 'remux', 'transcode']).default('direct'), positionSeconds: z.number().min(0).optional(), durationSeconds: z.number().min(0).optional() });
+const downloadBody = z.object({ mediaItemId: z.string().uuid(), profile: z.string().refine(isDownloadProfile, 'Unknown profile') });
+const downloadEstimateQuery = z.object({ mediaItemId: z.string().uuid(), profile: z.string().refine(isDownloadProfile, 'Unknown profile') });
 const historyForgetQuery = z.object({ itemId: z.string().uuid().optional() });
 // A viewer nudge for a track automatic timing did not quite land.
 const subtitleQuery = z.object({ offsetMs: z.coerce.number().int().min(-600_000).max(600_000).optional() });
@@ -131,7 +135,7 @@ function requireAdmin(user: PublicUser, reply: FastifyReply) {
   return true;
 }
 
-export async function registerApiRoutes(app: FastifyInstance, service: AuthService, production: boolean, filesystem: LibraryFilesystem = nodeLibraryFilesystem, scanner?: ScanCoordinator, catalog?: CatalogService, imagesDir = '/config/images', nativeLibraryPaths = false, plugins?: PluginService, pluginScheduler?: PluginScheduler, artwork?: ArtworkService, subtitleStore?: SubtitleStore, metadataMatch?: MetadataMatchService, libraryWatcher?: Pick<LibraryWatcher, 'synchronize'>, spriteStore?: PreviewSpriteStore, settings?: UserSettingsService, userCollections?: UserCollectionsService, queue?: QueueService, watchData?: WatchDataService, historySources?: HistorySources, deviceAuth?: DeviceAuthService, playbackSessions?: PlaybackSessionService) {
+export async function registerApiRoutes(app: FastifyInstance, service: AuthService, production: boolean, filesystem: LibraryFilesystem = nodeLibraryFilesystem, scanner?: ScanCoordinator, catalog?: CatalogService, imagesDir = '/config/images', nativeLibraryPaths = false, plugins?: PluginService, pluginScheduler?: PluginScheduler, artwork?: ArtworkService, subtitleStore?: SubtitleStore, metadataMatch?: MetadataMatchService, libraryWatcher?: Pick<LibraryWatcher, 'synchronize'>, spriteStore?: PreviewSpriteStore, settings?: UserSettingsService, userCollections?: UserCollectionsService, queue?: QueueService, watchData?: WatchDataService, historySources?: HistorySources, deviceAuth?: DeviceAuthService, playbackSessions?: PlaybackSessionService, downloads?: DownloadService) {
   const imageVariants = new ImageVariantStore(imagesDir);
   const synchronizeWatchers = async () => {
     try { await libraryWatcher?.synchronize(); }
@@ -240,6 +244,98 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
     await playbackSessions.forget(user.id, query.data.itemId);
     return reply.status(204).send();
   });
+  // Offline downloads: a grant is requested, encoded in the background, fetched
+  // with ranges so an interrupted transfer resumes, then claimed so the server
+  // can drop its copy.
+  app.get('/api/v1/downloads', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    if (!downloads) return reply.status(503).send({ error: 'Downloads unavailable' });
+    return { downloads: await downloads.list(user.id) };
+  });
+
+  /** What a title, or a whole season, would cost on the device. */
+  app.get('/api/v1/downloads/estimate', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    if (!downloads || !catalog) return reply.status(503).send({ error: 'Downloads unavailable' });
+    const query = downloadEstimateQuery.safeParse(request.query); if (!query.success) return reply.status(400).send({ error: 'Invalid estimate request' });
+    const viewer = catalog.forViewer(user.maxMaturityLevel);
+    const item = await viewer.item(query.data.mediaItemId, user.id);
+    if (!item) return reply.status(404).send({ error: 'Item not found' });
+    const profile = DOWNLOAD_PROFILES[query.data.profile as 'sd' | 'hd'];
+
+    // A season is downloaded as its episodes, so the figure shown is their total.
+    const episodes = (item.children ?? []).filter((child) => child.kind === 'episode');
+    const targets = episodes.length > 0 ? episodes : [item];
+    const durations = await Promise.all(targets.map(async (target) => {
+      const source = await viewer.playbackSource(target.id);
+      return source?.durationSeconds ?? 0;
+    }));
+    return {
+      items: targets.map((target, index) => ({ id: target.id, title: target.title, estimatedBytes: estimateTotalBytes([durations[index]], profile) })),
+      totalBytes: estimateTotalBytes(durations, profile),
+      profile: profile.id,
+    };
+  });
+
+  app.post('/api/v1/downloads', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    if (!downloads || !catalog) return reply.status(503).send({ error: 'Downloads unavailable' });
+    const body = downloadBody.safeParse(request.body); if (!body.success) return reply.status(400).send({ error: 'Invalid download request' });
+    // The same viewer gate as streaming: a restricted account cannot take home
+    // what it is not allowed to watch.
+    const viewer = catalog.forViewer(user.maxMaturityLevel);
+    const item = await viewer.item(body.data.mediaItemId, user.id);
+    const source = await viewer.playbackSource(body.data.mediaItemId);
+    if (!item || !source) return reply.status(404).send({ error: 'No playable file for this item' });
+    const absolute = resolveWithin(source.rootPath, source.relativePath);
+    if (!absolute) return reply.status(404).send({ error: 'File not found' });
+
+    const grant = await downloads.request({
+      userId: user.id, mediaItemId: body.data.mediaItemId, profile: body.data.profile as 'sd' | 'hd',
+      sourcePath: absolute, durationSeconds: source.durationSeconds, title: item.title,
+    });
+    return reply.status(201).send({ download: grant });
+  });
+
+  app.get('/api/v1/downloads/:id', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    if (!downloads) return reply.status(503).send({ error: 'Downloads unavailable' });
+    const params = idParams.safeParse(request.params); if (!params.success) return reply.status(400).send({ error: 'Invalid download id' });
+    try { return { download: await downloads.get(user.id, params.data.id) }; }
+    catch (error) { return downloadError(error, reply); }
+  });
+
+  app.get('/api/v1/downloads/:id/file', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    if (!downloads) return reply.status(503).send({ error: 'Downloads unavailable' });
+    const params = idParams.safeParse(request.params); if (!params.success) return reply.status(400).send({ error: 'Invalid download id' });
+    let file; try { file = await downloads.fileFor(user.id, params.data.id); }
+    catch (error) { return downloadError(error, reply); }
+
+    const range = resolveRange(request.headers.range, file.size);
+    if (range.status === 416) { reply.header('Content-Range', `bytes */${file.size}`); return reply.status(416).send(); }
+    reply.header('Accept-Ranges', 'bytes'); reply.header('Content-Type', 'video/mp4');
+    reply.header('Content-Length', String(range.length)); reply.header('Cache-Control', 'no-store');
+    if (range.status === 206) { reply.header('Content-Range', `bytes ${range.start}-${range.end}/${file.size}`); reply.status(206); }
+    return reply.send(createReadStream(file.path, { start: range.start, end: range.end }));
+  });
+
+  app.post('/api/v1/downloads/:id/complete', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    if (!downloads) return reply.status(503).send({ error: 'Downloads unavailable' });
+    const params = idParams.safeParse(request.params); if (!params.success) return reply.status(400).send({ error: 'Invalid download id' });
+    try { await downloads.claim(user.id, params.data.id); return reply.status(204).send(); }
+    catch (error) { return downloadError(error, reply); }
+  });
+
+  app.delete('/api/v1/downloads/:id', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    if (!downloads) return reply.status(503).send({ error: 'Downloads unavailable' });
+    const params = idParams.safeParse(request.params); if (!params.success) return reply.status(400).send({ error: 'Invalid download id' });
+    try { await downloads.cancel(user.id, params.data.id); return reply.status(204).send(); }
+    catch (error) { return downloadError(error, reply); }
+  });
+
   app.get('/api/v1/admin/activity', async (request, reply) => {
     const actor = await requireUser(request, reply, service); if (!actor || !requireAdmin(actor, reply)) return;
     if (!playbackSessions) return reply.status(503).send({ error: 'Playback reporting unavailable' });
@@ -879,6 +975,13 @@ export function describeUserAgent(userAgent?: string): string {
     : /CrOS/.test(userAgent) ? 'ChromeOS' : /Linux/.test(userAgent) ? 'Linux' : undefined;
   if (browser && platform) return `${browser} on ${platform}`;
   return browser ?? platform ?? 'Unknown device';
+}
+
+function downloadError(error: unknown, reply: FastifyReply) {
+  if (error instanceof UnknownGrantError) return reply.status(404).send({ error: error.message });
+  // Still encoding: the client polls rather than treating this as a failure.
+  if (error instanceof GrantNotReadyError) return reply.status(409).send({ error: 'Download is not ready yet', status: error.message });
+  throw error;
 }
 
 function deviceAuthError(error: unknown, reply: FastifyReply) {

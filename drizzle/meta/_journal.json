@@ -169,6 +169,13 @@
       "when": 1788239381029,
       "tag": "0023_goofy_doctor_faustus",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1788258721402,
+      "tag": "0024_dear_luminals",
+      "breakpoints": true
     }
   ]
 }

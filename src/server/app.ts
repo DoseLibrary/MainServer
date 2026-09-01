@@ -9,6 +9,7 @@ import { createDatabase, isEmbeddedDatabase } from './db/client.ts';
 import { AuthService } from './auth-service.ts';
 import { DeviceAuthService } from './device-auth-service.ts';
 import { PlaybackSessionService } from './playback-session-service.ts';
+import { DownloadService } from './download-service.ts';
 import { REALTIME_SUBSCRIBER, RealtimeService, registerRealtimeRoute } from './realtime.ts';
 import { registerApiRoutes } from './routes.ts';
 import { ScanCoordinator } from './scanner.ts';
@@ -72,6 +73,11 @@ export async function buildApp(config: AppConfig) {
     catch (error) { app.log.error(error, 'library watcher bootstrap failed'); }
   }
 
+  const downloads = new DownloadService(database, join(config.CONFIG_PATH, 'downloads'));
+  // Clear out files the devices never came back for, on boot and hourly.
+  const downloadSweep = setInterval(() => { void downloads.sweep().catch(() => undefined); }, 60 * 60 * 1000);
+  void downloads.sweep().catch(() => undefined);
+
   const realtime = new RealtimeService();
   // Without a TMDB token nothing ever enriches, so ingest is the only signal.
   realtime.attach(pluginEvents, { announceOnIngest: !config.TMDB_API_TOKEN });
@@ -80,9 +86,11 @@ export async function buildApp(config: AppConfig) {
   await app.register(fastifyWebsocket);
   const auth = new AuthService(database);
   registerRealtimeRoute(app, auth, realtime);
-  await registerApiRoutes(app, auth, config.NODE_ENV === 'production', undefined, scanner, new CatalogService(database, join(config.CONFIG_PATH, 'trailers'), pluginEvents), join(config.CONFIG_PATH, 'images'), config.NODE_ENV === 'development' && isEmbeddedDatabase(config.DATABASE_URL), plugins, pluginScheduler, artwork, subtitleStore, metadataMatch, libraryWatcher, spriteStore, new UserSettingsService(database), new UserCollectionsService(database), new QueueService(database), new WatchDataService(database), { plex: new PlexHistorySource(), trakt: new TraktHistorySource(), tautulli: new TautulliHistorySource() }, new DeviceAuthService(database), new PlaybackSessionService(database));
+  await registerApiRoutes(app, auth, config.NODE_ENV === 'production', undefined, scanner, new CatalogService(database, join(config.CONFIG_PATH, 'trailers'), pluginEvents), join(config.CONFIG_PATH, 'images'), config.NODE_ENV === 'development' && isEmbeddedDatabase(config.DATABASE_URL), plugins, pluginScheduler, artwork, subtitleStore, metadataMatch, libraryWatcher, spriteStore, new UserSettingsService(database), new UserCollectionsService(database), new QueueService(database), new WatchDataService(database), { plex: new PlexHistorySource(), trakt: new TraktHistorySource(), tautulli: new TautulliHistorySource() }, new DeviceAuthService(database), new PlaybackSessionService(database), downloads);
 
   app.addHook('onClose', async () => {
+    clearInterval(downloadSweep);
+    downloads.abortAll();
     realtime.closeAll();
     plugins.abortAll();
     await pluginScheduler.stop();

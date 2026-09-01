@@ -22,6 +22,7 @@ export const mediaKind = pgEnum('media_kind', ['movie', 'series', 'season', 'epi
 export const scanStatus = pgEnum('scan_status', ['queued', 'running', 'completed', 'failed']);
 export const pluginRunStatus = pgEnum('plugin_run_status', ['running', 'succeeded', 'failed']);
 export const deviceAuthStatus = pgEnum('device_auth_status', ['pending', 'approved', 'denied']);
+export const downloadStatus = pgEnum('download_status', ['preparing', 'ready', 'claimed', 'failed']);
 
 const timestamps = {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -76,6 +77,32 @@ export const sessions = pgTable('sessions', {
  * plays, and ends it on exit; administrators watch these to see what the server
  * is serving right now.
  */
+/**
+ * One requested offline download. The server keeps the encoded file only while
+ * the device is fetching it; the row outlives the file so an interrupted
+ * transfer can resume and so expiry is server truth rather than a device claim.
+ */
+export const downloadGrants = pgTable('download_grants', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  mediaItemId: uuid('media_item_id').notNull().references(() => mediaItems.id, { onDelete: 'cascade' }),
+  profile: text('profile').notNull(),
+  status: downloadStatus('status').notNull().default('preparing'),
+  /** Absolute path of the encoded file while it exists. */
+  filePath: text('file_path'),
+  /** Size once encoded; null while preparing. */
+  sizeBytes: bigint('size_bytes', { mode: 'number' }),
+  estimatedBytes: bigint('estimated_bytes', { mode: 'number' }).notNull().default(0),
+  error: text('error'),
+  /** When the device copy stops being playable. */
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  claimedAt: timestamp('claimed_at', { withTimezone: true }),
+  ...timestamps,
+}, (table) => [
+  index('download_grants_user_index').on(table.userId),
+  index('download_grants_status_index').on(table.status),
+]);
+
 export const playbackSessions = pgTable('playback_sessions', {
   id: uuid('id').primaryKey().defaultRandom(),
   userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
