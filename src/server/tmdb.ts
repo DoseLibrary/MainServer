@@ -74,6 +74,9 @@ const records = (input: unknown, max = 100) => Array.isArray(input) ? input.slic
 const date = (input: unknown) => { const value = text(input, 10); return value && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : undefined; };
 const yearOf = (value?: string) => value && /^\d{4}/.test(value) ? Number(value.slice(0, 4)) : undefined;
 
+/** Cached responses held during a scan; entries are small, scans are wide. */
+const CACHE_ENTRIES = 20_000;
+
 export class TmdbClient {
   private readonly semaphore: Semaphore;
   private readonly rateGate = new Semaphore(1);
@@ -159,7 +162,19 @@ export class TmdbClient {
     return this.cached(`season:${seriesId}:${seasonNumber}`, () => this.fetchSeason(seriesId, seasonNumber));
   }
 
-  getEpisode(seriesId: number, seasonNumber: number, episodeNumber: number): Promise<TmdbEpisodeMetadata | null> {
+  /**
+   * One episode's metadata.
+   *
+   * The season payload already carries every episode, so a season of fifteen
+   * costs one request rather than fifteen — the difference between minutes and
+   * an hour when a whole library is enriched. The direct per-episode endpoint
+   * is only used when the season does not list the episode (a late addition to
+   * a season TMDB has not refreshed, or a season fetch that failed).
+   */
+  async getEpisode(seriesId: number, seasonNumber: number, episodeNumber: number): Promise<TmdbEpisodeMetadata | null> {
+    const season = await this.getSeason(seriesId, seasonNumber).catch(() => null);
+    const fromSeason = season?.episodes.find((episode) => episode.episodeNumber === episodeNumber);
+    if (fromSeason) return fromSeason;
     return this.cached(`episode:${seriesId}:${seasonNumber}:${episodeNumber}`, () => this.fetchEpisode(seriesId, seasonNumber, episodeNumber));
   }
 
@@ -171,7 +186,7 @@ export class TmdbClient {
     const cached = this.cache.get(key);
     if (cached && cached.expiresAt > this.now()) return cached.pending as Promise<T | null>;
     if (cached) this.cache.delete(key);
-    if (this.cache.size >= 1000) this.cache.delete(this.cache.keys().next().value as string);
+    if (this.cache.size >= CACHE_ENTRIES) this.cache.delete(this.cache.keys().next().value as string);
     const pending = this.semaphore.run(load);
     this.cache.set(key, { expiresAt: this.now() + 3_600_000, pending });
     void pending.then((value) => { if (!value) this.cache.delete(key); }, () => this.cache.delete(key));

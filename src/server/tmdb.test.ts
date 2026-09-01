@@ -90,4 +90,35 @@ describe('TmdbClient rich metadata', () => {
     await expect(client.find('movie', 'Fallback')).resolves.toMatchObject({ title: 'Fallback', genres: [], cast: [], recommendations: [] });
     expect(await client.getEpisode(-1, 1, 1)).toBeNull();
   });
+
+  it('serves every episode of a season from one request', async () => {
+    const season = {
+      id: 500, season_number: 1, name: 'Season 1', air_date: '2002-06-02',
+      episodes: Array.from({ length: 13 }, (_, index) => ({
+        id: 1000 + index, episode_number: index + 1, name: `Episode ${index + 1}`,
+        overview: 'x', air_date: '2002-06-02', runtime: 60, vote_average: 8.5, still_path: `/e${index + 1}.jpg`,
+      })),
+    };
+    const fetcher = vi.fn().mockResolvedValue(json(season));
+    const client = new TmdbClient('token', 4, 1000, 1000, fetcher, async () => undefined);
+
+    // A whole season enriched: thirteen episodes, one request.
+    const episodes = await Promise.all(Array.from({ length: 13 }, (_, index) => client.getEpisode(42, 1, index + 1)));
+
+    expect(episodes.map((episode) => episode?.title)).toEqual(season.episodes.map((episode) => episode.name));
+    expect(episodes[4]).toMatchObject({ id: 1004, episodeNumber: 5, seasonNumber: 1, rating: 8.5, stillPath: '/e5.jpg' });
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(fetcher.mock.calls[0]?.[0]).toContain('/tv/42/season/1');
+  });
+
+  it('falls back to the episode endpoint when the season does not list it', async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(json({ id: 500, season_number: 2, name: 'Season 2', episodes: [] }))
+      .mockResolvedValueOnce(json({ id: 2001, episode_number: 9, season_number: 2, name: 'Late Addition', air_date: '2024-01-01' }));
+    const client = new TmdbClient('token', 1, 1000, 1000, fetcher, async () => undefined);
+
+    await expect(client.getEpisode(42, 2, 9)).resolves.toMatchObject({ id: 2001, title: 'Late Addition' });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher.mock.calls[1]?.[0]).toContain('/season/2/episode/9');
+  });
 });

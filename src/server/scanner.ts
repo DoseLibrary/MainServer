@@ -126,7 +126,7 @@ export class ScanCoordinator {
         catch { /* metadata remains useful even when a provider is temporarily unavailable */ }
       }
     };
-    await Promise.all(Array.from({ length: Math.min(this.config.TMDB_CONCURRENCY ?? 4, artwork.length) }, worker));
+    await Promise.all(Array.from({ length: Math.min(this.config.TMDB_IMAGE_CONCURRENCY ?? 12, artwork.length) }, worker));
   }
   private async discover(root: string, scanId: string): Promise<string[]> {
     const files: string[] = []; const directories = [root]; const limit = this.config.SCAN_FS_CONCURRENCY ?? 24;

@@ -38,16 +38,30 @@ ffmpeg decode time, and rate limits are.
 | Phase | Bound by | Estimate | Notes |
 | --- | --- | --- | --- |
 | Discovery (directory walk) | HDD seeks | **< 2 min** | 24-way concurrent readdir |
-| ffprobe all files | disk seeks, 3-way | **~15–25 min** | ~250 ms/file, `FFPROBE_CONCURRENCY=3` |
-| TMDB enrichment | 8 req/s rate limit | **~1.5–2 h** | ~31k API calls (see finding 1) plus ~20k artwork downloads at 4-way |
-| **Scan total (first run)** | TMDB | **≈ 2 h** | ingest overlaps enrichment |
+| ffprobe all files | disk seeks, 6-way | **~8–12 min** | ~250 ms/file, `FFPROBE_CONCURRENCY=6` |
+| TMDB enrichment | 8 req/s rate limit | **~6–8 min** | ~3.1k API calls after season batching (see below), plus ~22k artwork downloads at 12-way |
+| **Scan total (first run)** | ffprobe + enrichment | **≈ 15–20 min** | ingest overlaps enrichment |
 | Trailer fetcher | YouTube, sequential | **~5–8 h** | ~1,130 titles × 15–25 s (lookup + 30–100 MB download); ~70 GB stored |
 | Subtitle extractor | **library re-read** | **~20–40 h** | demuxing reads the whole container; one ffmpeg pass *per text stream* (finding 3) |
 | Preview sprites | **full video decode** | **~1–3 weeks** | `fps=1/10` decodes every frame of ~9,500 h of content, one file at a time (finding 2) |
 | Intro detector | partial reads | **~6–11 h** | first 10 min of each episode (~330 MB read) + 226 ms correlation; cached by signature after |
 | Subtitle sync | partial reads | **~1–3 h** | only files with sidecars; ~4 s per track (2 s read + 1.7 s search) |
 
-Practical schedule: scan finishes the same afternoon; trailers overnight;
+### Where the enrichment calls went
+
+A first pass over the reference library, by API call:
+
+| Work | Calls before | Calls now |
+| --- | --- | --- |
+| Movies (search + detail) | 2,000 | 2,000 |
+| Collections | ~150 | ~150 |
+| Series (search + detail), once per scan | 260 | 260 |
+| Seasons | 650 | 650 |
+| **Episodes** | **10,000** | **0** — served from the season payload |
+| Redundant re-enrichment of unchanged items | ~18,000 | 0 — version-gated |
+| **Total** | **~31,000 (~65 min)** | **~3,060 (~6 min)** |
+
+Practical schedule: scan finishes in under half an hour; trailers overnight;
 subtitles and intros over a weekend; **sprites are the outlier** and want the
 fix below before running against 25 TB.
 
