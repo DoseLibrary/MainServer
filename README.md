@@ -4,21 +4,22 @@ Dose is a single self-hosted application for a household media library. One
 container serves the web interface and API, while PostgreSQL stores shared
 catalog data and separate viewing state for each family user.
 
-## Run with Docker Compose
+## Install
 
-1. Copy `.env.example` to `.env`.
-2. Set a long, unique URL-safe `POSTGRES_PASSWORD` using letters, numbers,
-   underscores, or hyphens, and set the host paths containing your movies and
-   shows. Docker Desktop accepts forward-slash Windows paths such as
-   `D:/Media/Movies`.
-3. Start the stack:
+The full walkthrough — from an empty machine to a household watching,
+downloading to phones, and pairing TVs — is in **[docs/INSTALL.md](docs/INSTALL.md)**.
 
-   ```sh
-   docker compose up --build -d
-   ```
+The short version:
 
-4. Open `http://localhost:3000`. The API health endpoint is available at
-   `http://localhost:3000/api/v1/health`.
+1. Copy `.env.example` to `.env`; set `POSTGRES_PASSWORD`, your media paths,
+   and a TMDB token.
+2. Point `dose.local` at this machine (router DNS entry, or a hosts line).
+3. `docker compose up --build -d` and open `https://dose.local`.
+
+The bundled Caddy proxy serves HTTPS with a local certificate — required for
+installing Dose as an app and for offline downloads on iOS. The app container
+itself listens on localhost only; set `DOSE_PORT=3000` in `.env` if you want
+direct access for debugging.
 
 Movies and shows are mounted read-only at `/media/movies` and `/media/shows`.
 Dose configuration, temporary transcodes, and PostgreSQL data use the writable

@@ -8,7 +8,8 @@ RUN bun run build
 FROM oven/bun:1.3.10-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
-RUN apk add --no-cache ffmpeg \
+# yt-dlp powers the trailer plugin; without it trailer runs fail cleanly but fetch nothing.
+RUN apk add --no-cache ffmpeg yt-dlp \
   && addgroup -S dose \
   && adduser -S dose -G dose \
   && mkdir -p /config /transcode \
