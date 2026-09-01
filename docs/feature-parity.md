@@ -18,6 +18,10 @@ what is still missing. Functionality only: none of this copies their interfaces.
 | Playback speed | 0.5×–2×, stored with the account. |
 | Subtitle appearance | Size and backdrop, stored with the account. |
 | Subtitle sync | Sidecar `.srt`/`.vtt` files are imported and re-timed against the audio by the `subtitle-sync` plugin; the player has a manual delay nudge for the rest. |
+| Offline downloads | Installed PWA holds titles in OPFS; season queueing with size totals, 30-day expiry, offline playback, progress sync-back. |
+| HLS transcode delivery | Seekable VOD segments with a quality ladder (source/720p/480p); remuxes seek via stream restart. |
+| Device pairing + management | QR pairing, per-device sessions, revocation. |
+| Security baseline | Login throttling, CSP/security headers, HTTPS via bundled Caddy at dose.local. |
 | Trailers, scrubber previews, subtitle extraction | Plugins, scheduled and event-driven. |
 | Collections, watchlist, marathon queue, watch-data import | See `docs/personal-library.md`. |
 
@@ -25,24 +29,21 @@ what is still missing. Functionality only: none of this copies their interfaces.
 
 Roughly in order of value for a self-hosted server:
 
-1. **Downloads for offline viewing.** Netflix and Plex both sync titles to a
-   device. Needs a transcode-to-file pipeline, a download manifest, and client
-   storage; the largest remaining piece of work.
-2. **Live TV and DVR.** Plex, Emby, and Jellyfin all tune HDHomeRun-style
+1. **Live TV and DVR.** Plex, Emby, and Jellyfin all tune HDHomeRun-style
    sources and record to disk. A whole subsystem: tuner discovery, EPG ingest,
    scheduling, and recording.
-3. **Subtitle search and download.** OpenSubtitles-style lookup for titles whose
+2. **Subtitle search and download.** OpenSubtitles-style lookup for titles whose
    files carry no usable track. Fits the plugin model directly, but it is the
    first plugin that would need network access as its point. Whatever it fetches
    lands in the same sidecar path the sync plugin already watches, so timing is
    already handled.
-4. **Bandwidth-aware quality ladder.** The plan negotiator picks one rendition;
-   there is no ABR ladder or client-driven quality switch during playback.
-5. **Skip credits.** The intro detector already finds shared segments; end
+3. **TV-friendly navigation.** The web app assumes a pointer; there is no
+   D-pad/remote-key navigation, so a TV browser or console is awkward to drive.
+4. **Skip credits.** The intro detector already finds shared segments; end
    credits need either chapter metadata or a second detection pass.
-6. **Multi-user recommendations.** Recommendation edges come from the provider,
+5. **Multi-user recommendations.** Recommendation edges come from the provider,
    not from what this household actually watches.
-7. **Remote access helper.** No relay or port-mapping assistance; Dose assumes
+6. **Remote access helper.** No relay or port-mapping assistance; Dose assumes
    the operator arranges reachability.
 
 ## Deliberately not pursued
