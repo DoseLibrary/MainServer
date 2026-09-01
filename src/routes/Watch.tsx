@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { VideoPlayer } from '@/components/media/VideoPlayer';
 import { Button } from '@/components/ui/button';
-import { api, imageVariant, type CatalogItemDetails, type IntroMarker, type MediaSprite, type PlaybackResponse, type UserSettings } from '@/lib/api';
+import { api, imageVariant, type CatalogItemDetails, type ChapterMarker, type IntroMarker, type MediaSprite, type PlaybackResponse, type UserSettings } from '@/lib/api';
 import { detectMediaCapabilities } from '@/lib/media-capabilities';
 
 export function Watch() {
@@ -17,6 +17,7 @@ export function Watch() {
   const [playback, setPlayback] = useState<PlaybackResponse>();
   const [thumbnails, setThumbnails] = useState<MediaSprite>();
   const [intro, setIntro] = useState<IntroMarker>();
+  const [chapters, setChapters] = useState<ChapterMarker[]>([]);
   // Re-negotiating with another audio track swaps dubs or commentary mid-title.
   const [audioTrackIndex, setAudioTrackIndex] = useState<number>();
   // Switching tracks reloads the stream; playback resumes where it left off.
@@ -34,7 +35,7 @@ export function Watch() {
   const sessionRef = useRef<string | undefined>(undefined);
   const [error, setError] = useState<string>();
   const load = useCallback(async () => {
-    setError(undefined); setPlayback(undefined); setThumbnails(undefined); setIntro(undefined);
+    setError(undefined); setPlayback(undefined); setThumbnails(undefined); setIntro(undefined); setChapters([]);
     try {
       const [{ item: nextItem }, nextPlayback] = await Promise.all([api.catalogItem(id), api.playback(id, detectMediaCapabilities(), audioTrackIndex)]);
       // A remux cannot seek by byte range, so it opens at the resume point instead.
@@ -46,6 +47,8 @@ export function Watch() {
       void api.mediaSprites(id).then(({ sprite }) => setThumbnails(sprite)).catch(() => setThumbnails(undefined));
       // Intro markers are optional; a title without one simply hides Skip intro.
       void api.mediaIntro(id).then(({ intro: marker }) => setIntro(marker ?? undefined)).catch(() => setIntro(undefined));
+      // Chapters mark the scrub rail when the file carries them.
+      void api.mediaChapters(id).then(({ chapters: next }) => setChapters(next)).catch(() => setChapters([]));
     } catch (caught) { setError(caught instanceof Error ? caught.message : 'Playback could not be started.'); }
   }, [id, audioTrackIndex]);
   useEffect(() => { queueMicrotask(() => { void load(); }); }, [load]);
@@ -138,6 +141,7 @@ export function Watch() {
     nextUp={nextUp}
     onNext={marathon ? () => void advanceQueue() : nextHref ? () => navigate(nextHref) : undefined}
     intro={intro}
+    chapters={chapters}
     subtitleOffsetMs={subtitleOffsetMs}
     onSubtitleOffsetChange={setSubtitleOffsetMs}
     speedPercent={settings?.playbackSpeedPercent ?? 100}

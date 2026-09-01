@@ -14,6 +14,7 @@ function mockPlayback(next: unknown) {
     if (url.includes('/playback')) return json({ plan: { mode: 'direct', container: 'mp4', remux: false, reasons: [] }, durationSeconds: 100, stream: { url: '/stream.mp4', direct: true } });
     if (url.includes('/sprites')) return json({ sprite: null });
     if (url.includes('/intro')) return json({ intro: { startSeconds: 10, endSeconds: 55 } });
+    if (url.includes('/chapters')) return json({ chapters: [] });
     return json({ item: { id: ONE, title: 'One', kind: 'movie' } });
   });
 }
@@ -111,6 +112,7 @@ describe('Skip intro', () => {
       if (url.includes('/playback')) return json({ plan: { mode: 'direct', container: 'mp4', remux: false, reasons: [] }, durationSeconds: 100, stream: { url: '/stream.mp4', direct: true } });
       if (url.includes('/sprites')) return json({ sprite: null });
       if (url.includes('/intro')) return json({ intro: null });
+      if (url.includes('/chapters')) return json({ chapters: [] });
       return json({ item: { id: ONE, title: 'One', kind: 'movie' } });
     });
     globalThis.fetch = fetchMock as unknown as typeof fetch;
@@ -181,6 +183,7 @@ describe('Transcode seeking', () => {
       if (url.includes('/playback')) return json({ plan: { mode: 'transcode', container: 'mp4', remux: true, reasons: [] }, durationSeconds: 100, stream: { url: `/api/v1/catalog/items/${ONE}/stream?plan=abc`, direct: false } });
       if (url.includes('/sprites')) return json({ sprite: null });
       if (url.includes('/intro')) return json({ intro: null });
+      if (url.includes('/chapters')) return json({ chapters: [] });
       return json({ item: { id: ONE, title: 'One', kind: 'movie' } });
     });
   }
@@ -204,6 +207,7 @@ describe('Transcode seeking', () => {
       if (url.includes('/playback')) return json({ plan: { mode: 'transcode', container: 'mp4', remux: false, reasons: [] }, durationSeconds: 100, stream: { url: '/stream?plan=abc', hlsUrl: `/api/v1/catalog/items/${ONE}/hls/master.m3u8?plan=abc`, direct: false } });
       if (url.includes('/sprites')) return json({ sprite: null });
       if (url.includes('/intro')) return json({ intro: null });
+      if (url.includes('/chapters')) return json({ chapters: [] });
       return json({ item: { id: ONE, title: 'One', kind: 'movie' } });
     }) as unknown as typeof fetch;
     renderWatch('');
@@ -211,5 +215,37 @@ describe('Transcode seeking', () => {
 
     // hls.js owns the element in browsers without native HLS; src stays unset.
     expect(video.getAttribute('src')).toBeNull();
+  });
+});
+
+describe('Chapter markers', () => {
+  const originalFetch = globalThis.fetch;
+  afterEach(() => { globalThis.fetch = originalFetch; });
+
+  it('marks the rail where chapters begin', async () => {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/playback')) return json({ plan: { mode: 'direct', container: 'mp4', remux: false, reasons: [] }, durationSeconds: 100, stream: { url: '/stream.mp4', direct: true } });
+      if (url.includes('/sprites')) return json({ sprite: null });
+      if (url.includes('/intro')) return json({ intro: null });
+      if (url.includes('/chapters')) return json({ chapters: [
+        { title: 'Cold Open', startSeconds: 0, endSeconds: 20 },
+        { title: 'The Reveal', startSeconds: 20, endSeconds: 60 },
+        { title: 'Aftermath', startSeconds: 60, endSeconds: 100 },
+      ] });
+      return json({ item: { id: ONE, title: 'One', kind: 'movie' } });
+    }) as unknown as typeof fetch;
+    renderWatch('');
+    const video = await findVideo();
+    Object.defineProperty(video, 'duration', { value: 100, configurable: true });
+    fireEvent(video, new Event('durationchange'));
+
+    // Two interior boundaries: chapter one starts at zero and gets no tick.
+    await waitFor(() => {
+      const ticks = document.querySelectorAll('[aria-hidden="true"].absolute.inset-y-0.w-px');
+      expect(ticks).toHaveLength(2);
+    });
+    const ticks = [...document.querySelectorAll('[aria-hidden="true"].absolute.inset-y-0.w-px')] as HTMLElement[];
+    expect(ticks.map((tick) => tick.style.left)).toEqual(['20%', '60%']);
   });
 });

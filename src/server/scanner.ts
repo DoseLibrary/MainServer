@@ -149,7 +149,7 @@ export class ScanCoordinator {
       if (!this.tmdb) return;
       probe = existing.probe as Record<string, unknown>; durationSeconds = existing.durationSeconds ?? undefined;
     }
-    if (!unchanged) try { const result = await this.probeLimit.run(() => execFileAsync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration,format_name,bit_rate:stream=codec_type,codec_name,width,height,channels,bit_rate,color_transfer,color_primaries,color_space', '-of', 'json', absolute], { timeout: this.config.FFPROBE_TIMEOUT_MS ?? 20_000, maxBuffer: 1024 * 1024 })); probe = JSON.parse(result.stdout); const duration = Number((probe.format as { duration?: string } | undefined)?.duration); if (Number.isFinite(duration)) durationSeconds = Math.round(duration); } catch { /* a missing/broken ffprobe never aborts discovery */ }
+    if (!unchanged) try { const result = await this.probeLimit.run(() => execFileAsync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration,format_name,bit_rate:stream=codec_type,codec_name,width,height,channels,bit_rate,color_transfer,color_primaries,color_space', '-show_chapters', '-of', 'json', absolute], { timeout: this.config.FFPROBE_TIMEOUT_MS ?? 20_000, maxBuffer: 1024 * 1024 })); probe = JSON.parse(result.stdout); const duration = Number((probe.format as { duration?: string } | undefined)?.duration); if (Number.isFinite(duration)) durationSeconds = Math.round(duration); } catch { /* a missing/broken ffprobe never aborts discovery */ }
     let parentId: string | null = null; let metadataItemId: string | null = null; const itemKey = parsed.key;
     let seriesRow: typeof mediaItems.$inferSelect | null = null;
     if (parsed.type === 'episode') {

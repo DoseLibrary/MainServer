@@ -844,6 +844,12 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
     const sprite = await catalog.forViewer(user.maxMaturityLevel).previewSprite(params.data.id); if (!sprite) return reply.status(404).send({ error: 'Preview sprite not found' });
     return { sprite: { src: `/api/v1/media/${encodeURIComponent(params.data.id)}/sprites/sheet`, columns: sprite.columns, rows: sprite.rows, interval: sprite.interval, tileWidth: sprite.tileWidth, tileHeight: sprite.tileHeight } };
   });
+  app.get('/api/v1/media/:id/chapters', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    if (!catalog) return reply.status(503).send({ error: 'Catalog unavailable' });
+    const params = idParams.safeParse(request.params); if (!params.success) return reply.status(400).send({ error: 'Invalid media id' });
+    return { chapters: await catalog.forViewer(user.maxMaturityLevel).chapters(params.data.id) };
+  });
   app.get('/api/v1/media/:id/intro', async (request, reply) => {
     const user = await requireUser(request, reply, service); if (!user) return;
     if (!catalog) return reply.status(503).send({ error: 'Catalog unavailable' });

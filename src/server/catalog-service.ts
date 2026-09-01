@@ -6,6 +6,7 @@ import type { Probe } from './playback.ts';
 import { imageLocalUrl } from './images.ts';
 import type { PluginEventBus } from './plugins/events.ts';
 import { UNRATED_LEVEL } from './maturity.ts';
+import { chaptersOf, ffprobeChapters, probeKnowsChapters, type Chapter } from './chapters.ts';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { stat } from 'node:fs/promises';
 
@@ -472,6 +473,33 @@ export class CatalogService {
     const [row] = await this.database.select({ mediaItemId: watchlistEntries.mediaItemId }).from(watchlistEntries).where(and(eq(watchlistEntries.userId, userId), eq(watchlistEntries.mediaItemId, mediaItemId))).limit(1);
     return Boolean(row);
   }
+  /**
+   * Chapter markers for an item's playable file.
+   *
+   * New scans store chapters with the probe. A file scanned before that gets
+   * one live header read here, persisted back so the look happens once.
+   */
+  async chapters(mediaItemId: string, probeFile: typeof ffprobeChapters = ffprobeChapters): Promise<Chapter[]> {
+    const [row] = await this.database.select({
+      fileId: mediaFiles.id, probe: mediaFiles.probe,
+      relativePath: mediaFiles.relativePath, rootPath: libraries.rootPath,
+    }).from(mediaFiles)
+      .innerJoin(libraries, eq(libraries.id, mediaFiles.libraryId))
+      .innerJoin(mediaItems, eq(mediaItems.id, mediaFiles.mediaItemId))
+      .where(and(eq(mediaFiles.mediaItemId, mediaItemId), eq(mediaFiles.available, true), eq(mediaItems.available, true), this.withinMaturity, isNull(mediaItems.archivedAt))).limit(1);
+    if (!row) return [];
+
+    const probe = row.probe as Record<string, unknown>;
+    if (probeKnowsChapters(probe)) return chaptersOf(probe);
+
+    let chapters: unknown[] = [];
+    try { chapters = await probeFile(resolve(row.rootPath, row.relativePath)); }
+    catch { /* an unreadable file simply has no chapters */ }
+    const updated = { ...probe, chapters };
+    await this.database.update(mediaFiles).set({ probe: updated, updatedAt: new Date() }).where(eq(mediaFiles.id, row.fileId));
+    return chaptersOf(updated);
+  }
+
   /** The detected intro segment for an item's playable file, if any. */
   async introMarker(mediaItemId: string) {
     const [row] = await this.database.select({ startSeconds: mediaIntroMarkers.startSeconds, endSeconds: mediaIntroMarkers.endSeconds })

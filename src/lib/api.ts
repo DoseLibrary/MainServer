@@ -182,6 +182,7 @@ export interface DownloadEstimate {
 }
 
 export interface IntroMarker { startSeconds: number; endSeconds: number }
+export interface ChapterMarker { title: string; startSeconds: number; endSeconds: number }
 
 export interface CatalogSection { id: string; title: string; items: CatalogItem[]; layout?: 'poster' | 'card' }
 export interface CatalogHome { sections: CatalogSection[]; featured?: CatalogItem }
@@ -272,6 +273,7 @@ export const api = {
   trailerUrl: (id: string) => `/api/v1/media/${encodeURIComponent(id)}/trailer`,
   mediaSprites: (id: string) => request<{ sprite: MediaSprite }>(`/api/v1/media/${encodeURIComponent(id)}/sprites`),
   mediaIntro: (id: string) => request<{ intro: IntroMarker | null }>(`/api/v1/media/${encodeURIComponent(id)}/intro`),
+  mediaChapters: (id: string) => request<{ chapters: ChapterMarker[] }>(`/api/v1/media/${encodeURIComponent(id)}/chapters`),
   health: () => request<HealthStatus>('/api/v1/health'),
   setupStatus: () => request<{ setupRequired: boolean }>('/api/v1/setup/status'),
   setup: (credentials: { username: string; password: string }) =>

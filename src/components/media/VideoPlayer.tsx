@@ -100,6 +100,8 @@ export interface VideoPlayerProps {
   onNext?: () => void;
   /** Detected intro segment; a "Skip intro" button appears while inside it. */
   intro?: { startSeconds: number; endSeconds: number };
+  /** Chapter markers from the file: ticks on the rail, names in the hover preview. */
+  chapters?: readonly { title: string; startSeconds: number }[];
   autoPlay?: boolean;
   className?: string;
 }
@@ -164,6 +166,7 @@ export function VideoPlayer({
   onNext,
   nextUp,
   autoAdvanceSeconds = 15,
+  chapters = [],
   speedPercent = 100,
   onSpeedChange,
   captionStyle,
@@ -465,6 +468,14 @@ export function VideoPlayer({
     showControls();
   };
 
+  const chapterAt = (time: number) => {
+    let name: string | undefined;
+    for (const chapter of chapters) {
+      if (chapter.startSeconds <= time) name = chapter.title;
+      else break;
+    }
+    return name;
+  };
   const progressPct = duration > 0 ? (current / duration) * 100 : 0;
   const bufferedPct = duration > 0 ? (buffered / duration) * 100 : 0;
   const VolumeIcon = muted || volume === 0 ? VolumeX : volume < 0.5 ? Volume1 : Volume2;
@@ -643,8 +654,9 @@ export function VideoPlayer({
                   <div style={spriteStyle} />
                 </div>
               )}
-              <span className="mt-1.5 rounded-md bg-black/85 px-1.5 py-0.5 text-[11px] font-medium tabular-nums text-white ring-1 ring-white/10">
-                {formatTime(hover.time)}
+              <span className="mt-1.5 flex max-w-56 items-baseline gap-1.5 rounded-md bg-black/85 px-1.5 py-0.5 text-[11px] font-medium text-white ring-1 ring-white/10">
+                {chapterAt(hover.time) && <span className="truncate">{chapterAt(hover.time)}</span>}
+                <span className="tabular-nums text-white/80">{formatTime(hover.time)}</span>
               </span>
             </div>
           )}
@@ -662,6 +674,11 @@ export function VideoPlayer({
           <div className="relative h-1 w-full rounded-full bg-white/15 transition-[height] duration-150 group-hover/scrub:h-1.5">
             <div className="absolute inset-y-0 left-0 rounded-full bg-white/25" style={{ width: `${bufferedPct}%` }} />
             <div className="absolute inset-y-0 left-0 rounded-full bg-white" style={{ width: `${progressPct}%` }} />
+            {duration > 0 && chapters.map((chapter) => (
+              chapter.startSeconds > 0 && chapter.startSeconds < duration
+                ? <div key={chapter.startSeconds} aria-hidden="true" className="absolute inset-y-0 w-px bg-black/50" style={{ left: `${(chapter.startSeconds / duration) * 100}%` }} />
+                : null
+            ))}
             <div
               className="absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white opacity-0 shadow-sm transition-opacity duration-150 group-hover/scrub:opacity-100"
               style={{ left: `${progressPct}%` }}
