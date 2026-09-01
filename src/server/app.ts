@@ -73,7 +73,8 @@ export async function buildApp(config: AppConfig) {
   }
 
   const realtime = new RealtimeService();
-  realtime.attach(pluginEvents);
+  // Without a TMDB token nothing ever enriches, so ingest is the only signal.
+  realtime.attach(pluginEvents, { announceOnIngest: !config.TMDB_API_TOKEN });
 
   await app.register(fastifyCookie);
   await app.register(fastifyWebsocket);

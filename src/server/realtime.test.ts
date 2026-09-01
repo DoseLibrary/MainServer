@@ -20,23 +20,36 @@ function fakeSocket(readyState = 1) {
 }
 
 describe('RealtimeService', () => {
-  it('broadcasts catalog changes from the domain events', async () => {
+  it('announces new media only once enrichment has landed its artwork', async () => {
     const realtime = new RealtimeService();
     const bus = new PluginEventBus({ log: { error: vi.fn(), warn: vi.fn() } });
     realtime.attach(bus);
     const socket = fakeSocket();
     realtime.add(socket as unknown as RealtimeSocket);
 
+    // Ingest alone is silent: the card would fade in without its backdrop.
     bus.emit('media.file.ingested', { libraryId: 'l', mediaItemId: 'i', mediaFileId: 'f', relativePath: 'a.mkv', created: true });
+    await bus.drain();
+    expect(socket.sent).toHaveLength(0);
+
     bus.emit('media.item.enriched', { libraryId: 'l', mediaItemId: 'i', kind: 'movie', providerIds: {} });
+    await bus.drain();
+    expect(socket.sent.map((frame) => JSON.parse(frame))).toEqual([{ type: 'catalog.updated', reason: 'added' }]);
+  });
+
+  it('falls back to announcing at ingest when enrichment is unavailable', async () => {
+    const realtime = new RealtimeService();
+    const bus = new PluginEventBus({ log: { error: vi.fn(), warn: vi.fn() } });
+    realtime.attach(bus, { announceOnIngest: true });
+    const socket = fakeSocket();
+    realtime.add(socket as unknown as RealtimeSocket);
+
+    bus.emit('media.file.ingested', { libraryId: 'l', mediaItemId: 'i', mediaFileId: 'f', relativePath: 'a.mkv', created: true });
     // A re-seen file is not new media; nothing is pushed for it.
     bus.emit('media.file.ingested', { libraryId: 'l', mediaItemId: 'i', mediaFileId: 'f', relativePath: 'a.mkv', created: false });
     await bus.drain();
 
-    expect(socket.sent.map((frame) => JSON.parse(frame))).toEqual([
-      { type: 'catalog.updated', reason: 'added' },
-      { type: 'catalog.updated', reason: 'enriched' },
-    ]);
+    expect(socket.sent.map((frame) => JSON.parse(frame))).toEqual([{ type: 'catalog.updated', reason: 'added' }]);
   });
 
   it('forgets sockets that close and sockets that throw', () => {

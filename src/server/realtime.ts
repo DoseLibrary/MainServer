@@ -48,12 +48,20 @@ export class RealtimeService {
     }
   }
 
-  /** Turn domain events into pushes. New media fades into the home rows live. */
-  attach(bus: PluginEventBus): void {
-    bus.subscribe(REALTIME_SUBSCRIBER, 'media.file.ingested', (_event, payload) => {
-      if (payload.created) this.broadcast({ type: 'catalog.updated', reason: 'added' });
-    });
-    bus.subscribe(REALTIME_SUBSCRIBER, 'media.item.enriched', () => this.broadcast({ type: 'catalog.updated', reason: 'enriched' }));
+  /**
+   * Turn domain events into pushes. New media is announced once enrichment has
+   * landed, so the card that fades in already carries its poster and backdrop —
+   * not a bare filename that repaints moments later. Servers that cannot enrich
+   * (no TMDB token) opt into announcing at ingest instead, or nothing would
+   * ever be pushed for them.
+   */
+  attach(bus: PluginEventBus, options: { announceOnIngest?: boolean } = {}): void {
+    if (options.announceOnIngest) {
+      bus.subscribe(REALTIME_SUBSCRIBER, 'media.file.ingested', (_event, payload) => {
+        if (payload.created) this.broadcast({ type: 'catalog.updated', reason: 'added' });
+      });
+    }
+    bus.subscribe(REALTIME_SUBSCRIBER, 'media.item.enriched', () => this.broadcast({ type: 'catalog.updated', reason: 'added' }));
     bus.subscribe(REALTIME_SUBSCRIBER, 'media.item.removed', () => this.broadcast({ type: 'catalog.updated', reason: 'removed' }));
     bus.subscribe(REALTIME_SUBSCRIBER, 'media.item.archived', () => this.broadcast({ type: 'catalog.updated', reason: 'availability' }));
     bus.subscribe(REALTIME_SUBSCRIBER, 'media.item.unarchived', () => this.broadcast({ type: 'catalog.updated', reason: 'availability' }));
