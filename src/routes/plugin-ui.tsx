@@ -1,4 +1,5 @@
 import { Input } from '@/components/ui/input';
+import { Switch } from '@/components/ui/switch';
 import type { PluginField, PluginRunStatus } from '@/lib/api';
 
 // Common cron presets surfaced as a datalist so admins don't have to know cron by heart.
@@ -36,12 +37,12 @@ export function SettingField({ field, value, secretSet, error, onChange }: Setti
 
   if (field.kind === 'boolean') {
     return (
-      <div className="flex flex-col gap-1">
-        <label className="flex items-center gap-2 text-sm font-medium">
-          <input type="checkbox" checked={Boolean(value)} onChange={(event) => onChange(event.target.checked)} />
-          {field.label}
-        </label>
-        {help}
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex flex-col gap-1">
+          <label htmlFor={`field-${field.key}`} className="text-sm font-medium">{field.label}</label>
+          {help}
+        </div>
+        <Switch id={`field-${field.key}`} checked={Boolean(value)} onCheckedChange={onChange} />
       </div>
     );
   }

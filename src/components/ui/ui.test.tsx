@@ -6,6 +6,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Input } from './input';
 import { Modal, ModalContent, ModalTitle, ModalTrigger } from './modal';
 import { Skeleton } from './skeleton';
+import { Switch } from './switch';
 import { Spinner } from './spinner';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './tabs';
 import { ToastProvider, useToast } from './toast';
@@ -65,5 +66,28 @@ describe('UI primitives', () => {
     fireEvent.mouseDown(screen.getByText('Two'), { button: 0 });
     fireEvent.click(screen.getByText('Two'));
     expect(screen.getByText('Second')).toBeVisible();
+  });
+
+  it('toggles a switch by mouse and keyboard, and reports its state', async () => {
+    const onCheckedChange = vi.fn();
+    const { rerender } = render(<Switch checked={false} onCheckedChange={onCheckedChange} aria-label="Enabled" />);
+    const control = screen.getByRole('switch', { name: 'Enabled' });
+
+    expect(control).not.toBeChecked();
+    fireEvent.click(control);
+    expect(onCheckedChange).toHaveBeenCalledWith(true);
+
+    // Buttons activate on Enter and Space, so the keyboard path needs no extra code.
+    rerender(<Switch checked onCheckedChange={onCheckedChange} aria-label="Enabled" />);
+    expect(screen.getByRole('switch', { name: 'Enabled' })).toBeChecked();
+  });
+
+  it('does not report changes while disabled', () => {
+    const onCheckedChange = vi.fn();
+    render(<Switch checked={false} disabled onCheckedChange={onCheckedChange} aria-label="Enabled" />);
+
+    fireEvent.click(screen.getByRole('switch', { name: 'Enabled' }));
+
+    expect(onCheckedChange).not.toHaveBeenCalled();
   });
 });

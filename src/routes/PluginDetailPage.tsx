@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
+import { Switch } from '@/components/ui/switch';
 import { ApiError, api, type PluginRun, type PluginSummary } from '@/lib/api';
 import { PluginStatusBadge, SCHEDULE_PRESETS, SettingField, formatWhen } from './plugin-ui';
 import { AdminShell } from './AdminShell';
@@ -72,10 +73,10 @@ export function PluginDetailPage() {
           <div className="flex flex-wrap items-center gap-2">
             <span className="rounded border px-1.5 py-0.5 text-xs text-muted-foreground">v{plugin.version}</span>
             <PluginStatusBadge status={plugin.lastRunStatus} />
-            <label className="ml-auto flex items-center gap-2 text-sm font-medium">
-              <input type="checkbox" checked={draft.enabled} onChange={(event) => setDraft({ ...draft, enabled: event.target.checked })} />
-              Enabled
-            </label>
+            <div className="ml-auto flex items-center gap-2">
+              <label htmlFor="plugin-enabled" className="text-sm font-medium">Enabled</label>
+              <Switch id="plugin-enabled" checked={draft.enabled} onCheckedChange={(enabled) => setDraft({ ...draft, enabled })} />
+            </div>
           </div>
           <p className="mt-2 text-sm text-muted-foreground">{plugin.description}</p>
           {plugin.events.length > 0 && <p className="mt-2 text-xs text-muted-foreground">Reacts to: <span className="text-foreground">{plugin.events.join(', ')}</span></p>}

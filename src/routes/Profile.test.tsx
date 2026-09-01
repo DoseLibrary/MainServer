@@ -84,7 +84,7 @@ describe('Profile', () => {
       return json({}, 404);
     });
     render(<MemoryRouter><Profile /></MemoryRouter>);
-    const toggle = await screen.findByRole('checkbox', { name: 'Show missing movies from collections' });
+    const toggle = await screen.findByRole('switch', { name: 'Show missing movies from collections' });
     expect(toggle).not.toBeChecked(); fireEvent.click(toggle); expect(toggle).toBeChecked();
     await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledWith('/api/v1/me/settings', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ showCollectionGaps: true }) })));
   });

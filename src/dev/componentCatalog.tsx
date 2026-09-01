@@ -15,6 +15,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
 import { Input } from '@/components/ui/input';
 import { Modal, ModalContent, ModalDescription, ModalFooter, ModalHeader, ModalTitle, ModalTrigger } from '@/components/ui/modal';
 import { Skeleton } from '@/components/ui/skeleton';
+import { SwitchPreview } from '@/dev/SwitchPreview';
 import { Spinner } from '@/components/ui/spinner';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useToast } from '@/components/ui/toast';
@@ -137,6 +138,7 @@ export const componentCatalog: readonly ComponentCatalogItem[] = [
   <div className="w-72"><Input label="Search" placeholder="Movie or show" /></div>
   <div className="w-72"><Input label="Username" defaultValue="dose" error="Already taken" /></div>
 </>`, preview: <><div className="w-72"><Input label="Search" placeholder="Movie or show" /></div><div className="w-72"><Input label="Username" defaultValue="dose" error="Already taken" /></div></> },
+  { id: 'switch', name: 'Switch', category: 'UI', description: 'Turns a setting on or off, applying immediately.', source: `<Switch checked={enabled} onCheckedChange={setEnabled} aria-label="Enabled" />`, preview: <SwitchPreview /> },
   { id: 'spinner', name: 'Spinner', category: 'UI', description: 'Communicates an indeterminate loading state.', source: `<Spinner />`, preview: <Spinner /> },
   { id: 'skeleton', name: 'Skeleton', category: 'UI', description: 'Reserves layout space while content is loading.', source: `<div className="space-y-2">
   <Skeleton className="h-24 w-44" />

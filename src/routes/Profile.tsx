@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { History as HistoryIcon, ListOrdered, ListVideo, ShieldCheck, UserRound, Wrench } from 'lucide-react';
 import { Navbar } from '@/components/media/Navbar';
 import { Button } from '@/components/ui/button';
+import { Switch } from '@/components/ui/switch';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { api, type HistorySourceId, type User, type UserSettings, type WatchDataDocument, type WatchDataImportSummary } from '@/lib/api';
 import { UserMenu } from '@/components/media/UserMenu';
@@ -95,7 +96,7 @@ export function Profile() {
         </div></section>
 
         <section aria-labelledby="settings-heading" className="border-t py-8"><div className="mb-4"><h2 id="settings-heading" className="text-xl font-semibold">Settings</h2><p className="mt-1 text-sm text-muted-foreground">Choose how your personal library is presented.</p></div>
-          <Card><CardContent className="flex items-center justify-between gap-6 py-6"><div><label htmlFor="show-collection-gaps" className="font-medium">Show missing movies from collections</label><p className="mt-1 text-sm text-muted-foreground">Include movies you do not own when viewing a collection.</p>{settingsError && <p role="alert" className="mt-2 text-sm text-destructive">{settingsError}</p>}</div><input id="show-collection-gaps" type="checkbox" className="h-5 w-5 shrink-0 accent-foreground" checked={settings?.showCollectionGaps ?? false} disabled={!settings} onChange={() => void toggleCollectionGaps()} /></CardContent></Card>
+          <Card><CardContent className="flex items-center justify-between gap-6 py-6"><div><label htmlFor="show-collection-gaps" className="font-medium">Show missing movies from collections</label><p className="mt-1 text-sm text-muted-foreground">Include movies you do not own when viewing a collection.</p>{settingsError && <p role="alert" className="mt-2 text-sm text-destructive">{settingsError}</p>}</div><Switch id="show-collection-gaps" checked={settings?.showCollectionGaps ?? false} disabled={!settings} onCheckedChange={() => void toggleCollectionGaps()} /></CardContent></Card>
           <Card className="mt-4"><CardContent className="space-y-4 py-6">
             <div><p className="font-medium">Playback</p><p className="mt-1 text-sm text-muted-foreground">Applies wherever you sign in.</p></div>
             <div className="grid gap-3 sm:grid-cols-3">

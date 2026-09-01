@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
+import { Switch } from '@/components/ui/switch';
 import { api, type PluginSummary } from '@/lib/api';
 import { AdminShell } from './AdminShell';
 import { PluginStatusBadge, formatWhen } from './plugin-ui';
@@ -46,10 +47,11 @@ export function PluginsPage() {
                   <p className="mt-1 text-xs text-muted-foreground">Last run: <span className="text-foreground">{formatWhen(plugin.lastRunAt)}</span> · Next run: <span className="text-foreground">{formatWhen(plugin.nextRunAt)}</span></p>
                 </div>
                 <div className="flex items-center gap-3">
-                  <label className="flex items-center gap-2 text-sm font-medium">
-                    <input type="checkbox" checked={plugin.enabled} disabled={busy[plugin.id] ?? false} onChange={(event) => void toggle(plugin, event.target.checked)} />
-                    Enabled
-                  </label>
+                  <div className="flex items-center gap-2">
+                    <label htmlFor={`enabled-${plugin.id}`} className="text-sm font-medium">Enabled</label>
+                    <Switch id={`enabled-${plugin.id}`} checked={plugin.enabled} disabled={busy[plugin.id] ?? false}
+                      onCheckedChange={(enabled) => void toggle(plugin, enabled)} />
+                  </div>
                   <Button asChild size="sm" variant="outline"><Link to={`/admin/plugins/${encodeURIComponent(plugin.id)}`}>Configure</Link></Button>
                 </div>
               </li>

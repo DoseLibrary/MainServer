@@ -23,7 +23,7 @@ describe('DevGallery', () => {
   it('provides navigation for all catalog components and focuses the selected URL item', () => {
     renderGallery('?component=hero');
 
-    expect(componentCatalog).toHaveLength(17);
+    expect(componentCatalog).toHaveLength(18);
     for (const item of componentCatalog) expect(screen.getByRole('link', { name: item.name })).toBeInTheDocument();
     expect(screen.getByRole('heading', { level: 1, name: 'Hero' })).toBeInTheDocument();
     expect(screen.queryByRole('heading', { level: 1, name: 'Button' })).not.toBeInTheDocument();
