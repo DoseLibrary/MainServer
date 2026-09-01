@@ -24,6 +24,7 @@ import { SubtitleStore, ffmpegSubtitleTools } from './subtitles.ts';
 import { createPreviewSpritePlugin } from './plugins/preview-sprites.ts';
 import { PreviewSpriteStore, ffmpegSpriteTools } from './sprites.ts';
 import { createIntroDetectorPlugin } from './plugins/intro-detector.ts';
+import { createSubtitleSyncPlugin } from './plugins/subtitle-sync.ts';
 import { EnrichmentService } from './enrichment.ts';
 import { MetadataMatchService } from './metadata-match-service.ts';
 import { LibraryWatcher } from './library-watcher.ts';
@@ -52,7 +53,8 @@ export async function buildApp(config: AppConfig) {
     .register(createTrailerFetcherPlugin(database, tmdb, ytDlpDownloader(config.YT_DLP_PATH), join(config.CONFIG_PATH, 'trailers')))
     .register(createSubtitleExtractorPlugin(database, ffmpegSubtitleTools(), subtitleStore))
     .register(createPreviewSpritePlugin(database, ffmpegSpriteTools(), spriteStore))
-    .register(createIntroDetectorPlugin(database)), undefined, pluginEvents);
+    .register(createIntroDetectorPlugin(database))
+    .register(createSubtitleSyncPlugin(database, subtitleStore)), undefined, pluginEvents);
   const imageStore = new ImageStore(join(config.CONFIG_PATH, 'images'));
   const artwork = new ArtworkService(database, tmdb, imageStore);
   const metadataMatch = new MetadataMatchService(database, tmdb, new EnrichmentService(database, tmdb, imageStore, pluginEvents));

@@ -11,6 +11,7 @@ import type { DeviceAuthService } from './device-auth-service.ts';
 import type { LibraryFilesystem } from './security.ts';
 import type { ScanCoordinator } from './scanner.ts';
 import type { CatalogService } from './catalog-service.ts';
+import type { SubtitleStore } from './subtitles.ts';
 import type { PluginService } from './plugin-service.ts';
 import sharp from 'sharp';
 import type { MetadataMatchService } from './metadata-match-service.ts';
@@ -664,5 +665,45 @@ describe('describeUserAgent', () => {
     expect(describeUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 17_0) Safari/604')).toBe('Safari on iOS');
     expect(describeUserAgent('Mozilla/5.0 (X11; Linux) Firefox/121')).toBe('Firefox on Linux');
     expect(describeUserAgent(undefined)).toBe('Unknown device');
+  });
+});
+
+describe('Subtitle delivery', () => {
+  const vtt = ['WEBVTT', '', '00:00:10.000 --> 00:00:12.000', 'Hello', ''].join(String.fromCharCode(10));
+
+  async function appWithSubtitles(auth: AuthService) {
+    const app = Fastify(); await app.register(cookie);
+    const filesystem: LibraryFilesystem = { realpath: async (path) => path, isDirectory: async () => true };
+    const catalog = catalogStub({ subtitle: vi.fn(async () => ({ storageKey: 'k.vtt' })) });
+    const store = { read: vi.fn(async () => Buffer.from(vtt, 'utf8')) } as unknown as SubtitleStore;
+    await registerApiRoutes(app, auth, false, filesystem, undefined, catalog, undefined, false, undefined, undefined, undefined, store);
+    return app;
+  }
+
+  it('serves the stored track untouched by default', async () => {
+    const app = await appWithSubtitles(service({ authenticate: vi.fn(async () => ({ id: 'u1', username: 'viewer', role: 'member' })) }));
+    const response = await app.inject({ method: 'GET', url: '/api/v1/subtitles/11111111-1111-4111-8111-111111111111', headers: { cookie: 'dose_session=token' } });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-type']).toContain('text/vtt');
+    expect(response.body).toContain('00:00:10.000 --> 00:00:12.000');
+    await app.close();
+  });
+
+  it('shifts the cues when the viewer nudges the delay', async () => {
+    const app = await appWithSubtitles(service({ authenticate: vi.fn(async () => ({ id: 'u1', username: 'viewer', role: 'member' })) }));
+    const response = await app.inject({ method: 'GET', url: '/api/v1/subtitles/11111111-1111-4111-8111-111111111111?offsetMs=-2500', headers: { cookie: 'dose_session=token' } });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain('00:00:07.500 --> 00:00:09.500');
+    await app.close();
+  });
+
+  it('rejects an absurd offset instead of shifting by it', async () => {
+    const app = await appWithSubtitles(service({ authenticate: vi.fn(async () => ({ id: 'u1', username: 'viewer', role: 'member' })) }));
+    const response = await app.inject({ method: 'GET', url: '/api/v1/subtitles/11111111-1111-4111-8111-111111111111?offsetMs=999999999', headers: { cookie: 'dose_session=token' } });
+
+    expect(response.statusCode).toBe(400);
+    await app.close();
   });
 });

@@ -162,6 +162,13 @@
       "when": 1788214445890,
       "tag": "0022_powerful_queen_noir",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1788239381029,
+      "tag": "0023_goofy_doctor_faustus",
+      "breakpoints": true
     }
   ]
 }

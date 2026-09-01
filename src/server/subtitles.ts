@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdir, readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 const execFileAsync = promisify(execFile);
@@ -35,6 +35,11 @@ export class SubtitleStore {
   }
   async ensureDir(): Promise<void> { await this.ensure(); }
   async read(key: string): Promise<Buffer> { return readFile(this.pathFor(key)); }
+  /** Write a WebVTT file, creating the store directory if it is missing. */
+  async write(key: string, contents: string): Promise<void> {
+    await this.ensure();
+    await writeFile(this.pathFor(key), contents, 'utf8');
+  }
 }
 
 /** Real ffprobe/ffmpeg-backed tools; the plugin takes this via injection so it stays testable. */

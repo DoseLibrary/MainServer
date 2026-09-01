@@ -87,6 +87,9 @@ export interface VideoPlayerProps {
   onSpeedChange?: (percent: number) => void;
   /** Caption presentation, remembered per account. */
   captionStyle?: { sizePercent: number; background: 'none' | 'shadow' | 'box' };
+  /** Viewer nudge for captions that still run early or late, in milliseconds. */
+  subtitleOffsetMs?: number;
+  onSubtitleOffsetChange?: (offsetMs: number) => void;
   /** When set, a "Next episode" control is shown to skip to the next item. */
   onNext?: () => void;
   /** Detected intro segment; a "Skip intro" button appears while inside it. */
@@ -148,6 +151,8 @@ export function VideoPlayer({
   speedPercent = 100,
   onSpeedChange,
   captionStyle,
+  subtitleOffsetMs = 0,
+  onSubtitleOffsetChange,
   intro,
   autoPlay = false,
   className,
@@ -643,6 +648,22 @@ export function VideoPlayer({
                     {subtitles.map((t) => (
                       <MenuItem key={t.id} selected={activeCcId === t.id} onClick={() => selectCaptions(t.id)}>{t.label}</MenuItem>
                     ))}
+                    {onSubtitleOffsetChange && activeCcId && (
+                      <div className="mt-1 border-t border-white/10 px-3 py-2">
+                        <div className="text-xs uppercase tracking-wide text-white/50">Delay</div>
+                        <div className="mt-1.5 flex items-center gap-2">
+                          <button type="button" aria-label="Subtitles earlier" onClick={() => onSubtitleOffsetChange(subtitleOffsetMs - 250)}
+                            className="h-7 w-7 rounded border border-white/20 text-white/90 hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70">−</button>
+                          <span className="min-w-16 text-center tabular-nums">{(subtitleOffsetMs / 1000).toFixed(2)}s</span>
+                          <button type="button" aria-label="Subtitles later" onClick={() => onSubtitleOffsetChange(subtitleOffsetMs + 250)}
+                            className="h-7 w-7 rounded border border-white/20 text-white/90 hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70">+</button>
+                          {subtitleOffsetMs !== 0 && (
+                            <button type="button" onClick={() => onSubtitleOffsetChange(0)}
+                              className="ml-auto text-xs text-white/70 underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70">Reset</button>
+                          )}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

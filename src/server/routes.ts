@@ -20,6 +20,7 @@ import type { PreviewSpriteStore } from './sprites.ts';
 import { negotiatePlayback } from './playback.ts';
 import { buildTranscodeArgs, contentTypeFor, decodePlaybackPlan, encodePlaybackPlan, resolveRange, resolveWithin } from './streaming.ts';
 import { audioTracksOf } from './playback.ts';
+import { applyAlignment, parseSubtitles, serializeVtt } from './subtitle-sync.ts';
 import { ImageVariantStore } from './images.ts';
 import { MatchItemNotFoundError, MatchUnsupportedKindError, TmdbMatchNotFoundError, type MetadataMatchService } from './metadata-match-service.ts';
 import type { LibraryWatcher } from './library-watcher.ts';
@@ -87,6 +88,8 @@ const userCreate = credentials.extend({ role: z.enum(['admin', 'member']).defaul
 const userUpdate = z.object({ role: z.enum(['admin', 'member']).optional(), disabled: z.boolean().optional(), password: z.string().min(10).max(256).optional(), maxMaturityLevel: maturityLimit.optional() }).refine((value) => Object.keys(value).length > 0);
 const playbackSessionStart = z.object({ mediaItemId: z.string().uuid(), playMethod: z.enum(['direct', 'remux', 'transcode']).default('direct'), positionSeconds: z.number().min(0).optional(), durationSeconds: z.number().min(0).optional() });
 const historyForgetQuery = z.object({ itemId: z.string().uuid().optional() });
+// A viewer nudge for a track automatic timing did not quite land.
+const subtitleQuery = z.object({ offsetMs: z.coerce.number().int().min(-600_000).max(600_000).optional() });
 const playbackSessionUpdate = z.object({ positionSeconds: z.number().min(0).optional(), paused: z.boolean().optional() });
 const deviceStartBody = z.object({ deviceName: z.string().trim().min(1).max(64).optional() });
 const devicePollBody = z.object({ deviceCode: z.string().min(10).max(256) });
@@ -525,11 +528,14 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
     if (!catalog || !subtitleStore) return reply.status(503).send({ error: 'Subtitles unavailable' });
     const parsed = idParams.safeParse(request.params); if (!parsed.success) return reply.status(400).send({ error: 'Invalid subtitle id' });
     const row = await catalog.subtitle(parsed.data.id); if (!row) return reply.status(404).send({ error: 'Subtitle not found' });
+    const query = subtitleQuery.safeParse(request.query); if (!query.success) return reply.status(400).send({ error: 'Invalid subtitle offset' });
     try {
       const body = await subtitleStore.read(row.storageKey);
       reply.header('Content-Type', 'text/vtt; charset=utf-8');
       reply.header('Cache-Control', 'private, max-age=3600');
-      return reply.send(body);
+      if (!query.data.offsetMs) return reply.send(body);
+      const shifted = applyAlignment(parseSubtitles(body.toString('utf8')), { offsetMs: query.data.offsetMs, scale: 1 });
+      return reply.send(serializeVtt(shifted));
     } catch { return reply.status(404).send({ error: 'Subtitle not found' }); }
   });
   app.get('/api/v1/catalog/collections/:id', async (request, reply) => {

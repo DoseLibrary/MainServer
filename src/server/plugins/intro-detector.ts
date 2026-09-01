@@ -1,4 +1,3 @@
-import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { and, asc, eq, inArray } from 'drizzle-orm';
@@ -6,6 +5,7 @@ import { z } from 'zod';
 import type { Database } from '../db/client.ts';
 import { libraries, mediaFiles, mediaIntroMarkers, mediaItems } from '../db/schema.ts';
 import type { PluginDefinition } from './types.ts';
+import { ffmpegAudioDecoder, PCM_SAMPLE_RATE, type AudioDecoder } from '../audio-pcm.ts';
 
 export const introDetectorSettingsSchema = z.object({
   /** How much of each episode's start is decoded and searched. */
@@ -18,40 +18,14 @@ export const introDetectorSettingsSchema = z.object({
 
 type IntroDetectorSettings = z.infer<typeof introDetectorSettingsSchema>;
 
-/** Mono PCM decoding is the only external dependency, so tests can inject audio. */
-export interface IntroAudioTools {
-  /** First `maxSeconds` of the file as mono 16-bit PCM at `SAMPLE_RATE`. */
-  decode(path: string, maxSeconds: number, signal: AbortSignal): Promise<Int16Array>;
-}
+export type IntroAudioTools = AudioDecoder;
 
-export const SAMPLE_RATE = 5512;
+export const SAMPLE_RATE = PCM_SAMPLE_RATE;
 /** Fingerprint hop in samples (~93ms) — small enough to place an intro to the second. */
 const HOP = 512;
 const SECONDS_PER_HOP = HOP / SAMPLE_RATE;
 
-export function ffmpegIntroAudioTools(): IntroAudioTools {
-  return {
-    decode(path, maxSeconds, signal) {
-      return new Promise((resolve, reject) => {
-        const child = spawn('ffmpeg', ['-v', 'error', '-i', path, '-t', String(maxSeconds), '-map', '0:a:0', '-ac', '1', '-ar', String(SAMPLE_RATE), '-f', 's16le', '-'], { stdio: ['ignore', 'pipe', 'pipe'] });
-        const chunks: Buffer[] = [];
-        const stderr: Buffer[] = [];
-        const abort = () => child.kill();
-        signal.addEventListener('abort', abort, { once: true });
-        child.stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
-        child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk));
-        child.once('error', reject);
-        child.once('close', (code) => {
-          signal.removeEventListener('abort', abort);
-          if (signal.aborted) return reject(signal.reason ?? new Error('Intro detection cancelled'));
-          if (code !== 0) return reject(new Error(`ffmpeg exited with code ${code}: ${Buffer.concat(stderr).toString().slice(0, 300)}`));
-          const buffer = Buffer.concat(chunks);
-          resolve(new Int16Array(buffer.buffer, buffer.byteOffset, Math.floor(buffer.byteLength / 2)));
-        });
-      });
-    },
-  };
-}
+export const ffmpegIntroAudioTools = ffmpegAudioDecoder;
 
 /** Smoothing radius (hops) applied to the energy envelope before the delta. */
 const SMOOTH_RADIUS = 4;
@@ -60,11 +34,6 @@ const DELTA_SPAN = 4;
 /** Bit i of a fingerprint describes the envelope around hop i + DELTA_SPAN. */
 export const FINGERPRINT_OFFSET_HOPS = DELTA_SPAN;
 
-/** Sign of the smoothed log-energy slope, one bit per hop.
- *
- * The envelope is what episodes of one show share regardless of encode volume,
- * and smoothing plus a wide comparison span keeps the bits stable when the two
- * files' hop grids are misaligned by a fraction of a hop (they always are). */
 export function fingerprint(pcm: Int16Array): Uint8Array {
   const hops = Math.floor(pcm.length / HOP);
   if (hops <= 2 * DELTA_SPAN) return new Uint8Array(0);

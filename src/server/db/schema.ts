@@ -388,6 +388,15 @@ export const mediaSubtitles = pgTable('media_subtitles', {
   /** Filename of the extracted WebVTT file inside the subtitles store. */
   storageKey: text('storage_key').notNull(),
   source: text('source').notNull().default('embedded'),
+  /** Shift applied to align this track with the audio; null when never synced. */
+  syncOffsetMs: integer('sync_offset_ms'),
+  /** Time stretch applied with the shift, for PAL/NTSC drift. */
+  syncScale: real('sync_scale'),
+  /** How well the aligned cues matched the speech, 0..1. */
+  syncConfidence: real('sync_confidence'),
+  syncedAt: timestamp('synced_at', { withTimezone: true }),
+  /** Sidecar path relative to its library root, for re-import after an edit. */
+  sourcePath: text('source_path'),
   ...timestamps,
 }, (table) => [
   uniqueIndex('media_subtitles_file_stream_unique').on(table.mediaFileId, table.streamIndex),

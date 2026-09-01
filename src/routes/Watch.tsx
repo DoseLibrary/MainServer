@@ -23,6 +23,8 @@ export function Watch() {
   // Playback preferences follow the account, so a chosen speed or caption size
   // is the same on the next device.
   const [settings, setSettings] = useState<UserSettings>();
+  // Per-title nudge, kept in memory: automatic timing is corrected on the server.
+  const [subtitleOffsetMs, setSubtitleOffsetMs] = useState(0);
   // Live session id, so administrators can see this playback while it runs.
   const sessionRef = useRef<string | undefined>(undefined);
   const [error, setError] = useState<string>();
@@ -74,7 +76,10 @@ export function Watch() {
   const duration = playback.durationSeconds ?? item.files?.[0]?.durationSeconds;
   // Resume from the last saved spot; progress is a 0..1 fraction, so scale by runtime.
   const startPositionSeconds = resumeAt ?? (typeof item.progress === 'number' && item.progress > 0 && item.progress < 1 && duration ? item.progress * duration : undefined);
-  const subtitles = (item.subtitles ?? []).map((track) => ({ id: track.id, label: track.label, srcLang: track.language, src: track.url }));
+  const subtitles = (item.subtitles ?? []).map((track) => ({
+    id: track.id, label: track.label, srcLang: track.language,
+    src: subtitleOffsetMs ? `${track.url}?offsetMs=${subtitleOffsetMs}` : track.url,
+  }));
   const nextHref = item.nextEpisodeId ? `/watch/${encodeURIComponent(item.nextEpisodeId)}` : undefined;
   const nextUp = item.nextEpisode ? {
     title: item.nextEpisode.title,
@@ -116,6 +121,8 @@ export function Watch() {
     nextUp={nextUp}
     onNext={marathon ? () => void advanceQueue() : nextHref ? () => navigate(nextHref) : undefined}
     intro={intro}
+    subtitleOffsetMs={subtitleOffsetMs}
+    onSubtitleOffsetChange={setSubtitleOffsetMs}
     speedPercent={settings?.playbackSpeedPercent ?? 100}
     onSpeedChange={changeSpeed}
     captionStyle={settings ? { sizePercent: settings.subtitleSizePercent, background: settings.subtitleBackground } : undefined}
