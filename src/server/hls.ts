@@ -1,4 +1,5 @@
 import type { PlaybackPlan } from './playback.ts';
+import { decodeArgs, forcedKeyframeArgs, rateControlArgs, videoFilters, type EncoderChoice } from './hwaccel.ts';
 
 /** Segment length. Short enough for snappy seeks, long enough to amortize the
  * per-segment encoder spawn. */
@@ -81,16 +82,27 @@ export function mediaPlaylist(durationSeconds: number, segmentUrl: (index: numbe
  * 6-second marks — only at keyframes — and misaligned cuts stutter at every
  * boundary; x264 veryfast is the price of clean, seekable segments.
  */
-export function buildSegmentArgs(input: string, plan: PlaybackPlan, variant: HlsVariant, index: number, durationSeconds: number): string[] {
+export function buildSegmentArgs(input: string, plan: PlaybackPlan, variant: HlsVariant, index: number, durationSeconds: number, accel?: EncoderChoice | null): string[] {
   const start = index * SEGMENT_SECONDS;
   const remaining = Math.max(0.5, Math.min(SEGMENT_SECONDS, durationSeconds - start));
-  const args = ['-hide_banner', '-loglevel', 'error', '-ss', String(start), '-t', remaining.toFixed(3), '-i', input];
+  const args = [
+    '-hide_banner', '-loglevel', 'error',
+    ...(accel ? decodeArgs(accel) : []),
+    '-ss', String(start), '-t', remaining.toFixed(3), '-i', input,
+  ];
 
-  args.push('-map', '0:v:0', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', String(variant.crf));
-  if (variant.maxBitrateK) args.push('-maxrate', `${variant.maxBitrateK}k`, '-bufsize', `${variant.maxBitrateK * 2}k`);
-  if (variant.height) args.push('-vf', `scale=-2:${variant.height}`);
+  args.push('-map', '0:v:0');
+  if (accel) {
+    args.push('-c:v', accel.encoder, ...rateControlArgs(accel, variant.crf, variant.maxBitrateK));
+    const filters = videoFilters(accel, variant.height);
+    if (filters.length) args.push('-vf', filters.join(','));
+  } else {
+    args.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', String(variant.crf));
+    if (variant.maxBitrateK) args.push('-maxrate', `${variant.maxBitrateK}k`, '-bufsize', `${variant.maxBitrateK * 2}k`);
+    if (variant.height) args.push('-vf', `scale=-2:${variant.height}`);
+  }
   // Every segment must open on a keyframe or the player cannot start mid-stream.
-  args.push('-force_key_frames', 'expr:eq(n,0)');
+  args.push('-force_key_frames', 'expr:eq(n,0)', ...(accel ? forcedKeyframeArgs(accel) : []));
 
   args.push('-map', `0:a:${plan.audioTrackIndex ?? 0}?`, '-c:a', 'aac', '-b:a', '192k', '-ac', '2');
 

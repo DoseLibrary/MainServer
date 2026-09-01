@@ -26,11 +26,20 @@ const environmentSchema = z.object({
   TRUST_PROXY: z.coerce.boolean().default(false),
   TMDB_REQUESTS_PER_SECOND: z.coerce.number().int().min(1).max(50).default(8),
   TMDB_TIMEOUT_MS: z.coerce.number().int().min(500).max(60_000).default(8_000),
+  /** Hardware transcoding: `auto` probes every family and picks the fastest
+   * that actually works, `off` forces software, or name one family to pin it. */
+  HWACCEL: z.enum(['auto', 'off', 'nvenc', 'qsv', 'amf', 'videotoolbox', 'vaapi']).default('auto'),
+  /** Decode on the GPU as well as encode. Off by default: the frames have to
+   * come back for filtering, which costs more than it saves unless the CPU is
+   * too weak to decode in real time. Worth enabling on low-power boxes. */
+  HWACCEL_DECODE: z.stringbool().default(false),
+  /** VAAPI render node, when the default one is not the right card. */
+  HWACCEL_DEVICE: z.preprocess((value) => value === '' ? undefined : value, z.string().min(1).optional()),
   YT_DLP_PATH: z.string().min(1).default('yt-dlp'),
 });
 
 type ParsedConfig = z.infer<typeof environmentSchema>;
-type TuningKey = 'SCAN_FS_CONCURRENCY' | 'SCAN_INGEST_CONCURRENCY' | 'SCAN_STALE_AFTER_MS' | 'LIBRARY_WATCH_ENABLED' | 'LIBRARY_WATCH_DEBOUNCE_MS' | 'FFPROBE_CONCURRENCY' | 'FFPROBE_TIMEOUT_MS' | 'TMDB_CONCURRENCY' | 'TMDB_IMAGE_CONCURRENCY' | 'TRUST_PROXY' | 'TMDB_REQUESTS_PER_SECOND' | 'TMDB_TIMEOUT_MS';
+type TuningKey = 'SCAN_FS_CONCURRENCY' | 'SCAN_INGEST_CONCURRENCY' | 'SCAN_STALE_AFTER_MS' | 'LIBRARY_WATCH_ENABLED' | 'LIBRARY_WATCH_DEBOUNCE_MS' | 'FFPROBE_CONCURRENCY' | 'FFPROBE_TIMEOUT_MS' | 'TMDB_CONCURRENCY' | 'TMDB_IMAGE_CONCURRENCY' | 'TRUST_PROXY' | 'TMDB_REQUESTS_PER_SECOND' | 'TMDB_TIMEOUT_MS' | 'HWACCEL' | 'HWACCEL_DECODE';
 export type AppConfig = Omit<ParsedConfig, TuningKey> & Partial<Pick<ParsedConfig, TuningKey>>;
 
 export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppConfig {

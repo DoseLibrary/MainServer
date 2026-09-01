@@ -6,6 +6,8 @@ describe('loadConfig', () => {
     expect(loadConfig({ DATABASE_URL: 'postgresql://dose:secret@localhost:5432/dose' })).toEqual({
       NODE_ENV: 'development',
       HOST: '0.0.0.0',
+      HWACCEL: 'auto',
+      HWACCEL_DECODE: false,
       PORT: 3000,
       DATABASE_URL: 'postgresql://dose:secret@localhost:5432/dose',
       CONFIG_PATH: '/config',

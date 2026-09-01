@@ -38,6 +38,7 @@ import { WatchDataService } from './watch-data-service.ts';
 import { PlexHistorySource } from './history-sources/plex.ts';
 import { TraktHistorySource } from './history-sources/trakt.ts';
 import { TautulliHistorySource } from './history-sources/tautulli.ts';
+import { HardwareAccelerator } from './hwaccel.ts';
 
 export async function buildApp(config: AppConfig) {
   const app = Fastify({ logger: config.NODE_ENV !== 'test', trustProxy: config.TRUST_PROXY === true });
@@ -78,6 +79,15 @@ export async function buildApp(config: AppConfig) {
   const downloadSweep = setInterval(() => { void downloads.sweep().catch(() => undefined); }, 60 * 60 * 1000);
   void downloads.sweep().catch(() => undefined);
 
+  // Detection spawns ffmpeg several times, so it runs once in the background:
+  // streams that start before it lands use software and pick up the GPU after.
+  const hardware = new HardwareAccelerator({ mode: config.HWACCEL, device: config.HWACCEL_DEVICE, offloadDecode: config.HWACCEL_DECODE });
+  void hardware.ready()
+    .then((report) => {
+      if (report.warning) app.log.warn(report.warning);
+      app.log.info({ selected: report.selected, available: report.available, adapters: report.adapters }, report.selected ? 'hardware transcoding enabled' : 'hardware transcoding unavailable; using software');
+    })
+    .catch((error: unknown) => app.log.warn(error, 'hardware transcoding detection failed'));
   const realtime = new RealtimeService();
   // Without a TMDB token nothing ever enriches, so ingest is the only signal.
   realtime.attach(pluginEvents, { announceOnIngest: !config.TMDB_API_TOKEN });
@@ -107,7 +117,7 @@ export async function buildApp(config: AppConfig) {
   await app.register(fastifyWebsocket);
   const auth = new AuthService(database);
   registerRealtimeRoute(app, auth, realtime);
-  await registerApiRoutes(app, auth, config.NODE_ENV === 'production', undefined, scanner, new CatalogService(database, join(config.CONFIG_PATH, 'trailers'), pluginEvents), join(config.CONFIG_PATH, 'images'), config.NODE_ENV === 'development' && isEmbeddedDatabase(config.DATABASE_URL), plugins, pluginScheduler, artwork, subtitleStore, metadataMatch, libraryWatcher, spriteStore, new UserSettingsService(database), new UserCollectionsService(database), new QueueService(database), new WatchDataService(database), { plex: new PlexHistorySource(), trakt: new TraktHistorySource(), tautulli: new TautulliHistorySource() }, new DeviceAuthService(database), new PlaybackSessionService(database), downloads);
+  await registerApiRoutes(app, auth, config.NODE_ENV === 'production', undefined, scanner, new CatalogService(database, join(config.CONFIG_PATH, 'trailers'), pluginEvents), join(config.CONFIG_PATH, 'images'), config.NODE_ENV === 'development' && isEmbeddedDatabase(config.DATABASE_URL), plugins, pluginScheduler, artwork, subtitleStore, metadataMatch, libraryWatcher, spriteStore, new UserSettingsService(database), new UserCollectionsService(database), new QueueService(database), new WatchDataService(database), { plex: new PlexHistorySource(), trakt: new TraktHistorySource(), tautulli: new TautulliHistorySource() }, new DeviceAuthService(database), new PlaybackSessionService(database), downloads, hardware);
 
   app.addHook('onClose', async () => {
     clearInterval(downloadSweep);

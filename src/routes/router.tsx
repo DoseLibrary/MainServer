@@ -10,6 +10,7 @@ import { CategoryPage } from '@/routes/CategoryPage';
 import { CollectionPage } from '@/routes/CollectionPage';
 import { CollectionsPage } from '@/routes/CollectionsPage';
 import { PluginsPage } from '@/routes/PluginsPage';
+import { TranscodingPage } from '@/routes/TranscodingPage';
 import { PluginDetailPage } from '@/routes/PluginDetailPage';
 import { AdminRoute } from '@/routes/AdminRoute';
 import { AdminHome } from '@/routes/AdminHome';
@@ -48,6 +49,7 @@ const routes: RouteObject[] = [
   { path: '/admin/users', element: <AdminRoute><FamilyAdminPage /></AdminRoute> },
   { path: '/admin/media', element: <AdminRoute><MediaAdminPage /></AdminRoute> },
   { path: '/admin/plugins', element: <AdminRoute><PluginsPage /></AdminRoute> },
+  { path: '/admin/transcoding', element: <AdminRoute><TranscodingPage /></AdminRoute> },
   { path: '/admin/plugins/:id', element: <AdminRoute><PluginDetailPage /></AdminRoute> },
   { path: '/profile/collections', element: <UserCollections /> },
   { path: '/profile/queue', element: <Queue /> },

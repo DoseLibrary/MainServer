@@ -16,6 +16,25 @@ services:
       # The Caddy proxy in this compose is the only way in; trust its
       # X-Forwarded-For so login throttling sees real client addresses.
       TRUST_PROXY: "true"
+      # Transcoding: `auto` tests every GPU encoder at startup and uses the
+      # fastest that works, `off` forces software, or name one of nvenc / qsv /
+      # amf / vaapi / videotoolbox. See docs/performance.md for what it is worth
+      # and why HWACCEL_DECODE is off unless the CPU is slow.
+      HWACCEL: ${HWACCEL:-auto}
+      HWACCEL_DECODE: ${HWACCEL_DECODE:-false}
+
+    # A GPU has to be handed to the container before any of it applies. NVIDIA
+    # needs the container toolkit on the host; Intel and AMD need the render
+    # node. Uncomment the block that matches this machine.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu, video]
+    # devices:
+    #   - /dev/dri:/dev/dri   # Intel Quick Sync or AMD VAAPI
 
     # Reached through the proxy; expose a port directly only if you need to
     # bypass it (DOSE_PORT=3000 restores the old behaviour).

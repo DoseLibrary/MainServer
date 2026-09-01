@@ -1,5 +1,6 @@
 import { resolve, sep } from 'node:path';
 import type { PlaybackPlan } from './playback.ts';
+import { decodeArgs, rateControlArgs, videoFilters, type EncoderChoice } from './hwaccel.ts';
 
 const PLAN_CODECS = /^[a-z0-9._-]{1,32}$/i;
 
@@ -72,17 +73,33 @@ const AUDIO_ENCODERS: Record<string, string> = {
   vorbis: 'libvorbis',
 };
 
-/** Build ffmpeg args that realise a negotiated plan, streaming a fragmented MP4 to stdout. */
-export function buildTranscodeArgs(plan: PlaybackPlan, inputPath: string, startSeconds?: number): string[] {
+/**
+ * Build ffmpeg args that realise a negotiated plan, streaming a fragmented MP4
+ * to stdout. `accel` picks a GPU encoder; without it the software path runs.
+ */
+export function buildTranscodeArgs(plan: PlaybackPlan, inputPath: string, startSeconds?: number, accel?: EncoderChoice | null): string[] {
+  // Hardware decoding only helps when we also re-encode; a copied video track
+  // is never decoded at all.
+  const reEncoding = plan.video?.action === 'transcode';
+  const encoder = reEncoding && accel?.codec === plan.video?.codec ? accel : null;
   // The input seek is frame-accurate when re-encoding and keyframe-accurate for
   // copied tracks; either is what a seek-restart wants. Output timestamps stay
   // zero-based, so the player offsets its timeline by the same start.
-  const args = ['-hide_banner', '-loglevel', 'error', ...(startSeconds && startSeconds > 0 ? ['-ss', String(startSeconds)] : []), '-i', inputPath];
+  const args = [
+    '-hide_banner', '-loglevel', 'error',
+    ...(encoder ? decodeArgs(encoder) : []),
+    ...(startSeconds && startSeconds > 0 ? ['-ss', String(startSeconds)] : []),
+    '-i', inputPath,
+  ];
 
   if (plan.video) {
     args.push('-map', '0:v:0');
     if (plan.video.action === 'copy') {
       args.push('-c:v', 'copy');
+    } else if (encoder) {
+      args.push('-c:v', encoder.encoder, ...rateControlArgs(encoder, 21));
+      const filters = videoFilters(encoder, plan.video.height);
+      if (filters.length) args.push('-vf', filters.join(','));
     } else {
       args.push('-c:v', VIDEO_ENCODERS[plan.video.codec] ?? 'libx264', '-preset', 'veryfast', '-crf', '21');
       if (plan.video.height) args.push('-vf', `scale=-2:${plan.video.height}`);

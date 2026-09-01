@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Activity, Clapperboard, Database, Film, HardDrive, Image, Puzzle, UsersRound } from 'lucide-react';
+import { Activity, Clapperboard, Database, Film, HardDrive, Image, Puzzle, UsersRound, Zap } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { api, type HealthStatus, type Library } from '@/lib/api';
+import { api, type HardwareReport, type HealthStatus, type Library } from '@/lib/api';
 import { AdminShell } from './AdminShell';
 
 /** Landing page for server administration: section cards plus service health. */
@@ -11,15 +11,20 @@ export function AdminHome() {
   const navigate = useNavigate();
   const [libraries, setLibraries] = useState<Library[]>([]);
   const [health, setHealth] = useState<HealthStatus>();
+  const [hardware, setHardware] = useState<HardwareReport>();
 
   const load = useCallback(async () => {
     try {
       const [{ libraries: nextLibraries }, nextHealth] = await Promise.all([api.libraries(), api.health()]);
       setLibraries(nextLibraries); setHealth(nextHealth);
+      // Detection can be slow on first call; the rest of the page must not wait.
+      void api.transcoding().then(({ hardware: report }) => setHardware(report)).catch(() => undefined);
     } catch { /* Cards remain useful as navigation even when status calls fail. */ }
   }, []);
   useEffect(() => { queueMicrotask(() => { void load(); }); }, [load]);
 
+  const hardwareLabel = hardware == null ? 'Encoder status and GPU detection'
+    : hardware.selected ? `GPU accelerated (${hardware.selected})` : 'Software encoding';
   return <AdminShell title="Administration" description="Manage this Dose server." wide>
     <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
       <SectionCard icon={<Activity />} title="Activity" description="See what is playing right now" action="Open activity" onClick={() => navigate('/admin/activity')} />
@@ -27,6 +32,7 @@ export function AdminHome() {
       <SectionCard icon={<UsersRound />} title="Family accounts" description="Create accounts, roles, and passwords" action="Manage family" onClick={() => navigate('/admin/users')} />
       <SectionCard icon={<Clapperboard />} title="Media" description="Review, re-match, or remove titles" action="Manage media" onClick={() => navigate('/admin/media')} />
       <SectionCard icon={<Puzzle />} title="Plugins" description="Schedule and configure internal plugins" action="Manage plugins" onClick={() => navigate('/admin/plugins')} />
+      <SectionCard icon={<Zap />} title="Transcoding" description={hardwareLabel} action="Open transcoding" onClick={() => navigate('/admin/transcoding')} />
       <Card>
         <CardHeader>
           <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-lg bg-muted"><HardDrive className="h-5 w-5" /></div>

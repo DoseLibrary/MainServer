@@ -156,6 +156,7 @@ alpine tar czf /backup/postgres.tgz /data`) captures the full state.
 | Symptom | Likely cause |
 | --- | --- |
 | `https://dose.local` does not load | The name is not pointing at the Docker host — recheck step 2, and that ports 80/443 are free on the host |
+| Transcodes are slow or the CPU is pinned | Check `https://dose.local/admin/transcoding` — if it says software encoding, the GPU is not reaching the container. Uncomment the matching device block in `compose.yaml` |
 | Titles have no artwork | `TMDB_API_TOKEN` missing or wrong — `https://dose.local/api/v1/health` reports `metadata.tmdb` |
 | A title matched the wrong film | Details page → *Re-match metadata* (admin) and pick the right one |
 | Downloads screen says "Install Dose first" | Open the installed Home-Screen app, not a browser tab |

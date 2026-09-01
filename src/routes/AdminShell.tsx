@@ -11,6 +11,7 @@ const SECTIONS = [
   { to: '/admin/users', label: 'Family' },
   { to: '/admin/media', label: 'Media' },
   { to: '/admin/plugins', label: 'Plugins' },
+  { to: '/admin/transcoding', label: 'Transcoding' },
 ];
 
 /** Shared frame for /admin pages: navbar, section tabs, page heading. */

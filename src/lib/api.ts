@@ -83,6 +83,8 @@ export interface UserCollectionView { id: string; name: string; overview?: strin
 export interface CatalogCollectionGap { tmdbId: string; title: string; year?: number; releaseDate?: string; posterUrl?: string; inLibrary: false }
 export interface CatalogCollectionSummary { id: string; name: string; posterUrl?: string; count: number }
 export interface CatalogCollectionView { id: string; name: string; posterUrl?: string; titles: CatalogItem[]; missing?: CatalogCollectionGap[] }
+export interface EncoderProbeResult { family: string; encoder: string; codec: string; built: boolean; working: boolean; error?: string }
+export interface HardwareReport { adapters: string[]; encoders: EncoderProbeResult[]; available: string[]; selected: string | null; mode: string; warning?: string; detectedAt: string }
 export interface ArtworkOption { path: string; previewUrl: string }
 export interface ArtworkOptions { posters: ArtworkOption[]; backdrops: ArtworkOption[] }
 export interface TmdbTitleCandidate { id: number; title: string; year?: number; overview?: string; posterPath?: string }
@@ -350,6 +352,8 @@ export const api = {
   clearQueue: () => request<{ items: QueueItem[] }>('/api/v1/me/queue', { method: 'DELETE' }),
   reorderQueue: (mediaItemIds: string[]) => request<{ items: QueueItem[] }>('/api/v1/me/queue', { method: 'PUT', body: JSON.stringify({ mediaItemIds }) }),
   nextInQueue: (after?: string) => request<{ item: CatalogItem | null }>(`/api/v1/me/queue/next${after ? `?after=${encodeURIComponent(after)}` : ''}`),
+  transcoding: () => request<{ hardware: HardwareReport }>('/api/v1/admin/transcoding'),
+  detectTranscoding: () => request<{ hardware: HardwareReport }>('/api/v1/admin/transcoding/detect', { method: 'POST' }),
   catalogCollections: () => request<{ collections: CatalogCollectionSummary[] }>('/api/v1/catalog/collections'),
   userCollections: () => request<{ collections: UserCollectionSummary[] }>('/api/v1/me/collections'),
   userCollection: (id: string) => request<{ collection: UserCollectionView }>(`/api/v1/me/collections/${encodeURIComponent(id)}`),

@@ -25,6 +25,7 @@ import { buildTranscodeArgs, contentTypeFor, decodePlaybackPlan, encodePlaybackP
 import { audioTracksOf } from './playback.ts';
 import { SEGMENT_SECONDS, buildSegmentArgs, ladderFor, masterPlaylist, mediaPlaylist, segmentCount, type HlsVariant } from './hls.ts';
 import { SegmentCache } from './hls-cache.ts';
+import { HardwareAccelerator } from './hwaccel.ts';
 import { Semaphore } from './concurrency.ts';
 import { applyAlignment, parseSubtitles, serializeVtt } from './subtitle-sync.ts';
 import { ImageVariantStore } from './images.ts';
@@ -137,7 +138,7 @@ function requireAdmin(user: PublicUser, reply: FastifyReply) {
   return true;
 }
 
-export async function registerApiRoutes(app: FastifyInstance, service: AuthService, production: boolean, filesystem: LibraryFilesystem = nodeLibraryFilesystem, scanner?: ScanCoordinator, catalog?: CatalogService, imagesDir = '/config/images', nativeLibraryPaths = false, plugins?: PluginService, pluginScheduler?: PluginScheduler, artwork?: ArtworkService, subtitleStore?: SubtitleStore, metadataMatch?: MetadataMatchService, libraryWatcher?: Pick<LibraryWatcher, 'synchronize'>, spriteStore?: PreviewSpriteStore, settings?: UserSettingsService, userCollections?: UserCollectionsService, queue?: QueueService, watchData?: WatchDataService, historySources?: HistorySources, deviceAuth?: DeviceAuthService, playbackSessions?: PlaybackSessionService, downloads?: DownloadService) {
+export async function registerApiRoutes(app: FastifyInstance, service: AuthService, production: boolean, filesystem: LibraryFilesystem = nodeLibraryFilesystem, scanner?: ScanCoordinator, catalog?: CatalogService, imagesDir = '/config/images', nativeLibraryPaths = false, plugins?: PluginService, pluginScheduler?: PluginScheduler, artwork?: ArtworkService, subtitleStore?: SubtitleStore, metadataMatch?: MetadataMatchService, libraryWatcher?: Pick<LibraryWatcher, 'synchronize'>, spriteStore?: PreviewSpriteStore, settings?: UserSettingsService, userCollections?: UserCollectionsService, queue?: QueueService, watchData?: WatchDataService, historySources?: HistorySources, deviceAuth?: DeviceAuthService, playbackSessions?: PlaybackSessionService, downloads?: DownloadService, hardware?: HardwareAccelerator) {
   const imageVariants = new ImageVariantStore(imagesDir);
   const synchronizeWatchers = async () => {
     try { await libraryWatcher?.synchronize(); }
@@ -726,6 +727,16 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
     }
     return { plan, durationSeconds: source.durationSeconds, audioTracks: audioTracksOf(source.probe), stream: { url, hlsUrl, castUrl: `/api/v1/cast/${castToken}/stream`, direct: plan.mode === 'direct' } };
   });
+  app.get('/api/v1/admin/transcoding', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user || !requireAdmin(user, reply)) return;
+    if (!hardware) return reply.status(503).send({ error: 'Hardware detection unavailable' });
+    return { hardware: await hardware.ready() };
+  });
+  app.post('/api/v1/admin/transcoding/detect', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user || !requireAdmin(user, reply)) return;
+    if (!hardware) return reply.status(503).send({ error: 'Hardware detection unavailable' });
+    return { hardware: await hardware.refresh() };
+  });
   app.get('/api/v1/images/:name', async (request, reply) => {
     const parsed = imageParams.safeParse(request.params); if (!parsed.success) return reply.status(400).send({ error: 'Invalid image name' });
     const file = join(imagesDir, parsed.data.name);
@@ -759,7 +770,7 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
       if (!plan) return reply.status(400).send({ error: 'Invalid playback plan' });
       // A seek outside the buffer restarts the stream here rather than replaying
       // everything from zero; the player offsets its timeline by the same amount.
-      const child = spawn('ffmpeg', buildTranscodeArgs(plan, absolute, query.data.start), { stdio: ['ignore', 'pipe', 'ignore'] });
+      const child = spawn('ffmpeg', buildTranscodeArgs(plan, absolute, query.data.start, plan.video ? hardware?.choose(plan.video.codec) : null), { stdio: ['ignore', 'pipe', 'ignore'] });
       child.on('error', () => { request.raw.destroy(); });
       request.raw.on('close', () => child.kill('SIGKILL'));
       reply.header('Content-Type', 'video/mp4'); reply.header('Cache-Control', 'no-store');
@@ -782,7 +793,7 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
   const READAHEAD_SEGMENTS = 2;
   const encodeSegment = (absolute: string, plan: PlaybackPlan, variant: HlsVariant, index: number, duration: number) =>
     new Promise<Buffer>((resolveSegment, rejectSegment) => {
-      const child = spawn('ffmpeg', buildSegmentArgs(absolute, plan, variant, index, duration), { stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = spawn('ffmpeg', buildSegmentArgs(absolute, plan, variant, index, duration, hardware?.choose('h264')), { stdio: ['ignore', 'pipe', 'pipe'] });
       const chunks: Buffer[] = [];
       const stderr: Buffer[] = [];
       const timer = setTimeout(() => child.kill('SIGKILL'), SEGMENT_SECONDS * 10_000);
@@ -908,7 +919,7 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
     if (!info.isFile()) return reply.status(404).send({ error: 'Stream not found' });
     if (grant.plan) {
       const plan = decodePlaybackPlan(grant.plan); if (!plan) return reply.status(404).send({ error: 'Stream not found' });
-      const child = spawn('ffmpeg', buildTranscodeArgs(plan, absolute), { stdio: ['ignore', 'pipe', 'ignore'] });
+      const child = spawn('ffmpeg', buildTranscodeArgs(plan, absolute, undefined, plan.video ? hardware?.choose(plan.video.codec) : null), { stdio: ['ignore', 'pipe', 'ignore'] });
       child.on('error', () => { request.raw.destroy(); }); request.raw.on('close', () => child.kill('SIGKILL'));
       reply.header('Content-Type', 'video/mp4'); reply.header('Cache-Control', 'private, no-store'); return reply.send(child.stdout);
     }

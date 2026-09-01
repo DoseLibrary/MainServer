@@ -130,3 +130,58 @@ start, so seeks are one request with no session to rebuild) and adds:
 Net: seek latency beats the session model, steady-state matches it, and
 repeat traffic (the common household case: two people watching the same new
 episode) costs one encode instead of two.
+
+## Hardware transcoding
+
+Dose probes for GPU encoders at startup and uses one automatically when it
+works. Detection does not trust `ffmpeg -encoders`, which lists everything the
+binary was *built* with — a stock build claims NVENC, QSV, AMF and VAAPI on a
+machine with no GPU at all. Every candidate instead encodes one real frame with
+the exact arguments playback would use, so an encoder that reports as available
+will not fail mid-film. `/admin/transcoding` shows the verdict per encoder and
+re-runs detection on demand.
+
+Configuration: `HWACCEL` (`auto` by default, `off`, or a pinned family),
+`HWACCEL_DEVICE` for the VAAPI render node, `HWACCEL_DECODE` to move decoding
+to the GPU as well.
+
+### What it is actually worth
+
+Measured on an i7-13700KF with an RTX 4070 Ti SUPER, encoding to H.264,
+wall-clock for the same input (lower is better):
+
+| Workload | Software (x264 veryfast) | NVENC |
+|---|---|---|
+| 1080p H.264 → 720p, one stream | 4.05 s | 4.23 s |
+| 1080p H.264 → 720p, 8 streams | 25.3 s | 27.7 s |
+| 4K HEVC → 1080p, one stream | 3.02 s | 2.51 s |
+| 4K HEVC → 1080p, 4 streams | 8.62 s | 6.45 s |
+
+Two things follow. **A fast desktop CPU beats NVENC on 1080p H.264** — x264 at
+`veryfast` is simply quicker than the fixed-function encoder there, and single
+streams of either are decode-bound anyway. **The GPU wins on 4K and on
+concurrency**, which is the case that matters: four people watching 4K
+remuxes is where a CPU-only server starts dropping frames, and the GPU also
+leaves the processor free for scans and sprite generation.
+
+On low-power hardware (N100, NAS boxes, older Xeons) the gap is far wider in
+the GPU's favour, since software encoding there cannot sustain real time at all.
+
+### Why decode offload is off by default
+
+`HWACCEL_DECODE` moves decoding onto the GPU too. It sounds like a free win and
+is not: decoded frames have to come back across PCIe for filtering, and on a
+capable CPU that transfer costs more than the GPU decode saves. Same box, four
+concurrent 4K HEVC → 1080p transcodes:
+
+| Pipeline | Wall clock |
+|---|---|
+| Software decode + NVENC encode (**default**) | 6.45 s |
+| Full GPU pipeline (`scale_cuda`, frames never leave the card) | 6.60 s |
+| GPU decode → system memory → software scale → NVENC | 6.99 s |
+| Everything in software | 8.62 s |
+
+Software decode with a hardware encoder was fastest, and it is also the robust
+option: no format mismatches on 10-bit or HDR sources, no filter-graph
+surprises. Turn `HWACCEL_DECODE` on when the CPU cannot decode in real time —
+that is the case it exists for.
