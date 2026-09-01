@@ -8,6 +8,7 @@ import { UserMenu } from '@/components/media/UserMenu';
 import { RandomPickerModal } from '@/components/media/RandomPickerModal';
 import { subscribeCatalogUpdates } from '@/lib/realtime';
 import { cached, cacheKeys, cachedValue, clearCache, prefetch, primeCache } from '@/lib/cache';
+import { flushProgressOutbox } from '@/lib/download-meta';
 
 type AppState =
   | { name: 'loading' }
@@ -90,6 +91,18 @@ export function Home() {
   useEffect(() => {
     queueMicrotask(() => { void bootstrap(); });
   }, [bootstrap]);
+
+  // Anything watched offline is reported once there is a connection again,
+  // otherwise resume would quietly lie about a whole flight's viewing.
+  useEffect(() => {
+    if (state.name !== 'library') return;
+    const flush = () => void flushProgressOutbox(async (entry) => {
+      await api.saveProgress(entry.mediaItemId, entry.positionSeconds, entry.watched);
+    }).catch(() => undefined);
+    flush();
+    window.addEventListener('online', flush);
+    return () => window.removeEventListener('online', flush);
+  }, [state.name]);
 
   // Live catalog pushes: a new title fades into the home rows without a reload.
   useEffect(() => {

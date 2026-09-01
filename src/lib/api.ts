@@ -163,6 +163,24 @@ export interface HistoryEntry {
   item: { id: string; title: string; kind: string; seasonNumber?: number; episodeNumber?: number; posterUrl?: string; backdropUrl?: string };
 }
 
+export interface DownloadGrant {
+  id: string;
+  mediaItemId: string;
+  title: string;
+  profile: 'sd' | 'hd';
+  status: 'preparing' | 'ready' | 'claimed' | 'failed';
+  sizeBytes: number | null;
+  estimatedBytes: number;
+  error: string | null;
+  expiresAt: string;
+}
+
+export interface DownloadEstimate {
+  items: Array<{ id: string; title: string; estimatedBytes: number }>;
+  totalBytes: number;
+  profile: 'sd' | 'hd';
+}
+
 export interface IntroMarker { startSeconds: number; endSeconds: number }
 
 export interface CatalogSection { id: string; title: string; items: CatalogItem[]; layout?: 'poster' | 'card' }
@@ -276,6 +294,15 @@ export const api = {
   endPlaybackSession: (id: string) => request<void>(`/api/v1/playback/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   activity: () => request<{ sessions: ActivitySession[] }>('/api/v1/admin/activity'),
   history: () => request<{ history: HistoryEntry[] }>('/api/v1/me/history'),
+  downloads: () => request<{ downloads: DownloadGrant[] }>('/api/v1/downloads'),
+  /** What a title, or a whole season, would cost on the device. */
+  downloadEstimate: (mediaItemId: string, profile: 'sd' | 'hd') =>
+    request<DownloadEstimate>(`/api/v1/downloads/estimate?mediaItemId=${encodeURIComponent(mediaItemId)}&profile=${profile}`),
+  requestDownload: (mediaItemId: string, profile: 'sd' | 'hd') =>
+    request<{ download: DownloadGrant }>('/api/v1/downloads', { method: 'POST', body: JSON.stringify({ mediaItemId, profile }) }),
+  downloadStatus: (id: string) => request<{ download: DownloadGrant }>(`/api/v1/downloads/${encodeURIComponent(id)}`),
+  completeDownload: (id: string) => request<void>(`/api/v1/downloads/${encodeURIComponent(id)}/complete`, { method: 'POST' }),
+  cancelDownload: (id: string) => request<void>(`/api/v1/downloads/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   forgetHistory: (itemId?: string) => request<void>(`/api/v1/me/history${itemId ? `?itemId=${encodeURIComponent(itemId)}` : ''}`, { method: 'DELETE' }),
   revokeSession: (id: string) => request<void>(`/api/v1/me/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   me: () => request<{ user: User }>('/api/v1/auth/me'),

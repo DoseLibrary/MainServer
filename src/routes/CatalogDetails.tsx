@@ -6,6 +6,8 @@ import { MediaDetailsPage } from '@/pages/MediaDetailsPage';
 import { ArtworkManager } from '@/routes/ArtworkManager';
 import { MetadataRematch } from '@/routes/MetadataRematch';
 import { AddToCollectionModal } from '@/components/media/AddToCollectionModal';
+import { DownloadModal } from '@/components/media/DownloadModal';
+import { supportsDownloads } from '@/lib/download-store';
 
 export function CatalogDetails() {
   const { id = '' } = useParams();
@@ -21,6 +23,7 @@ export function CatalogDetails() {
   const [rematchOpen, setRematchOpen] = useState(false);
   const [collectionOpen, setCollectionOpen] = useState(false);
   const [queued, setQueued] = useState(false);
+  const [downloadOpen, setDownloadOpen] = useState(false);
   const apply = useCallback((next: CatalogItemDetails) => {
     setItem(next); setSaved(Boolean(next.inWatchlist)); setWatched(Boolean(next.watched));
   }, []);
@@ -95,9 +98,11 @@ export function CatalogDetails() {
     secondaryAction: item && (item.kind === 'movie' || item.kind === 'series') ? { label: saved ? 'In Watch List' : 'Add to Watch List', onClick: () => void toggleWatchlist() } : undefined,
     extraActions: item && (item.kind === 'movie' || item.kind === 'series') ? [
       { id: 'add-to-collection', label: 'Add to collection', onClick: () => setCollectionOpen(true) },
+      ...(supportsDownloads() && item.kind === 'movie' ? [{ id: 'download', label: 'Download', onClick: () => setDownloadOpen(true) }] : []),
       ...(item.kind === 'movie' ? [{ id: 'add-to-queue', label: queued ? 'In queue' : 'Add to queue', onClick: () => void addToQueue() }] : []),
     ] : undefined,
     onPlayTrailer: hasLocalTrailer ? () => navigate(`/trailer/${encodeURIComponent(id)}`) : undefined,
+    onDownload: supportsDownloads() && item && (item.kind === 'movie' || item.kind === 'season' || item.kind === 'episode') ? () => setDownloadOpen(true) : undefined,
     trailerLabel: 'Play Trailer',
     watched,
     onToggleWatched: item && (item.kind === 'movie' || item.kind === 'episode') ? () => void toggleWatched() : undefined,
@@ -130,6 +135,7 @@ export function CatalogDetails() {
   return <>
     {page}
     {item && <AddToCollectionModal open={collectionOpen} mediaItemId={id} onOpenChange={setCollectionOpen} />}
+    {item && <DownloadModal open={downloadOpen} mediaItemId={id} title={item.title} onOpenChange={setDownloadOpen} />}
     {isAdmin && <ArtworkManager open={artworkOpen} itemId={id} onOpenChange={setArtworkOpen} onApplied={() => void load()} />}
     {isAdmin && item && (item.kind === 'movie' || item.kind === 'series') && <MetadataRematch open={rematchOpen} itemId={id} kind={item.kind} initialTitle={item.title} onOpenChange={setRematchOpen} onMatched={() => { void load(); setArtworkOpen(true); }} />}
   </>;

@@ -1,5 +1,5 @@
 import type { ComponentProps, MouseEventHandler, ReactNode } from 'react';
-import { ArrowLeft, Check, Eye, MoreHorizontal, PlayCircle } from 'lucide-react';
+import { ArrowLeft, Check, Download, Eye, MoreHorizontal, PlayCircle } from 'lucide-react';
 import { Carousel } from '@/components/media/Carousel';
 import { Navbar } from '@/components/media/Navbar';
 import { Poster } from '@/components/media/Poster';
@@ -69,6 +69,8 @@ interface MediaDetailsBaseProps {
   /** When provided, a "Play trailer" button is shown (i.e. a trailer exists). */
   onPlayTrailer?: () => void;
   trailerLabel?: string;
+  /** Offered when the device can hold a copy; opens the size confirmation. */
+  onDownload?: () => void;
   /** Watched toggle. Rendered only when `onToggleWatched` is supplied. */
   watched?: boolean;
   onToggleWatched?: () => void;
@@ -118,7 +120,7 @@ function ActionButton({ action, variant = 'default', size = 'lg' }: { action: Me
 
 type DetailsActionsProps = Pick<
   MediaDetailsBaseProps,
-  'primaryAction' | 'secondaryAction' | 'extraActions' | 'onPlayTrailer' | 'trailerLabel' | 'watched' | 'onToggleWatched' | 'markWatchedLabel' | 'markUnwatchedLabel' | 'canManage' | 'onEditMetadata' | 'manageLabel' | 'adminActions'
+  'primaryAction' | 'secondaryAction' | 'extraActions' | 'onPlayTrailer' | 'trailerLabel' | 'onDownload' | 'watched' | 'onToggleWatched' | 'markWatchedLabel' | 'markUnwatchedLabel' | 'canManage' | 'onEditMetadata' | 'manageLabel' | 'adminActions'
 >;
 
 function DetailsActions({
@@ -127,6 +129,7 @@ function DetailsActions({
   extraActions,
   onPlayTrailer,
   trailerLabel = 'Play trailer',
+  onDownload,
   watched = false,
   onToggleWatched,
   markWatchedLabel = 'Mark as watched',
@@ -147,6 +150,12 @@ function DetailsActions({
       {onPlayTrailer && (
         <Button type="button" variant="secondary" size="lg" className="gap-2" onClick={onPlayTrailer}>
           <PlayCircle aria-hidden="true" className="h-5 w-5" />{trailerLabel}
+        </Button>
+      )}
+
+      {onDownload && (
+        <Button type="button" variant="outline" size="lg" className="gap-2" onClick={onDownload}>
+          <Download aria-hidden="true" className="h-5 w-5" />Download
         </Button>
       )}
 
@@ -346,6 +355,7 @@ export function MediaDetailsPage(props: MediaDetailsPageProps) {
     extraActions,
     onPlayTrailer,
     trailerLabel,
+    onDownload,
     watched,
     onToggleWatched,
     markWatchedLabel,
@@ -395,6 +405,7 @@ export function MediaDetailsPage(props: MediaDetailsPageProps) {
                   extraActions={extraActions}
                   onPlayTrailer={onPlayTrailer}
                   trailerLabel={trailerLabel}
+                  onDownload={onDownload}
                   watched={watched}
                   onToggleWatched={onToggleWatched}
                   markWatchedLabel={markWatchedLabel}

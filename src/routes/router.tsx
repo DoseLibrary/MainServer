@@ -19,6 +19,7 @@ import { MediaAdminPage } from '@/routes/MediaAdminPage';
 import { UserCollections } from '@/routes/UserCollections';
 import { Queue } from '@/routes/Queue';
 import { History } from '@/routes/History';
+import { Downloads } from '@/routes/Downloads';
 import { TrailerWatch } from '@/routes/TrailerWatch';
 import { PairDevice } from '@/routes/PairDevice';
 import { LinkDevice } from '@/routes/LinkDevice';
@@ -49,6 +50,8 @@ const routes: RouteObject[] = [
   { path: '/profile/collections', element: <UserCollections /> },
   { path: '/profile/queue', element: <Queue /> },
   { path: '/profile/history', element: <History /> },
+  // Reachable with no connection: the service worker serves the shell here.
+  { path: '/downloads', element: <Downloads /> },
 ];
 
 // The component gallery is a dev-only tool. Gating the route registration and

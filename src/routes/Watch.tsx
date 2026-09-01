@@ -11,6 +11,8 @@ export function Watch() {
   const [search] = useSearchParams();
   // Marathon mode keeps advancing through the user's queue instead of stopping.
   const marathon = search.get('queue') === '1';
+  // A download plays from the device; the service worker serves this path.
+  const offlineSrc = search.get('offline') ?? undefined;
   const [item, setItem] = useState<CatalogItemDetails>();
   const [playback, setPlayback] = useState<PlaybackResponse>();
   const [thumbnails, setThumbnails] = useState<MediaSprite>();
@@ -101,8 +103,8 @@ export function Watch() {
       if (next) navigate(`/watch/${encodeURIComponent(next.id)}?queue=1`);
     } catch { /* a failed lookup simply ends the marathon */ }
   };
-  const progressiveTranscode = !playback.stream.direct && !playback.stream.hlsUrl;
-  const src = playback.stream.hlsUrl
+  const progressiveTranscode = !offlineSrc && !playback.stream.direct && !playback.stream.hlsUrl;
+  const src = offlineSrc ?? playback.stream.hlsUrl
     ?? (progressiveTranscode && streamStart > 0
       ? `${playback.stream.url}${playback.stream.url.includes('?') ? '&' : '?'}start=${streamStart}`
       : playback.stream.url);

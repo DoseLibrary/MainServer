@@ -23,4 +23,14 @@ export default tseslint.config(
     files: ['scripts/*.mjs'],
     languageOptions: { globals: { console: 'readonly', process: 'readonly' } },
   },
+  {
+    // The service worker runs in a worker global scope, not the page's.
+    files: ['public/sw.js'],
+    languageOptions: {
+      globals: {
+        self: 'readonly', caches: 'readonly', clients: 'readonly', navigator: 'readonly',
+        fetch: 'readonly', Response: 'readonly', Request: 'readonly', URL: 'readonly',
+      },
+    },
+  },
 );
