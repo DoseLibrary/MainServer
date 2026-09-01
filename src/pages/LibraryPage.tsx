@@ -43,6 +43,8 @@ export interface LibraryFeaturedMedia {
   /** Optional background trailer for a billboard-style hero. */
   videoSrc?: string;
   videoPoster?: string;
+  /** Fullscreen control rendered beside the trailer's play/mute buttons. */
+  fullscreenHref?: string;
   primaryAction?: LibraryAction;
   secondaryAction?: LibraryAction;
 }
@@ -177,6 +179,7 @@ export function LibraryPage<NavigationId extends string = string>({
             imageAlt={featured.imageAlt}
             videoSrc={featured.videoSrc}
             videoPoster={featured.videoPoster}
+            fullscreenHref={featured.fullscreenHref}
             className="rounded-none border-0"
             actions={<>{featured.primaryAction && <ActionButton action={featured.primaryAction} />}{featured.secondaryAction && <ActionButton action={featured.secondaryAction} variant="secondary" />}</>}
           />

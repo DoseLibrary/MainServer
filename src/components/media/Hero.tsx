@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { Pause, Play, Volume2, VolumeX } from 'lucide-react';
+import { Maximize, Pause, Play, Volume2, VolumeX } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 export type HeroAlignment = 'start' | 'center';
@@ -11,6 +11,8 @@ export interface HeroProps {
   videoSrc?: string;
   /** Poster frame shown before the trailer plays and as the reduced-motion still. */
   videoPoster?: string;
+  /** Destination of the fullscreen control shown with the trailer buttons. */
+  fullscreenHref?: string;
   title: ReactNode;
   /** Transparent title logo rendered in place of the title text when set. */
   logoSrc?: string;
@@ -92,9 +94,10 @@ interface HeroVideoProps {
   src: string;
   poster?: string;
   alt: string;
+  fullscreenHref?: string;
 }
 
-function HeroVideo({ src, poster, alt }: HeroVideoProps) {
+function HeroVideo({ src, poster, alt, fullscreenHref }: HeroVideoProps) {
   const reducedMotion = usePrefersReducedMotion();
   const videoRef = useRef<HTMLVideoElement>(null);
   const [playing, setPlaying] = useState(false);
@@ -158,6 +161,15 @@ function HeroVideo({ src, poster, alt }: HeroVideoProps) {
         >
           {muted ? <VolumeX aria-hidden="true" className="h-4 w-4" /> : <Volume2 aria-hidden="true" className="h-4 w-4" />}
         </button>
+        {fullscreenHref && (
+          <a
+            href={fullscreenHref}
+            aria-label="Fullscreen trailer"
+            className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-white/40 bg-black/50 text-white backdrop-blur transition-colors hover:bg-black/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
+          >
+            <Maximize aria-hidden="true" className="h-4 w-4" />
+          </a>
+        )}
       </div>
     </div>
   );
@@ -168,6 +180,7 @@ export function Hero({
   imageAlt,
   videoSrc,
   videoPoster,
+  fullscreenHref,
   title,
   logoSrc,
   eyebrow,
@@ -194,7 +207,7 @@ export function Hero({
       aria-label={typeof title === 'string' ? title : undefined}
     >
       {videoSrc ? (
-        <HeroVideo key={videoSrc} src={videoSrc} poster={videoPoster ?? imageSrc} alt={fallbackAlt} />
+        <HeroVideo key={videoSrc} src={videoSrc} poster={videoPoster ?? imageSrc} alt={fallbackAlt} fullscreenHref={fullscreenHref} />
       ) : (
         <HeroArtwork
           key={imageSrc ?? 'no-image'}
