@@ -1,5 +1,6 @@
-import { mkdir, writeFile, access, rename } from 'node:fs/promises';
+import { mkdir, writeFile, access, rename, rm } from 'node:fs/promises';
 import { join, parse } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import sharp from 'sharp';
 
 const TMDB_IMAGE_BASE = 'https://image.tmdb.org/t/p/original';
@@ -93,5 +94,35 @@ export class ImageStore {
     const buffer = Buffer.from(await response.arrayBuffer());
     await mkdir(this.directory, { recursive: true });
     await writeFile(target, buffer);
+  }
+}
+
+/**
+ * Stores artwork a user uploaded rather than artwork a provider supplied.
+ *
+ * Uploads arrive as arbitrary bytes, so nothing is trusted: sharp re-encodes
+ * every file into a bounded webp, which both normalizes the format and drops
+ * anything that was not really an image. The generated name is random, so one
+ * upload can never overwrite another user's cover.
+ */
+export class UploadedImageStore {
+  constructor(private readonly directory: string) {}
+
+  /** Re-encode and persist an upload; resolves to the filename to serve. */
+  async save(data: Buffer, prefix = 'upload'): Promise<string> {
+    const encoded = await sharp(data)
+      .rotate()
+      .resize({ width: 1000, height: 1500, fit: 'cover', withoutEnlargement: true })
+      .webp({ quality: 82 })
+      .toBuffer();
+    const name = `${prefix}-${randomUUID()}.webp`;
+    await mkdir(this.directory, { recursive: true });
+    await writeFile(join(this.directory, name), encoded);
+    return name;
+  }
+
+  /** Deleting a cover that is already gone is not an error. */
+  async remove(name: string): Promise<void> {
+    await rm(join(this.directory, name), { force: true }).catch(() => undefined);
   }
 }

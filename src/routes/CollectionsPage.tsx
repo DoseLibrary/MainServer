@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Layers } from 'lucide-react';
 import { api, type CatalogCollectionSummary, type UserCollectionSummary } from '@/lib/api';
+import { useCatalogUpdates } from '@/lib/use-live';
 import { Navbar } from '@/components/media/Navbar';
 import { UserMenu } from '@/components/media/UserMenu';
 import { Button } from '@/components/ui/button';
@@ -40,6 +41,8 @@ export function CollectionsPage() {
     } catch (caught) { setError(caught instanceof Error ? caught.message : 'Could not load collections.'); }
   }, []);
   useEffect(() => { queueMicrotask(() => { void load(); }); }, [load]);
+  // A collection that gains or loses a title elsewhere updates its count here.
+  useCatalogUpdates(() => { void load(); });
 
   const loading = !error && (!providerCollections || !userCollections);
   const empty = providerCollections?.length === 0 && userCollections?.length === 0;
@@ -72,7 +75,7 @@ export function CollectionsPage() {
                 <ul className="mt-4 grid list-none grid-cols-2 gap-4 p-0 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
                   {userCollections.map((collection) => (
                     <li key={collection.id}>
-                      <CollectionTile to={`/profile/collections?open=${encodeURIComponent(collection.id)}`} name={collection.name} count={collection.itemCount} />
+                      <CollectionTile to={`/my-collection/${encodeURIComponent(collection.id)}`} name={collection.name} posterUrl={collection.imageUrl} count={collection.itemCount} />
                     </li>
                   ))}
                 </ul>

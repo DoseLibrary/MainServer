@@ -13,6 +13,19 @@ describe('CatalogDetails', () => {
     expect(globalThis.fetch).toHaveBeenCalledWith('/api/v1/catalog/items/movie%2F1', expect.anything());
   });
 
+  it('climbs from an episode to its season and show', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ item: {
+      id: 'e1', title: 'Opening', kind: 'episode', seasonNumber: 1, episodeNumber: 1,
+      parent: { id: 's1', title: 'Season 1', kind: 'season', seasonNumber: 1 },
+      series: { id: 'sh1', title: 'Art Show', kind: 'series' },
+    } }), { status: 200 }));
+    render(<MemoryRouter initialEntries={['/media/e1']}><Routes><Route path="/media/:id" element={<CatalogDetails />} /></Routes></MemoryRouter>);
+
+    expect(await screen.findByRole('link', { name: 'Art Show' })).toHaveAttribute('href', '/media/sh1');
+    expect(screen.getByRole('link', { name: 'Season 1' })).toHaveAttribute('href', '/media/s1');
+    expect(screen.getByRole('link', { name: 'Back to Season 1' })).toHaveAttribute('href', '/media/s1');
+  });
+
   it('adds a title to a personal collection from the media page', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -49,6 +62,25 @@ describe('CatalogDetails', () => {
     globalThis.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ item: { id: 'm3', title: 'Dune', kind: 'movie', progress: 0.4 } }), { status: 200 }));
     render(<MemoryRouter initialEntries={['/media/m3']}><Routes><Route path="/media/:id" element={<CatalogDetails />} /></Routes></MemoryRouter>);
     expect(await screen.findByRole('link', { name: 'Resume' })).toHaveAttribute('href', '/watch/m3');
+    expect(screen.getByRole('link', { name: 'Play from start' })).toHaveAttribute('href', '/watch/m3?start=0');
+  });
+
+  it('routes to the player in the client instead of reloading the app', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ item: { id: 'm5', title: 'Sicario', kind: 'movie' } }), { status: 200 }));
+    render(<MemoryRouter initialEntries={['/media/m5']}><Routes>
+      <Route path="/media/:id" element={<CatalogDetails />} />
+      <Route path="/watch/:id" element={<p>Playing</p>} />
+    </Routes></MemoryRouter>);
+
+    fireEvent.click(await screen.findByRole('link', { name: 'Play' }));
+    expect(await screen.findByText('Playing')).toBeInTheDocument();
+  });
+
+  it('offers only Play for a movie that has not been started', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ item: { id: 'm4', title: 'Heat', kind: 'movie' } }), { status: 200 }));
+    render(<MemoryRouter initialEntries={['/media/m4']}><Routes><Route path="/media/:id" element={<CatalogDetails />} /></Routes></MemoryRouter>);
+    expect(await screen.findByRole('link', { name: 'Play' })).toHaveAttribute('href', '/watch/m4');
+    expect(screen.queryByRole('link', { name: 'Play from start' })).toBeNull();
   });
   it('renders enriched movie details: quality badge, genres, tagline, cast, and recommendations', async () => {
     globalThis.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ item: {

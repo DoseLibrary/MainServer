@@ -30,7 +30,7 @@ describe('CollectionsPage', () => {
     expect(saga).toHaveAttribute('href', '/collection/c1');
     expect(screen.getByText('3 titles')).toBeInTheDocument();
     const mine = screen.getByRole('link', { name: /Movie night/ });
-    expect(mine).toHaveAttribute('href', '/profile/collections?open=u1');
+    expect(mine).toHaveAttribute('href', '/my-collection/u1');
     expect(screen.getByRole('link', { name: 'Manage' })).toHaveAttribute('href', '/profile/collections');
   });
 

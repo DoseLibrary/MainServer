@@ -13,8 +13,12 @@ export class UnknownPluginActionError extends Error {}
 
 type Configuration = typeof pluginConfigurations.$inferSelect;
 
+/** What a run listener is told: enough to refresh a plugin screen. */
+export interface PluginRunChange { pluginId: string; status: 'running' | 'succeeded' | 'failed' }
+
 export class PluginService {
   private readonly running = new Map<string, AbortController>();
+  private readonly runListeners = new Set<(change: PluginRunChange) => void>();
   /** Event delivery resolves settings/enabled from here; a DB read per event would not scale. */
   private readonly configurations = new Map<string, Configuration>();
   private readonly shutdown = new AbortController();
@@ -53,6 +57,23 @@ export class PluginService {
   }
 
   isEnabled(pluginId: string) { return this.configurations.get(pluginId)?.enabled ?? false; }
+
+  /**
+   * Watch every run, however it started — on demand, on a schedule, or from an
+   * event. Listeners are notified after the outcome is durable, so a screen that
+   * refetches on the signal reads the same state a reload would.
+   */
+  onRunChange(listener: (change: PluginRunChange) => void): () => void {
+    this.runListeners.add(listener);
+    return () => { this.runListeners.delete(listener); };
+  }
+
+  /** Notification is advisory: a listener that throws never fails a run. */
+  private announce(change: PluginRunChange) {
+    for (const listener of this.runListeners) {
+      try { listener(change); } catch { /* a broken listener is not a broken run */ }
+    }
+  }
 
   /** Abort in-flight runs and event handlers so shutdown is not blocked. */
   abortAll() {
@@ -144,6 +165,7 @@ export class PluginService {
         throw cause;
       }
       runId = run.id;
+      this.announce({ pluginId, status: 'running' });
       const result = await invoke({ settings, signal: controller.signal });
       const finishedAt = new Date();
       const durationMs = Math.max(0, finishedAt.getTime() - startedAt.getTime());
@@ -154,6 +176,7 @@ export class PluginService {
           .where(eq(pluginConfigurations.pluginId, pluginId));
       });
       outcome = { id: run.id, status: 'succeeded', durationMs, summary };
+      this.announce({ pluginId, status: 'succeeded' });
     } catch (cause) {
       if (!runId) throw cause;
       const failedRunId = runId;
@@ -166,6 +189,7 @@ export class PluginService {
           .where(eq(pluginConfigurations.pluginId, pluginId));
       });
       outcome = { id: failedRunId, status: 'failed', durationMs, error };
+      this.announce({ pluginId, status: 'failed' });
     } finally {
       this.running.delete(pluginId);
     }

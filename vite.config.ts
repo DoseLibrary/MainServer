@@ -12,7 +12,9 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/api': `http://127.0.0.1:${process.env.DOSE_DEV_API_PORT ?? '3000'}`,
+      // `ws: true` matters: the realtime channel (/api/v1/events) is a WebSocket
+      // upgrade, which the shorthand string form of a proxy entry never forwards.
+      '/api': { target: `http://127.0.0.1:${process.env.DOSE_DEV_API_PORT ?? '3000'}`, ws: true },
     },
   },
   test: {

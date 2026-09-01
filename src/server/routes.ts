@@ -23,6 +23,7 @@ import type { PreviewSpriteStore } from './sprites.ts';
 import { negotiatePlayback, type PlaybackPlan } from './playback.ts';
 import { buildTranscodeArgs, contentTypeFor, decodePlaybackPlan, encodePlaybackPlan, resolveRange, resolveWithin } from './streaming.ts';
 import { audioTracksOf } from './playback.ts';
+import { isFragmentedMp4 } from './mp4.ts';
 import { SEGMENT_SECONDS, buildSegmentArgs, ladderFor, masterPlaylist, mediaPlaylist, segmentCount, type HlsVariant } from './hls.ts';
 import { SegmentCache } from './hls-cache.ts';
 import { HardwareAccelerator } from './hwaccel.ts';
@@ -34,7 +35,7 @@ import { ImageVariantStore } from './images.ts';
 import { MatchItemNotFoundError, MatchUnsupportedKindError, TmdbMatchNotFoundError, type MetadataMatchService } from './metadata-match-service.ts';
 import type { LibraryWatcher } from './library-watcher.ts';
 import { userSettingsPatch, type UserSettingsService } from './user-settings-service.ts';
-import { UserCollectionNotFoundError, userCollectionInput, userCollectionOrder, userCollectionPatch, type UserCollectionsService } from './user-collections-service.ts';
+import { UserCollectionImageError, UserCollectionNotFoundError, userCollectionImage, userCollectionInput, userCollectionOrder, userCollectionPatch, type UserCollectionsService } from './user-collections-service.ts';
 import { queueItemBody, queueOrder, type QueueService } from './queue-service.ts';
 import { watchDataDocument, type WatchDataService } from './watch-data-service.ts';
 import { HistorySourceError, type HistorySource } from './history-sources/types.ts';
@@ -135,6 +136,7 @@ async function withUserCollection<T>(reply: FastifyReply, run: () => Promise<T>)
   try { return await run(); }
   catch (error) {
     if (error instanceof UserCollectionNotFoundError) return reply.status(404).send({ error: 'Collection not found' });
+    if (error instanceof UserCollectionImageError) return reply.status(400).send({ error: error.message });
     throw error;
   }
 }
@@ -435,6 +437,21 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
     const body = userCollectionOrder.safeParse(request.body); if (!body.success) return reply.status(400).send({ error: 'Invalid order' });
     if (!userCollections) return reply.status(503).send({ error: 'User collections unavailable' });
     return withUserCollection(reply, async () => ({ collection: await userCollections.reorder(user.id, params.data.id, body.data.mediaItemIds) }));
+  });
+  // A cover arrives as a data URL, so this stays a plain JSON body — at the cost
+  // of base64 overhead, which the larger limit accounts for.
+  app.put('/api/v1/me/collections/:id/image', { bodyLimit: 16 * 1024 * 1024 }, async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    const params = idParams.safeParse(request.params); if (!params.success) return reply.status(400).send({ error: 'Invalid collection id' });
+    const body = userCollectionImage.safeParse(request.body); if (!body.success) return reply.status(400).send({ error: 'Invalid cover image' });
+    if (!userCollections) return reply.status(503).send({ error: 'User collections unavailable' });
+    return withUserCollection(reply, async () => ({ collection: await userCollections.setImage(user.id, params.data.id, body.data) }));
+  });
+  app.delete('/api/v1/me/collections/:id/image', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user) return;
+    const params = idParams.safeParse(request.params); if (!params.success) return reply.status(400).send({ error: 'Invalid collection id' });
+    if (!userCollections) return reply.status(503).send({ error: 'User collections unavailable' });
+    return withUserCollection(reply, async () => ({ collection: await userCollections.clearImage(user.id, params.data.id) }));
   });
   app.get('/api/v1/me/queue', async (request, reply) => {
     const user = await requireUser(request, reply, service); if (!user) return;
@@ -756,11 +773,18 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
     const body = capabilities.safeParse(request.body ?? {}); if (!body.success) return reply.status(400).send({ error: 'Invalid client capabilities' });
     if (!catalog) return reply.status(503).send({ error: 'Catalog unavailable' });
     const source = await catalog.forViewer(user.maxMaturityLevel).playbackSource(params.data.id); if (!source) return reply.status(404).send({ error: 'No playable file for this item' });
-    const plan = negotiatePlayback(source.probe, body.data, body.data.audioTrackIndex);
+    // A fragmented MP4 passes the codec checks but stalls a progressive player,
+    // so the file's layout decides whether direct play is really on the table.
+    const sourcePath = source.rootPath ? resolveWithin(source.rootPath, source.relativePath) : null;
+    const directPlayable = sourcePath ? !(await isFragmentedMp4(sourcePath)) : true;
+    const plan = negotiatePlayback(source.probe, body.data, body.data.audioTrackIndex, { directPlayable });
     if (plan.mode === 'transcode' && plan.container !== 'mp4') return reply.status(406).send({ error: 'No supported transcode container; client must support mp4' });
     const baseUrl = `/api/v1/catalog/items/${params.data.id}/stream`;
     const url = plan.mode === 'direct' ? baseUrl : `${baseUrl}?plan=${encodeURIComponent(encodePlaybackPlan(plan))}`;
     const castToken = randomBytes(32).toString('hex');
+    // Negotiation also happens speculatively (a details page warming a stream),
+    // so expired grants are swept here rather than only when one is redeemed.
+    if (castStreams.size > 256) for (const [token, grant] of castStreams) if (grant.expiresAt <= Date.now()) castStreams.delete(token);
     castStreams.set(castToken, { itemId: params.data.id, plan: plan.mode === 'direct' ? undefined : encodePlaybackPlan(plan), expiresAt: Date.now() + 6 * 60 * 60 * 1000, maturityLimit: user.maxMaturityLevel });
     // Full transcodes stream over HLS (seek + quality ladder); remuxes stay on
     // the progressive pipe with seek-restart, since their video is not re-encoded.

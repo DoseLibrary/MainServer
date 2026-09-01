@@ -21,7 +21,7 @@ import { PluginService } from './plugin-service.ts';
 import { PluginScheduler } from './plugin-scheduler.ts';
 import { TmdbClient } from './tmdb.ts';
 import { ArtworkService } from './artwork-service.ts';
-import { ImageStore } from './images.ts';
+import { ImageStore, UploadedImageStore } from './images.ts';
 import { createSubtitleExtractorPlugin } from './plugins/subtitle-extractor.ts';
 import { SubtitleStore, ffmpegSubtitleTools } from './subtitles.ts';
 import { createPreviewSpritePlugin } from './plugins/preview-sprites.ts';
@@ -93,6 +93,9 @@ export async function buildApp(config: AppConfig) {
   const realtime = new RealtimeService();
   // Without a TMDB token nothing ever enriches, so ingest is the only signal.
   realtime.attach(pluginEvents, { announceOnIngest: !config.TMDB_API_TOKEN });
+  // Plugin runs are server-side work with no domain event of their own, so the
+  // service reports them straight to the socket.
+  plugins.onRunChange((update) => realtime.broadcast({ type: 'plugin.updated', ...update }));
 
   // Baseline browser protections on every response. The CSP allows exactly the
   // one external script the app uses (the Google Cast sender) and nothing else;
@@ -119,7 +122,7 @@ export async function buildApp(config: AppConfig) {
   await app.register(fastifyWebsocket);
   const auth = new AuthService(database);
   registerRealtimeRoute(app, auth, realtime);
-  await registerApiRoutes(app, auth, config.NODE_ENV === 'production', undefined, scanner, new CatalogService(database, join(config.CONFIG_PATH, 'trailers'), pluginEvents), join(config.CONFIG_PATH, 'images'), config.NODE_ENV === 'development' && isEmbeddedDatabase(config.DATABASE_URL), plugins, pluginScheduler, artwork, subtitleStore, metadataMatch, libraryWatcher, spriteStore, new UserSettingsService(database), new UserCollectionsService(database), new QueueService(database), new WatchDataService(database), { plex: new PlexHistorySource(), trakt: new TraktHistorySource(), tautulli: new TautulliHistorySource() }, new DeviceAuthService(database), new PlaybackSessionService(database), downloads, hardware);
+  await registerApiRoutes(app, auth, config.NODE_ENV === 'production', undefined, scanner, new CatalogService(database, join(config.CONFIG_PATH, 'trailers'), pluginEvents), join(config.CONFIG_PATH, 'images'), config.NODE_ENV === 'development' && isEmbeddedDatabase(config.DATABASE_URL), plugins, pluginScheduler, artwork, subtitleStore, metadataMatch, libraryWatcher, spriteStore, new UserSettingsService(database), new UserCollectionsService(database, new UploadedImageStore(join(config.CONFIG_PATH, 'images'))), new QueueService(database), new WatchDataService(database), { plex: new PlexHistorySource(), trakt: new TraktHistorySource(), tautulli: new TautulliHistorySource() }, new DeviceAuthService(database), new PlaybackSessionService(database), downloads, hardware);
 
   app.addHook('onClose', async () => {
     clearInterval(downloadSweep);

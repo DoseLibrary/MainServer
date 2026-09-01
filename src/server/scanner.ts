@@ -8,7 +8,7 @@ import { libraries, mediaFiles, mediaItems, mediaTechnicalProfiles, scanRuns } f
 import { deriveTechnicalProfile, type Probe } from './media-profile.ts';
 import type { AppConfig } from './config.ts';
 import { Semaphore } from './concurrency.ts';
-import { parseMediaPath, VIDEO_EXTENSIONS } from './media-parser.ts';
+import { isExtrasPath, parseMediaPath, VIDEO_EXTENSIONS } from './media-parser.ts';
 import { TmdbClient } from './tmdb.ts';
 import { ImageStore } from './images.ts';
 import { EnrichmentService, ENRICHMENT_VERSION } from './enrichment.ts';
@@ -87,6 +87,8 @@ export class ScanCoordinator {
       const seriesEnriched = new Set<string>();
       const worker = async () => { while (cursor < paths.length) { const absolute = paths[cursor++];
         const relativePath = relative(library.rootPath, absolute).split(sep).join('/'); const parsed = parseMediaPath(relativePath, library.kind);
+        // Bonus material is skipped, not failed: it is expected content, not a parse error.
+        if (isExtrasPath(relativePath)) { sinceFlush++; continue; }
         if (!parsed) { failed++; sinceFlush++; continue; }
         try { await this.ingest(scanId, library, absolute, relativePath, parsed, seriesEnriched); processed++; } catch { failed++; }
         sinceFlush++; if (sinceFlush >= 25) { sinceFlush = 0; await this.database.update(scanRuns).set({ processedFiles: processed, failedFiles: failed, heartbeatAt: new Date() }).where(eq(scanRuns.id, scanId)); }

@@ -15,6 +15,13 @@ const CAST_LIMIT = 20;
 /** Max items per home carousel. */
 const HOME_ROW_LIMIT = 25;
 
+/** A title's place in its show, with the artwork that stands in for its own. */
+interface ShowAncestry {
+  parent?: { id: string; title: string; kind: string; seasonNumber?: number };
+  series?: { id: string; title: string; kind: string; seasonNumber?: number };
+  showArtwork?: { posterUrl?: string; backdropUrl?: string };
+}
+
 interface QualityProfile { resolutionLabel: string | null; dynamicRange: string | null; videoCodec: string | null; audioCodec: string | null; audioChannels: string | null; }
 
 /** Compact badge such as `4K HDR` or `1080p` from a technical profile. */
@@ -265,6 +272,84 @@ export class CatalogService {
       // Episode stills live on the backdrop; the season poster is the fallback.
       posterUrl: imageLocalUrl(next.backdropPath) ?? imageLocalUrl(next.posterPath),
     };
+  }
+
+  /**
+   * Where an episode sits in its show, plus the artwork that stands in for the
+   * portrait poster episodes almost never carry: the season's poster, then the
+   * series', so a row of episode tiles is never a row of empty frames.
+   */
+  private async episodeContext(episodes: Array<typeof mediaItems.$inferSelect>) {
+    type Context = { seriesId?: string; seriesTitle?: string; seasonId?: string; posterUrl?: string; backdropUrl?: string };
+    const context = new Map<string, Context>();
+    const seasonIds = [...new Set(episodes.map((episode) => episode.parentId).filter((id): id is string => Boolean(id)))];
+    if (seasonIds.length === 0) return context;
+    const seasonRows = await this.database.select({ id: mediaItems.id, parentId: mediaItems.parentId, title: mediaItems.title, posterPath: mediaItems.posterPath, backdropPath: mediaItems.backdropPath })
+      .from(mediaItems).where(inArray(mediaItems.id, seasonIds));
+    const seasonById = new Map(seasonRows.map((row) => [row.id, row]));
+    const seriesIds = [...new Set(seasonRows.map((row) => row.parentId).filter((id): id is string => Boolean(id)))];
+    const seriesRows = seriesIds.length > 0
+      ? await this.database.select({ id: mediaItems.id, title: mediaItems.title, posterPath: mediaItems.posterPath, backdropPath: mediaItems.backdropPath })
+        .from(mediaItems).where(inArray(mediaItems.id, seriesIds))
+      : [];
+    const seriesById = new Map(seriesRows.map((row) => [row.id, row]));
+    for (const episode of episodes) {
+      // Scanners hang episodes off a season, but a flat show puts them straight
+      // under the series; both shapes have to resolve to the same show.
+      const parent = episode.parentId ? seasonById.get(episode.parentId) : undefined;
+      const season = parent?.parentId ? parent : undefined;
+      const series = parent?.parentId ? seriesById.get(parent.parentId) : parent;
+      context.set(episode.id, {
+        seriesId: series?.id,
+        seriesTitle: series?.title,
+        seasonId: season?.id,
+        posterUrl: imageLocalUrl(season?.posterPath) ?? imageLocalUrl(series?.posterPath),
+        backdropUrl: imageLocalUrl(season?.backdropPath) ?? imageLocalUrl(series?.backdropPath),
+      });
+    }
+    return context;
+  }
+
+  /**
+   * Home tiles are portrait, so the season poster leads and the episode's own
+   * still is the last resort rather than the first choice.
+   */
+  private withShowArtwork<T extends { id: string; posterUrl?: string; backdropUrl?: string }>(items: T[], context: Map<string, { seriesId?: string; seriesTitle?: string; posterUrl?: string; backdropUrl?: string }>) {
+    return items.map((item) => {
+      const show = context.get(item.id);
+      return {
+        ...item,
+        posterUrl: item.posterUrl ?? show?.posterUrl ?? item.backdropUrl,
+        backdropUrl: item.backdropUrl ?? show?.backdropUrl,
+        seriesId: show?.seriesId,
+        seriesTitle: show?.seriesTitle,
+      };
+    });
+  }
+
+  /**
+   * The season and series a title hangs under. A season or episode page opened
+   * straight from a home row would otherwise have no route into its show.
+   */
+  private async showAncestry(item: typeof mediaItems.$inferSelect): Promise<ShowAncestry> {
+    const empty: ShowAncestry = {};
+    if (!item.parentId || (item.kind !== 'episode' && item.kind !== 'season')) return empty;
+    const columns = { id: mediaItems.id, title: mediaItems.title, kind: mediaItems.kind, parentId: mediaItems.parentId, seasonNumber: mediaItems.seasonNumber, posterPath: mediaItems.posterPath, backdropPath: mediaItems.backdropPath };
+    type Row = Awaited<ReturnType<typeof this.database.select<typeof columns>>>[number];
+    const ref = (row: Row) => ({ id: row.id, title: row.title, kind: row.kind, seasonNumber: row.seasonNumber ?? undefined });
+    // The nearer relative wins: a season's own art describes the episode better
+    // than the series poster does.
+    const artwork = (...rows: Array<Row | undefined>) => ({
+      posterUrl: rows.map((row) => imageLocalUrl(row?.posterPath)).find(Boolean),
+      backdropUrl: rows.map((row) => imageLocalUrl(row?.backdropPath)).find(Boolean),
+    });
+    const [parent] = await this.database.select(columns).from(mediaItems)
+      .where(and(eq(mediaItems.id, item.parentId), eq(mediaItems.available, true), this.withinMaturity, isNull(mediaItems.archivedAt))).limit(1);
+    if (!parent) return empty;
+    if (parent.kind !== 'season' || !parent.parentId) return { parent: ref(parent), series: parent.kind === 'series' ? ref(parent) : undefined, showArtwork: artwork(parent) };
+    const [series] = await this.database.select(columns).from(mediaItems)
+      .where(and(eq(mediaItems.id, parent.parentId), eq(mediaItems.available, true), this.withinMaturity, isNull(mediaItems.archivedAt))).limit(1);
+    return { parent: ref(parent), series: series ? ref(series) : undefined, showArtwork: artwork(parent, series) };
   }
 
   /** Player caption tracks for a title, across its available files. */
@@ -591,6 +676,12 @@ export class CatalogService {
       .map(({ item, progress, duration }) => ({ ...toCatalogItem(item, progress, duration), badge: undefined as string | undefined, genres: [] as string[], collection: undefined as string | undefined }))
       .filter((episode) => episode.progress != null && episode.progress > 0 && episode.progress < 1);
 
+    // Both episode rows borrow their show's artwork and name, so a tile is never
+    // a blank frame and a viewer can tell which series an episode belongs to.
+    const showContext = await this.episodeContext([...episodeRows.map(({ item }) => item), ...ongoingEpRows.map(({ item }) => item)]);
+    const episodeTiles = this.withShowArtwork(episodes, showContext);
+    const ongoingEpisodeTiles = this.withShowArtwork(ongoingEpisodes, showContext);
+
     // Watch list: movies the user saved, most recently added first.
     const watchOrder = await this.database.select({ mediaItemId: watchlistEntries.mediaItemId }).from(watchlistEntries)
       .where(eq(watchlistEntries.userId, userId)).orderBy(desc(watchlistEntries.createdAt));
@@ -603,18 +694,18 @@ export class CatalogService {
     const createdAtById = new Map(items.map(({ item }) => [item.id, item.createdAt]));
     const newlyAdded = [...movies].sort((a, b) => (createdAtById.get(b.id)?.getTime() ?? 0) - (createdAtById.get(a.id)?.getTime() ?? 0)).slice(0, HOME_ROW_LIMIT);
 
-    const sections: Array<{ id: string; title: string; layout: 'poster' | 'card'; items: typeof shape }> = [];
+    const sections: Array<{ id: string; title: string; layout: 'poster' | 'card'; items: Array<typeof shape[number] & { seriesId?: string; seriesTitle?: string }> }> = [];
 
     // Movie rows mirror the classic home: resume, saved, then freshest. All movies-only (never mixed).
     const resume = movies.filter((item) => item.progress != null && item.progress > 0 && item.progress < 1).slice(0, HOME_ROW_LIMIT);
     if (resume.length > 0) sections.push({ id: 'continue-watching', title: 'Continue Watching', layout: 'card', items: resume });
-    if (ongoingEpisodes.length > 0) sections.push({ id: 'continue-watching-episodes', title: 'Continue Watching – Episodes', layout: 'poster', items: ongoingEpisodes });
+    if (ongoingEpisodeTiles.length > 0) sections.push({ id: 'continue-watching-episodes', title: 'Continue Watching – Episodes', layout: 'poster', items: ongoingEpisodeTiles });
     if (watchlist.length > 0) sections.push({ id: 'watchlist', title: 'Watch List', layout: 'card', items: watchlist });
     if (newlyAdded.length > 0) sections.push({ id: 'newly-added', title: 'Newly Added', layout: 'card', items: newlyAdded });
 
     // Shows get their own rows: newest episodes as posters, newest series as backdrops.
     if (watchlistShows.length > 0) sections.push({ id: 'watchlist-shows', title: 'Watch List – Shows', layout: 'poster', items: watchlistShows });
-    if (episodes.length > 0) sections.push({ id: 'new-episodes', title: 'Newly Added Episodes', layout: 'poster', items: episodes });
+    if (episodeTiles.length > 0) sections.push({ id: 'new-episodes', title: 'Newly Added Episodes', layout: 'poster', items: episodeTiles });
     const newlyAddedShows = [...series].sort((a, b) => (createdAtById.get(b.id)?.getTime() ?? 0) - (createdAtById.get(a.id)?.getTime() ?? 0)).slice(0, HOME_ROW_LIMIT);
     if (newlyAddedShows.length > 0) sections.push({ id: 'newly-added-shows', title: 'Newly Added Shows', layout: 'card', items: newlyAddedShows });
 
@@ -632,14 +723,22 @@ export class CatalogService {
     const childFiles = await this.database.select({ mediaItemId: mediaFiles.mediaItemId, durationSeconds: mediaFiles.durationSeconds }).from(mediaFiles).innerJoin(mediaItems, eq(mediaItems.id, mediaFiles.mediaItemId)).where(and(eq(mediaItems.parentId, id), eq(mediaFiles.available, true)));
     const children = serializeCatalogChildren(childRows, new Map(childFiles.map((file) => [file.mediaItemId, file.durationSeconds])));
     const files = await this.database.select({ id: mediaFiles.id, relativePath: mediaFiles.relativePath, durationSeconds: mediaFiles.durationSeconds }).from(mediaFiles).where(and(eq(mediaFiles.mediaItemId, id), eq(mediaFiles.available, true)));
-    const [quality, genreMap, collectionMap, cast, recommendations, inWatchlist, subtitles, nextEpisode, trailers, localTrailer] = await Promise.all([
+    const [quality, genreMap, collectionMap, cast, recommendations, inWatchlist, subtitles, nextEpisode, trailers, localTrailer, ancestry] = await Promise.all([
       this.qualityByItem([id]), this.genresByItem([id]), this.collectionByItem([id]), this.castForItem(id), this.recommendationsForItem(id), this.isWatchlisted(userId, id), this.subtitlesForItem(id), this.nextEpisode(row.item),
       this.database.select({ site: mediaTrailers.site, key: mediaTrailers.key, name: mediaTrailers.name, type: mediaTrailers.type, official: mediaTrailers.official, preferred: mediaTrailers.preferred, localAvailable: sql<boolean>`${mediaTrailers.status} = 'ready' and ${mediaTrailers.localPath} is not null` }).from(mediaTrailers).where(eq(mediaTrailers.mediaItemId, id)).orderBy(desc(mediaTrailers.preferred), desc(mediaTrailers.publishedAt)),
       this.localTrailerSource(id),
+      this.showAncestry(row.item),
     ]);
     const profile = quality.get(id) ?? null;
+    const { showArtwork, ...showRefs } = ancestry;
+    const base = toCatalogItem(row.item, row.progress, files[0]?.durationSeconds);
     return {
-      ...toCatalogItem(row.item, row.progress, files[0]?.durationSeconds),
+      ...base,
+      ...showRefs,
+      // Episodes rarely carry a poster and seasons rarely a backdrop, so the
+      // show's art fills the page rather than leaving an empty frame.
+      posterUrl: base.posterUrl ?? showArtwork?.posterUrl,
+      backdropUrl: base.backdropUrl ?? showArtwork?.backdropUrl,
       inWatchlist,
       watched: row.progress?.watched ?? false,
       originalTitle: row.item.originalTitle ?? undefined,

@@ -7,7 +7,9 @@ export const REALTIME_SUBSCRIBER = '@realtime';
 
 /** What the server pushes; clients treat unknown types as noise. */
 export type RealtimeMessage =
-  | { type: 'catalog.updated'; reason: 'added' | 'enriched' | 'removed' | 'availability' };
+  | { type: 'catalog.updated'; reason: 'added' | 'enriched' | 'removed' | 'availability' }
+  /** A plugin started or finished a run, whoever triggered it. */
+  | { type: 'plugin.updated'; pluginId: string; status: 'running' | 'succeeded' | 'failed' };
 
 /** The subset of a WebSocket the service needs, so tests can hand in fakes. */
 export interface RealtimeSocket {

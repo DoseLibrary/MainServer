@@ -52,9 +52,14 @@ export interface CatalogItem {
   collection?: string;
   /** Set on the home hero when a locally-downloaded trailer can play as its background. */
   hasLocalTrailer?: boolean;
+  /** The show an episode belongs to, so a row of episodes can name and link it. */
+  seriesId?: string;
+  seriesTitle?: string;
   children?: CatalogItem[];
 }
 
+/** A title referenced from another one, such as the show above an episode. */
+export interface CatalogRef { id: string; title: string; kind: string; seasonNumber?: number }
 export interface CatalogGenre { id: string; name: string }
 export interface CatalogCollection { id: string; name: string; posterUrl?: string }
 export interface CatalogCastMember { id?: string; name: string; character?: string; profileUrl?: string; order: number }
@@ -78,8 +83,8 @@ export type HistorySourceConfig =
   | { baseUrl: string; apiKey: string; userId?: string };
 export interface HistoryImportSummary extends WatchDataImportSummary { skipped: number; errors: string[] }
 export interface QueueItem extends CatalogItem { unavailable?: boolean }
-export interface UserCollectionSummary { id: string; name: string; overview?: string; itemCount: number }
-export interface UserCollectionView { id: string; name: string; overview?: string; items: CatalogItem[] }
+export interface UserCollectionSummary { id: string; name: string; overview?: string; imageUrl?: string; itemCount: number }
+export interface UserCollectionView { id: string; name: string; overview?: string; imageUrl?: string; items: CatalogItem[] }
 export interface CatalogCollectionGap { tmdbId: string; title: string; year?: number; releaseDate?: string; posterUrl?: string; inLibrary: false }
 export type SeerrMediaState = 'unknown' | 'pending' | 'processing' | 'partial' | 'available' | 'deleted';
 export interface SeerrRequestState { tmdbId: number; state: SeerrMediaState }
@@ -111,6 +116,10 @@ export interface CatalogItemDetails extends Omit<CatalogItem, 'genres' | 'collec
   files?: Array<{ id: string; relativePath: string; durationSeconds?: number }>;
   trailers?: CatalogTrailer[];
   subtitles?: CatalogSubtitle[];
+  /** The item directly above this one: an episode's season, a season's series. */
+  parent?: CatalogRef;
+  /** The show an episode or season belongs to. */
+  series?: CatalogRef;
   /** Next episode in the series, for autoplay when this one ends. */
   nextEpisodeId?: string;
   /** Details for the next episode, used by the player's up-next card. */
@@ -201,7 +210,7 @@ export interface AudioTrack { index: number; label: string; language?: string; c
 export interface PlaybackResponse {
   /** Selectable audio tracks of the file, in file order. */
   audioTracks?: AudioTrack[];
-  plan: { mode: 'direct' | 'transcode'; container: string; remux: boolean; audioTrackIndex?: number; reasons: string[] };
+  plan: { mode: 'direct' | 'transcode'; container: string; remux: boolean; audioTrackIndex?: number; reasons: string[]; video?: { action: 'copy' | 'transcode'; codec: string; height?: number } | null };
   durationSeconds?: number;
   stream: { url: string; castUrl?: string; direct: boolean; /** HLS entry point for re-encoded transcodes: seekable, with a quality ladder. */ hlsUrl?: string };
 }
@@ -374,6 +383,11 @@ export const api = {
     request<{ collection: UserCollectionView }>(`/api/v1/me/collections/${encodeURIComponent(id)}/items/${encodeURIComponent(mediaItemId)}`, { method: 'DELETE' }),
   reorderUserCollection: (id: string, mediaItemIds: string[]) =>
     request<{ collection: UserCollectionView }>(`/api/v1/me/collections/${encodeURIComponent(id)}/items`, { method: 'PUT', body: JSON.stringify({ mediaItemIds }) }),
+  /** Cover art: either an uploaded image as a data URL, or a member title's poster. */
+  setUserCollectionImage: (id: string, choice: { dataUrl: string } | { mediaItemId: string }) =>
+    request<{ collection: UserCollectionView }>(`/api/v1/me/collections/${encodeURIComponent(id)}/image`, { method: 'PUT', body: JSON.stringify(choice) }),
+  clearUserCollectionImage: (id: string) =>
+    request<{ collection: UserCollectionView }>(`/api/v1/me/collections/${encodeURIComponent(id)}/image`, { method: 'DELETE' }),
   catalogItem: (id: string) => request<{ item: CatalogItemDetails }>(`/api/v1/catalog/items/${encodeURIComponent(id)}`),
   catalogPerson: (id: string) => request<{ person: CatalogPerson }>(`/api/v1/catalog/people/${encodeURIComponent(id)}`),
   catalogGenre: (id: string) => request<{ genre: CatalogGenreView }>(`/api/v1/catalog/genres/${encodeURIComponent(id)}`),

@@ -176,6 +176,13 @@
       "when": 1788258721402,
       "tag": "0024_dear_luminals",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1788279495447,
+      "tag": "0025_dazzling_marvex",
+      "breakpoints": true
     }
   ]
 }

@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { UserCollections } from './UserCollections';
+import { UserCollectionPage } from './UserCollectionPage';
 
 const COLLECTION = '60000000-0000-4000-8000-000000000001';
 const ONE = '20000000-0000-4000-8000-000000000001';
@@ -29,26 +30,39 @@ describe('UserCollections', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/v1/me/collections', expect.objectContaining({ method: 'POST', body: JSON.stringify({ name: 'Rewatch' }) })));
   });
 
-  it('opens a collection and reorders its items', async () => {
+  it('sends a collection to its own page rather than opening it inline', async () => {
+    globalThis.fetch = vi.fn(async () => json({ collections: [{ id: COLLECTION, name: 'Marathon', itemCount: 2 }] })) as unknown as typeof fetch;
+    render(<MemoryRouter><UserCollections /></MemoryRouter>);
+
+    expect(await screen.findByRole('link', { name: 'Marathon' })).toHaveAttribute('href', `/my-collection/${COLLECTION}`);
+    expect(screen.getByRole('link', { name: 'Open' })).toHaveAttribute('href', `/my-collection/${COLLECTION}`);
+  });
+});
+
+describe('UserCollectionPage', () => {
+  const originalFetch = globalThis.fetch;
+  afterEach(() => { globalThis.fetch = originalFetch; });
+
+  it('reorders its items and keeps the order the server returns', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === `/api/v1/me/collections/${COLLECTION}/items` && init?.method === 'PUT') {
         return json({ collection: { id: COLLECTION, name: 'Marathon', items: [{ id: TWO, title: 'Two', year: 2021, kind: 'movie' }, { id: ONE, title: 'One', year: 2020, kind: 'movie' }] } });
       }
-      if (url === `/api/v1/me/collections/${COLLECTION}`) {
-        return json({ collection: { id: COLLECTION, name: 'Marathon', items: [{ id: ONE, title: 'One', year: 2020, kind: 'movie' }, { id: TWO, title: 'Two', year: 2021, kind: 'movie' }] } });
-      }
-      return json({ collections: [{ id: COLLECTION, name: 'Marathon', itemCount: 2 }] });
+      return json({ collection: { id: COLLECTION, name: 'Marathon', items: [{ id: ONE, title: 'One', year: 2020, kind: 'movie' }, { id: TWO, title: 'Two', year: 2021, kind: 'movie' }] } });
     });
     globalThis.fetch = fetchMock as unknown as typeof fetch;
-    render(<MemoryRouter><UserCollections /></MemoryRouter>);
+    render(
+      <MemoryRouter initialEntries={[`/my-collection/${COLLECTION}`]}>
+        <Routes><Route path="/my-collection/:id" element={<UserCollectionPage />} /></Routes>
+      </MemoryRouter>,
+    );
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Open' }));
-    expect(await screen.findByRole('link', { name: 'One (2020)' })).toBeInTheDocument();
+    expect(await screen.findByRole('link', { name: /One/ })).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Move One down' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Move One later' }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(`/api/v1/me/collections/${COLLECTION}/items`, expect.objectContaining({ method: 'PUT', body: JSON.stringify({ mediaItemIds: [TWO, ONE] }) })));
-    const links = await screen.findAllByRole('link', { name: /\(20\d\d\)/ });
-    expect(links[0]).toHaveTextContent('Two (2021)');
+    const links = await screen.findAllByRole('link', { name: /One|Two/ });
+    expect(links[0]).toHaveTextContent('Two');
   });
 });

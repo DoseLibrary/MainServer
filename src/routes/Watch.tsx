@@ -4,6 +4,10 @@ import { VideoPlayer } from '@/components/media/VideoPlayer';
 import { Button } from '@/components/ui/button';
 import { api, imageVariant, type CatalogItemDetails, type ChapterMarker, type IntroMarker, type MediaSprite, type PlaybackResponse, type UserSettings } from '@/lib/api';
 import { detectMediaCapabilities } from '@/lib/media-capabilities';
+import { warmedPlayback } from '@/lib/playback-prewarm';
+
+/** Rungs offered below the source; anything at or above it is just the source. */
+const QUALITY_RUNGS = [2160, 1440, 1080, 720, 480];
 
 export function Watch() {
   const { id = '' } = useParams();
@@ -13,6 +17,8 @@ export function Watch() {
   const marathon = search.get('queue') === '1';
   // A download plays from the device; the service worker serves this path.
   const offlineSrc = search.get('offline') ?? undefined;
+  // "Play from start" on the details page: saved progress is ignored for this visit.
+  const fromStart = search.get('start') === '0';
   const [item, setItem] = useState<CatalogItemDetails>();
   const [playback, setPlayback] = useState<PlaybackResponse>();
   const [thumbnails, setThumbnails] = useState<MediaSprite>();
@@ -20,6 +26,12 @@ export function Watch() {
   const [chapters, setChapters] = useState<ChapterMarker[]>([]);
   // Re-negotiating with another audio track swaps dubs or commentary mid-title.
   const [audioTrackIndex, setAudioTrackIndex] = useState<number>();
+  // A manual quality caps the negotiation, which makes the server downscale;
+  // undefined leaves the source untouched (direct play whenever it is possible).
+  const [maxHeight, setMaxHeight] = useState<number>();
+  // The file's own height, remembered from a negotiation that did not cap it,
+  // so the menu still knows the ceiling while a capped stream is playing.
+  const [sourceHeight, setSourceHeight] = useState<number>();
   // Switching tracks reloads the stream; playback resumes where it left off.
   const positionRef = useRef(0);
   const [resumeAt, setResumeAt] = useState<number>();
@@ -37,10 +49,19 @@ export function Watch() {
   const load = useCallback(async () => {
     setError(undefined); setPlayback(undefined); setThumbnails(undefined); setIntro(undefined); setChapters([]);
     try {
-      const [{ item: nextItem }, nextPlayback] = await Promise.all([api.catalogItem(id), api.playback(id, detectMediaCapabilities(), audioTrackIndex)]);
+      const capabilities = detectMediaCapabilities();
+      // The details page negotiates the default stream ahead of the click; a
+      // capped quality or a chosen audio track is a different plan and is asked
+      // for here.
+      const warmed = maxHeight == null && audioTrackIndex == null ? warmedPlayback(id) : undefined;
+      const [{ item: nextItem }, nextPlayback] = await Promise.all([
+        api.catalogItem(id),
+        warmed ?? api.playback(id, maxHeight ? { ...capabilities, maxHeight } : capabilities, audioTrackIndex),
+      ]);
+      if (!maxHeight && nextPlayback.plan.video?.height) setSourceHeight(nextPlayback.plan.video.height);
       // A remux cannot seek by byte range, so it opens at the resume point instead.
       const runtime = nextPlayback.durationSeconds ?? nextItem.files?.[0]?.durationSeconds;
-      const resume = typeof nextItem.progress === 'number' && nextItem.progress > 0 && nextItem.progress < 1 && runtime ? nextItem.progress * runtime : 0;
+      const resume = !fromStart && typeof nextItem.progress === 'number' && nextItem.progress > 0 && nextItem.progress < 1 && runtime ? nextItem.progress * runtime : 0;
       setStreamStart(!nextPlayback.stream.direct && !nextPlayback.stream.hlsUrl && resume > 5 ? Math.floor(resume) : 0);
       setItem(nextItem); setPlayback(nextPlayback);
       // Scrubber previews are optional; a title without a generated sprite just omits them.
@@ -50,7 +71,7 @@ export function Watch() {
       // Chapters mark the scrub rail when the file carries them.
       void api.mediaChapters(id).then(({ chapters: next }) => setChapters(next)).catch(() => setChapters([]));
     } catch (caught) { setError(caught instanceof Error ? caught.message : 'Playback could not be started.'); }
-  }, [id, audioTrackIndex]);
+  }, [id, audioTrackIndex, maxHeight, fromStart]);
   useEffect(() => { queueMicrotask(() => { void load(); }); }, [load]);
   useEffect(() => {
     let active = true;
@@ -87,11 +108,16 @@ export function Watch() {
   const detailsHref = `/media/${encodeURIComponent(id)}`;
   const duration = playback.durationSeconds ?? item.files?.[0]?.durationSeconds;
   // Resume from the last saved spot; progress is a 0..1 fraction, so scale by runtime.
-  const startPositionSeconds = resumeAt ?? (typeof item.progress === 'number' && item.progress > 0 && item.progress < 1 && duration ? item.progress * duration : undefined);
+  const startPositionSeconds = resumeAt ?? (!fromStart && typeof item.progress === 'number' && item.progress > 0 && item.progress < 1 && duration ? item.progress * duration : undefined);
   const subtitles = (item.subtitles ?? []).map((track) => ({
     id: track.id, label: track.label, srcLang: track.language,
     src: subtitleOffsetMs ? `${track.url}?offsetMs=${subtitleOffsetMs}` : track.url,
   }));
+  const ceiling = sourceHeight ?? playback.plan.video?.height;
+  const qualities = [
+    { id: 'auto', label: ceiling ? `Source (${ceiling}p)` : 'Source' },
+    ...QUALITY_RUNGS.filter((height) => ceiling == null || height < ceiling).map((height) => ({ id: String(height), label: `${height}p` })),
+  ];
   const nextHref = item.nextEpisodeId ? `/watch/${encodeURIComponent(item.nextEpisodeId)}` : undefined;
   const nextUp = item.nextEpisode ? {
     title: item.nextEpisode.title,
@@ -147,6 +173,14 @@ export function Watch() {
     speedPercent={settings?.playbackSpeedPercent ?? 100}
     onSpeedChange={changeSpeed}
     captionStyle={settings ? { sizePercent: settings.subtitleSizePercent, background: settings.subtitleBackground } : undefined}
+    qualities={qualities}
+    activeQualityId={maxHeight ? String(maxHeight) : 'auto'}
+    onQualityChange={(next) => {
+      const height = next === 'auto' ? undefined : Number(next);
+      if (height === maxHeight) return;
+      // Re-cutting the stream restarts it, so playback resumes where it stopped.
+      setResumeAt(positionRef.current); setMaxHeight(height);
+    }}
     audioTracks={(playback.audioTracks ?? []).map((track) => ({ id: String(track.index), label: track.label }))}
     activeAudioId={String(playback.plan.audioTrackIndex ?? 0)}
     onAudioChange={(next) => { setResumeAt(positionRef.current); setAudioTrackIndex(Number(next)); }}

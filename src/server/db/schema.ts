@@ -349,6 +349,8 @@ export const userCollections = pgTable('user_collections', {
   userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
   name: text('name').notNull(),
   overview: text('overview'),
+  /** Cover art filename in the images directory; served through `/api/v1/images`. */
+  imageName: text('image_name'),
   ...timestamps,
 }, (table) => [index('user_collections_user_name_index').on(table.userId, table.name)]);
 

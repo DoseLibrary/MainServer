@@ -42,12 +42,32 @@ const findLastSeasonFolderIndex = (parts: string[]) => {
 
 const validEpisodeNumbers = (season: number, episode: number) => Number.isInteger(season) && season >= 0 && Number.isInteger(episode) && episode > 0;
 
+/**
+ * Bonus material that lives beside a title: `Movie-trailer.mp4`, the
+ * `Movie_downloaded_trailer.mp4` a trailer downloader leaves behind, or anything
+ * under an `Extras`/`Trailers` folder. These are not titles of their own; a
+ * library that imports them shows posterless ghosts next to the real film.
+ */
+const EXTRAS_TOKENS = 'trailer|teaser|sample|clip|featurette|interview|short|other|extra|bonus|blooper|outtake|gag[ ._-]?reel|making[ ._-]?of|deleted([ ._-]?scene)?|behind[ ._-]?the[ ._-]?scenes';
+const EXTRAS_SUFFIX = new RegExp(`(?:^|[._-])(?:${EXTRAS_TOKENS})s?$`, 'iu');
+const EXTRAS_FOLDER = new RegExp(`^(?:${EXTRAS_TOKENS}|extras|trailers|featurettes|interviews|scenes|shorts|others|deleted[ ._-]?scenes|samples)$`, 'iu');
+
+/** True when a path is bonus material rather than a title of its own. */
+export function isExtrasPath(relativePath: string): boolean {
+  if (typeof relativePath !== 'string' || relativePath.trim() === '') return false;
+  const path = normalize(relativePath);
+  const parts = pathParts(path);
+  return EXTRAS_SUFFIX.test(basename(path, extname(path))) || parts.slice(0, -1).some((part) => EXTRAS_FOLDER.test(part));
+}
+
 export function parseMediaPath(relativePath: string, kind: 'movies' | 'shows'): ParsedMedia | null {
   try {
     if (typeof relativePath !== 'string' || relativePath.trim() === '') return null;
 
     const path = normalize(relativePath);
     const stem = basename(path, extname(path));
+    // Bonus material never becomes a title of its own, in either library kind.
+    if (isExtrasPath(path)) return null;
 
     if (kind === 'movies') {
       // A file that clearly identifies as an episode does not belong in a movies

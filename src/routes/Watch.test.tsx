@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { Watch } from './Watch';
+import { clearPrewarmedPlayback, prewarmPlayback } from '@/lib/playback-prewarm';
 
 const ONE = '20000000-0000-4000-8000-000000000001';
 const TWO = '20000000-0000-4000-8000-000000000002';
@@ -213,8 +214,11 @@ describe('Transcode seeking', () => {
     renderWatch('');
     const video = await findVideo();
 
-    // hls.js owns the element in browsers without native HLS; src stays unset.
-    expect(video.getAttribute('src')).toBeNull();
+    // hls.js gets first refusal wherever MSE exists and owns the element there.
+    // jsdom has no MSE, so this is the one case that falls back to the native
+    // path — the playlist itself, which is what iOS Safari plays.
+    expect(video).toBeInTheDocument();
+    await waitFor(() => expect(document.querySelector('video')?.getAttribute('src')).toContain('/hls/master.m3u8'));
   });
 });
 
@@ -247,5 +251,70 @@ describe('Chapter markers', () => {
     });
     const ticks = [...document.querySelectorAll('[aria-hidden="true"].absolute.inset-y-0.w-px')] as HTMLElement[];
     expect(ticks.map((tick) => tick.style.left)).toEqual(['20%', '60%']);
+  });
+});
+
+describe('Resume and start over', () => {
+  const originalFetch = globalThis.fetch;
+  afterEach(() => { globalThis.fetch = originalFetch; });
+
+  /** A half-watched movie: the details page offers both Resume and Play from start. */
+  const mockHalfWatched = () => vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes('/playback')) return json({ plan: { mode: 'direct', container: 'mp4', remux: false, reasons: [] }, durationSeconds: 100, stream: { url: '/stream.mp4', direct: true } });
+    if (url.includes('/sprites')) return json({ sprite: null });
+    if (url.includes('/intro')) return json({ intro: null });
+    if (url.includes('/chapters')) return json({ chapters: [] });
+    return json({ item: { id: ONE, title: 'One', kind: 'movie', progress: 0.5 } });
+  });
+
+  const loadMetadata = (video: HTMLVideoElement) => {
+    Object.defineProperty(video, 'duration', { value: 100, configurable: true });
+    Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true });
+    fireEvent.loadedMetadata(video);
+  };
+
+  it('opens at the saved position', async () => {
+    globalThis.fetch = mockHalfWatched() as unknown as typeof fetch;
+    renderWatch('');
+    const video = await findVideo();
+    loadMetadata(video);
+    await waitFor(() => expect(video.currentTime).toBe(50));
+  });
+
+  it('starts at the beginning when the viewer asked to start over', async () => {
+    globalThis.fetch = mockHalfWatched() as unknown as typeof fetch;
+    renderWatch('?start=0');
+    const video = await findVideo();
+    loadMetadata(video);
+    await waitFor(() => expect(video.readyState).toBeDefined());
+    expect(video.currentTime).toBe(0);
+  });
+});
+
+describe('Warmed playback', () => {
+  const originalFetch = globalThis.fetch;
+  afterEach(() => { globalThis.fetch = originalFetch; clearPrewarmedPlayback(); });
+
+  it('plays the plan the details page negotiated instead of asking again', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/playback')) return json({ plan: { mode: 'direct', container: 'mp4', remux: false, reasons: [] }, durationSeconds: 100, stream: { url: '/stream.mp4', direct: true } });
+      if (url.includes('/sprites')) return json({ sprite: null });
+      if (url.includes('/intro')) return json({ intro: null });
+      if (url.includes('/chapters')) return json({ chapters: [] });
+      if (url === '/stream.mp4') return new Response(new ArrayBuffer(8), { status: 206 });
+      return json({ item: { id: ONE, title: 'One', kind: 'movie' } });
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const negotiations = () => fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/playback')).length;
+
+    prewarmPlayback(ONE);
+    await waitFor(() => expect(negotiations()).toBe(1));
+
+    renderWatch('');
+    const video = await findVideo();
+    expect(video.src).toContain('/stream.mp4');
+    expect(negotiations()).toBe(1);
   });
 });

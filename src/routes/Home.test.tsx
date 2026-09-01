@@ -87,13 +87,15 @@ describe('Home application flow', () => {
   it('offers a validated local hero trailer through the routed player', async () => {
     globalThis.fetch = vi.fn(async (input) => { const url = String(input); if (url.endsWith('/setup/status')) return json({ setupRequired: false }); if (url.endsWith('/auth/me')) return json({ user: { id: 'u', username: 'admin', role: 'admin' } }); if (url.endsWith('/libraries')) return json({ libraries: [{ id: 'l', name: 'Movies' }] }); return json({ featured: { id: 'm1', title: 'Local Film', kind: 'movie', hasLocalTrailer: true }, sections: [{ id: 'movies', title: 'Movies', items: [{ id: 'm1', title: 'Local Film', kind: 'movie' }] }] }); });
     render(<Home />);
-    expect(await screen.findByRole('link', { name: 'Fullscreen trailer' })).toHaveAttribute('href', '/trailer/m1');
+    expect(await screen.findByRole('link', { name: 'Fullscreen trailer' })).toHaveAttribute('href', '/trailer/m1?back=%2F');
   });
 
-  it('opens the random picker from the navbar', async () => {
+  it('opens the random picker from the account menu', async () => {
     globalThis.fetch = vi.fn(async (input) => { const url = String(input); if (url.endsWith('/setup/status')) return json({ setupRequired: false }); if (url.endsWith('/auth/me')) return json({ user: { id: 'u', username: 'member', role: 'member' } }); if (url.endsWith('/libraries')) return json({ libraries: [] }); if (url.endsWith('/catalog/categories')) return json({ categories: [] }); throw new Error(`Unexpected request ${url}`); });
     render(<Home />);
-    fireEvent.click((await screen.findAllByRole('button', { name: 'Random pick' }))[0]);
+    const accountButton = (await screen.findAllByRole('button', { name: /Account menu/ }))[0];
+    fireEvent.pointerDown(accountButton); fireEvent.click(accountButton);
+    fireEvent.click(await screen.findByRole('menuitem', { name: /Random pick/ }));
     expect(await screen.findByRole('heading', { name: 'Pick something to watch' })).toBeInTheDocument();
   });
 

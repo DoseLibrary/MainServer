@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseMediaPath } from './media-parser.ts';
+import { isExtrasPath, parseMediaPath } from './media-parser.ts';
 
 describe('parseMediaPath', () => {
   it.each([
@@ -67,5 +67,38 @@ describe('parseMediaPath', () => {
   it.each(['Show.Name.2024.mkv', '04 - Episode.mkv', 'Show.S01E00.mkv', '', '\0'])('does not invent an episode for ambiguous or malformed input %j', (path) => {
     expect(() => parseMediaPath(path, 'shows')).not.toThrow();
     expect(parseMediaPath(path, 'shows')).toBeNull();
+  });
+});
+
+describe('bonus material', () => {
+  it.each([
+    'Allegiant_downloaded_trailer.mp4',
+    'Allegiant (2016)-trailer.mp4',
+    'The.Matrix.1999-teaser.mkv',
+    'sample.mkv',
+    'Arrival-behind.the.scenes.mkv',
+    'Dune (2021)-deleted-scene.mkv',
+    'Movies/Dune (2021)/Extras/Making Of.mkv',
+    'Movies/Dune (2021)/Trailers/Official.mkv',
+  ])('skips %s in a movie library', (path) => {
+    expect(isExtrasPath(path)).toBe(true);
+    expect(parseMediaPath(path, 'movies')).toBeNull();
+  });
+
+  it.each([
+    'Show Name/Season 1/Show.Name.S01E02-featurette.mkv',
+    'Show Name/Extras/Gag Reel.mkv',
+  ])('skips %s in a show library', (path) => {
+    expect(isExtrasPath(path)).toBe(true);
+    expect(parseMediaPath(path, 'shows')).toBeNull();
+  });
+
+  it.each([
+    'Allegiant (2016).mp4',
+    'Trailer Park Boys (2001).mkv',
+    'Movies/Extraction (2020)/Extraction (2020).mkv',
+    'Show Name/Season 1/Show.Name.S01E02.mkv',
+  ])('keeps real title %s', (path) => {
+    expect(isExtrasPath(path)).toBe(false);
   });
 });

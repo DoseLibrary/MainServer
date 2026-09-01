@@ -71,15 +71,44 @@ function preferred(supported: string[], fallback: string): string {
   return supported[0] ?? fallback;
 }
 
-export function negotiatePlayback(probe: Probe, capabilities: ClientCapabilities, requestedAudioTrackIndex = 0): PlaybackPlan {
+/**
+ * ffprobe names one demuxer for both `.mkv` and `.webm` (`matroska,webm`), so a
+ * browser that reports WebM support would otherwise be handed a Matroska file
+ * it cannot play. Only a WebM-shaped payload keeps the `webm` token.
+ */
+const WEBM_VIDEO_CODECS = new Set(['vp8', 'vp9', 'av1']);
+const WEBM_AUDIO_CODECS = new Set(['vorbis', 'opus']);
+
+function sourceContainers(formatName: string, streams: ProbeStream[]): string[] {
+  const tokens = formatName.split(',').map((token) => token.trim()).filter(Boolean);
+  if (!tokens.includes('matroska') || !tokens.includes('webm')) return tokens;
+  const video = streams.find(isVideoStream)?.codec_name;
+  const audio = streams.find(isAudioStream)?.codec_name;
+  const webm = (video == null || WEBM_VIDEO_CODECS.has(video)) && (audio == null || WEBM_AUDIO_CODECS.has(audio));
+  return tokens.filter((token) => (webm ? token !== 'matroska' : token !== 'webm'));
+}
+
+export interface NegotiationOptions {
+  /**
+   * Whether the source may be handed to the client untouched. A fragmented MP4
+   * matches on container and codecs but stalls a progressive player, so the
+   * caller marks it unplayable and negotiation repackages it instead.
+   */
+  directPlayable?: boolean;
+}
+
+export function negotiatePlayback(probe: Probe, capabilities: ClientCapabilities, requestedAudioTrackIndex = 0, options: NegotiationOptions = {}): PlaybackPlan {
   const reasons: string[] = [];
   const streams = probe.streams ?? [];
   const source = probe.format?.format_name ?? '';
-  const containerTokens = source.split(',').map((token) => token.trim()).filter(Boolean);
+  const containerTokens = sourceContainers(source, streams);
   const matchedContainer = containerTokens.find((token) => capabilities.containers.includes(token));
-  const containerSupported = matchedContainer != null;
-  const container = matchedContainer ?? preferred(capabilities.containers, DEFAULT_CONTAINER);
-  if (!containerSupported) reasons.push(`container ${source || 'unknown'} not supported; delivering ${container}`);
+  const containerSupported = matchedContainer != null && options.directPlayable !== false;
+  if (matchedContainer != null && !containerSupported) reasons.push('source container is not progressively playable; repackaging');
+  // Everything the pipeline builds is fragmented mp4, so only a direct play keeps
+  // the source container; a remux or re-encode is delivered in what we can produce.
+  const deliveryContainer = preferred(capabilities.containers, DEFAULT_CONTAINER);
+  if (matchedContainer == null) reasons.push(`container ${source || 'unknown'} not supported; delivering ${deliveryContainer}`);
 
   const overallBitrate = toBitrate(probe.format?.bit_rate);
 
@@ -132,6 +161,8 @@ export function negotiatePlayback(probe: Probe, capabilities: ClientCapabilities
   else if (remux) reasons.push(needsTrackSelection
     ? 'selected audio track is repackaged into its own stream (no re-encode)'
     : 'tracks are compatible; repackaging container only (no re-encode)');
+
+  const container = mode === 'direct' && matchedContainer != null ? matchedContainer : deliveryContainer;
 
   return { mode, container, remux, video, audio, audioTrackIndex, reasons };
 }

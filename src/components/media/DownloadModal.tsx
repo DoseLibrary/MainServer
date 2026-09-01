@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Modal, ModalContent, ModalDescription, ModalFooter, ModalHeader, ModalTitle } from '@/components/ui/modal';
 import { api, type DownloadEstimate } from '@/lib/api';
@@ -25,6 +26,7 @@ export function DownloadModal({ open, mediaItemId, title, onOpenChange }: Downlo
   const [freeBytes, setFreeBytes] = useState<number>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  const navigate = useNavigate();
 
   const load = useCallback(async (next: 'sd' | 'hd') => {
     setError(undefined); setEstimate(undefined);
@@ -45,7 +47,8 @@ export function DownloadModal({ open, mediaItemId, title, onOpenChange }: Downlo
     try {
       await startDownloads(estimate.items.map((item) => item.id), profile);
       onOpenChange(false);
-      window.location.assign('/downloads');
+      // A reload here would tear down the transfer that was just queued.
+      navigate('/downloads');
     } catch (caught) { setError(caught instanceof Error ? caught.message : 'Could not start the download.'); }
     finally { setBusy(false); }
   }

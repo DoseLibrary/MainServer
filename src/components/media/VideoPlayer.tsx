@@ -59,7 +59,8 @@ export interface VideoPlayerProps {
   meta?: ReactNode;
   /** Caption/subtitle sidecar tracks. */
   subtitles?: readonly PlayerTrack[];
-  /** Selectable quality rungs; ties into server transcode negotiation later. */
+  /** Selectable quality rungs, negotiated with the server. Takes precedence over
+   * the ladder inside an HLS stream, so one menu governs quality either way. */
   qualities?: readonly PlayerOption[];
   activeQualityId?: string;
   onQualityChange?: (id: string) => void;
@@ -104,16 +105,6 @@ export interface VideoPlayerProps {
   chapters?: readonly { title: string; startSeconds: number }[];
   autoPlay?: boolean;
   className?: string;
-}
-
-let nativeHlsSupport: boolean | undefined;
-/** Safari (and iOS WebViews) play HLS natively; everyone else needs hls.js. */
-function supportsNativeHls(): boolean {
-  if (nativeHlsSupport === undefined) {
-    nativeHlsSupport = typeof document !== 'undefined'
-      && document.createElement('video').canPlayType('application/vnd.apple.mpegurl') !== '';
-  }
-  return nativeHlsSupport;
 }
 
 function formatTime(seconds: number): string {
@@ -205,17 +196,23 @@ export function VideoPlayer({
   }, [speedPercent, src]);
 
   const isHlsSource = src.includes('.m3u8');
-  const nativeHls = isHlsSource && supportsNativeHls();
+  // `canPlayType('application/vnd.apple.mpegurl')` answers "maybe" in Chrome,
+  // which cannot play HLS at all: trusting it hands the playlist to the element
+  // and the stream dies with a decode error. hls.js therefore gets first
+  // refusal, and this flips only where hls.js cannot run (iOS Safari, which
+  // does play HLS natively) — never while the library is still loading.
+  const [nativeHls, setNativeHls] = useState(false);
 
   useEffect(() => {
-    if (!isHlsSource) return;
+    if (!isHlsSource) { setNativeHls(false); return; }
     const video = videoRef.current;
-    if (!video || video.canPlayType('application/vnd.apple.mpegurl')) return; // Safari plays it natively
+    if (!video) return;
     let cancelled = false;
     let instance: { destroy(): void } | undefined;
     // hls.js is only paid for when a transcode actually streams HLS.
     void import('hls.js').then(({ default: Hls }) => {
-      if (cancelled || !Hls.isSupported()) return;
+      if (cancelled) return;
+      if (!Hls.isSupported()) { setNativeHls(true); return; }
       const hls = new Hls({ maxBufferLength: 30 });
       instance = hls;
       hlsRef.current = hls as unknown as typeof hlsRef.current;
@@ -224,7 +221,7 @@ export function VideoPlayer({
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         setHlsLevels(hls.levels.map((level, index) => ({ id: String(index), label: level.name ?? (level.height ? `${level.height}p` : `Level ${index + 1}`) })));
       });
-    }).catch(() => { /* without hls.js the browser may still manage natively */ });
+    }).catch(() => { if (!cancelled) setNativeHls(true); /* without hls.js the browser may still manage natively */ });
     return () => { cancelled = true; instance?.destroy(); hlsRef.current = null; setHlsLevels([]); setHlsQuality('auto'); };
   }, [src, isHlsSource]);
 
@@ -233,13 +230,27 @@ export function VideoPlayer({
     if (hlsRef.current) hlsRef.current.nextLevel = id === 'auto' ? -1 : Number(id);
   }, []);
 
-  // The ladder from the stream wins over caller-provided quality options.
-  const qualityOptions = hlsLevels.length > 0 ? [{ id: 'auto', label: 'Auto' }, ...hlsLevels] : qualities;
-  const activeQuality = hlsLevels.length > 0 ? hlsQuality : activeQualityId;
-  const selectQuality = hlsLevels.length > 0 ? selectHlsQuality : onQualityChange;
+  // A caller that negotiates quality with the server owns the menu: switching
+  // there re-cuts the stream, so an in-stream ladder alongside it would offer
+  // rungs the server was told not to serve. Only without one does hls.js's own
+  // ladder appear.
+  const serverQualities = qualities.length > 0;
+  const qualityOptions = serverQualities ? qualities : hlsLevels.length > 0 ? [{ id: 'auto', label: 'Auto' }, ...hlsLevels] : qualities;
+  const activeQuality = serverQualities ? activeQualityId : hlsLevels.length > 0 ? hlsQuality : activeQualityId;
+  const selectQuality = serverQualities ? onQualityChange : hlsLevels.length > 0 ? selectHlsQuality : onQualityChange;
 
   const [playing, setPlaying] = useState(false);
   const [waiting, setWaiting] = useState(false);
+  // Whether a frame of this source is actually on screen. A seek outside the
+  // buffer, or a stream re-cut for another quality, empties the element: until
+  // it decodes again there is nothing to show but black.
+  const [hasFrame, setHasFrame] = useState(false);
+  // True once the title has played, after which the poster is never shown
+  // again — a seek must not flash the backdrop back over the film.
+  const [everPlayed, setEverPlayed] = useState(false);
+  // An automatic start is in flight: the play button would be a lie, and a
+  // frozen first frame would look like a stall, so the spinner covers it.
+  const [autoStarting, setAutoStarting] = useState(autoPlay);
   const [elementDuration, setDuration] = useState(0);
   // Transcoded containers report no runtime; the caller's figure is authoritative.
   const duration = timelineDurationSeconds ?? elementDuration;
@@ -270,17 +281,33 @@ export function VideoPlayer({
     } catch { /* The Cast chooser may be dismissed; keep local playback unchanged. */ }
   }, [castContentType, castSrc, poster, title]);
 
+  // An open menu is a conversation with the player. Letting the controls slide
+  // away mid-choice takes the menu with them (the bar turns click-through), so
+  // the next click reaches the video and only toggles playback — which reads as
+  // "changing quality does nothing".
+  const openMenuRef = useRef<MenuKind>(null);
   const showControls = useCallback(() => {
     setControlsVisible(true);
     if (hideTimer.current) clearTimeout(hideTimer.current);
     hideTimer.current = setTimeout(() => {
+      if (openMenuRef.current) return;
       if (videoRef.current && !videoRef.current.paused) setControlsVisible(false);
     }, 2600);
   }, []);
 
+  useEffect(() => {
+    openMenuRef.current = openMenu;
+    if (openMenu) {
+      if (hideTimer.current) clearTimeout(hideTimer.current);
+      setControlsVisible(true);
+    } else showControls();
+  }, [openMenu, showControls]);
+
   const togglePlay = useCallback(() => {
     const video = videoRef.current;
     if (!video) return;
+    // A deliberate pause ends any automatic start still waiting on the browser.
+    setAutoStarting(false);
     if (video.paused) void video.play();
     else video.pause();
   }, []);
@@ -362,7 +389,11 @@ export function VideoPlayer({
     };
     const onVolume = () => { setVolume(video.volume); setMuted(video.muted); };
     const onWaiting = () => setWaiting(true);
-    const onPlaying = () => setWaiting(false);
+    const onPlaying = () => { setWaiting(false); setHasFrame(true); setEverPlayed(true); };
+    // A new source (or a seek past the buffer) leaves nothing decoded to show.
+    const onEmptied = () => { setHasFrame(false); setWaiting(true); };
+    const onSeeking = () => { if (video.readyState < 3) { setHasFrame(false); setWaiting(true); } };
+    const onDecoded = () => { setHasFrame(true); if (video.readyState >= 3) setWaiting(false); };
 
     video.addEventListener('play', onPlay);
     video.addEventListener('pause', onPause);
@@ -372,6 +403,12 @@ export function VideoPlayer({
     video.addEventListener('volumechange', onVolume);
     video.addEventListener('waiting', onWaiting);
     video.addEventListener('playing', onPlaying);
+    video.addEventListener('emptied', onEmptied);
+    video.addEventListener('loadstart', onEmptied);
+    video.addEventListener('seeking', onSeeking);
+    video.addEventListener('seeked', onDecoded);
+    video.addEventListener('loadeddata', onDecoded);
+    video.addEventListener('canplay', onDecoded);
     return () => {
       video.removeEventListener('play', onPlay);
       video.removeEventListener('pause', onPause);
@@ -381,6 +418,12 @@ export function VideoPlayer({
       video.removeEventListener('volumechange', onVolume);
       video.removeEventListener('waiting', onWaiting);
       video.removeEventListener('playing', onPlaying);
+      video.removeEventListener('emptied', onEmptied);
+      video.removeEventListener('loadstart', onEmptied);
+      video.removeEventListener('seeking', onSeeking);
+      video.removeEventListener('seeked', onDecoded);
+      video.removeEventListener('loadeddata', onDecoded);
+      video.removeEventListener('canplay', onDecoded);
     };
   }, [showControls]);
 
@@ -395,6 +438,9 @@ export function VideoPlayer({
       lastReportRef.current = position;
       onProgressRef.current?.(position, dur);
     };
+    // A quality or audio switch replaces the source, and the fresh element
+    // starts at zero: the resume point has to be applied again, once per source.
+    resumeAppliedRef.current = false;
     const onLoaded = () => {
       if (resumeAppliedRef.current) return;
       resumeAppliedRef.current = true;
@@ -421,7 +467,37 @@ export function VideoPlayer({
       video.removeEventListener('ended', onEnded);
       report();
     };
-  }, [startPositionSeconds]);
+  }, [startPositionSeconds, src]);
+
+  // `autoplay` on the element only covers the first source. A switch (quality,
+  // audio track, a restarted stream) attaches a new one paused, so playback is
+  // started again per source. A browser that wants a gesture rejects the call;
+  // the play button is already on screen for that.
+  const autoPlayedSrc = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!autoPlay) return;
+    const video = videoRef.current;
+    if (!video) return;
+    setAutoStarting(true);
+    let cancelled = false;
+    const settle = () => { if (!cancelled) setAutoStarting(false); };
+    const start = () => {
+      if (autoPlayedSrc.current === src) return;
+      autoPlayedSrc.current = src;
+      // Older engines return nothing from play(); a gesture-less start rejects,
+      // and only then is the play button the truthful thing to show.
+      try { void Promise.resolve(video.play()).then(settle, settle); }
+      catch { settle(); }
+    };
+    video.addEventListener('canplay', start);
+    video.addEventListener('playing', settle);
+    if (video.readyState >= 3) start();
+    return () => {
+      cancelled = true;
+      video.removeEventListener('canplay', start);
+      video.removeEventListener('playing', settle);
+    };
+  }, [autoPlay, src]);
 
   useEffect(() => {
     const onFsChange = () => setFullscreen(Boolean(document.fullscreenElement));
@@ -515,13 +591,13 @@ export function VideoPlayer({
       tabIndex={0}
       onKeyDown={onKeyDown}
       onMouseMove={showControls}
-      onMouseLeave={() => { if (playing) setControlsVisible(false); }}
+      onMouseLeave={() => { if (playing && !openMenu) setControlsVisible(false); }}
     >
       {captionCss && <style>{captionCss}</style>}
       <video
         ref={videoRef}
         src={isHlsSource && !nativeHls ? undefined : src}
-        poster={poster}
+        poster={everPlayed ? undefined : poster}
         autoPlay={autoPlay}
         playsInline
         onClick={togglePlay}
@@ -616,13 +692,20 @@ export function VideoPlayer({
         </div>
       )}
 
-      {waiting && (
-        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+      {(waiting || autoStarting) && (
+        <div
+          className={cn(
+            'pointer-events-none absolute inset-0 flex items-center justify-center transition-colors',
+            // With no decoded frame there is only the empty element behind this,
+            // so the overlay is the picture: solid black, never the backdrop.
+            hasFrame ? 'bg-black/40' : 'bg-black',
+          )}
+        >
           <Loader2 aria-label="Buffering" className="h-12 w-12 animate-spin text-white/90" />
         </div>
       )}
 
-      {!playing && !waiting && (
+      {!playing && !waiting && !autoStarting && (
         <button
           type="button"
           onClick={togglePlay}

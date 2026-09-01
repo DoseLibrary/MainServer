@@ -5,6 +5,7 @@ import { Switch } from '@/components/ui/switch';
 import { ApiError, api, type PluginRun, type PluginSummary } from '@/lib/api';
 import { PluginStatusBadge, SCHEDULE_PRESETS, SettingField, formatWhen } from './plugin-ui';
 import { AdminShell } from './AdminShell';
+import { usePluginUpdates } from '@/lib/use-live';
 
 type Draft = { enabled: boolean; schedule: string; settings: Record<string, unknown> };
 
@@ -34,6 +35,9 @@ export function PluginDetailPage() {
   }, [id]);
 
   useEffect(() => { queueMicrotask(() => { void load(); }); }, [load]);
+  // A run started from the schedule, an event, or another browser refreshes the
+  // status and the history table in place.
+  usePluginUpdates(() => { void load(); });
 
   function patchSetting(key: string, value: unknown) {
     setDraft((current) => (current ? { ...current, settings: { ...current.settings, [key]: value } } : current));

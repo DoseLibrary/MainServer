@@ -6,6 +6,10 @@ import { Navbar } from '@/components/media/Navbar';
 import { UserMenu } from '@/components/media/UserMenu';
 import { Poster } from '@/components/media/Poster';
 import { Button } from '@/components/ui/button';
+import { useCatalogUpdates } from '@/lib/use-live';
+
+/** Seerr pushes nothing, so a page showing gaps asks again on this cadence. */
+const REQUEST_POLL_MS = 30_000;
 
 /** How a title Seerr already knows about is described on a gap tile. */
 const REQUEST_LABELS: Partial<Record<SeerrMediaState, string>> = {
@@ -33,14 +37,29 @@ export function CollectionPage() {
 
   // Request state is optional decoration: a Seerr that is absent, off, or down
   // simply leaves the gap tiles as they were.
-  useEffect(() => {
-    queueMicrotask(() => {
-      void api.requests().then(({ configured, requests }) => {
-        setRequestable(configured);
-        setStates(Object.fromEntries(requests.map((entry) => [entry.tmdbId, entry.state])));
-      }).catch(() => setRequestable(false));
-    });
+  const refreshRequests = useCallback(async () => {
+    try {
+      const { configured, requests } = await api.requests();
+      setRequestable(configured);
+      setStates(Object.fromEntries(requests.map((entry) => [entry.tmdbId, entry.state])));
+    } catch { setRequestable(false); }
   }, []);
+  useEffect(() => { queueMicrotask(() => { void refreshRequests(); }); }, [refreshRequests]);
+
+  // A requested title that finished downloading arrives as a catalog push, and
+  // moves from a gap tile to a real one.
+  useCatalogUpdates(() => { void load(); void refreshRequests(); });
+
+  // Everything before it lands — queued, downloading — is only visible in Seerr,
+  // so poll for it while gaps are on screen and the tab is actually being looked at.
+  const gapCount = (collection?.missing ?? []).length;
+  useEffect(() => {
+    if (!requestable || gapCount === 0) return;
+    const tick = () => { if (document.visibilityState === 'visible') void refreshRequests(); };
+    const timer = setInterval(tick, REQUEST_POLL_MS);
+    document.addEventListener('visibilitychange', tick);
+    return () => { clearInterval(timer); document.removeEventListener('visibilitychange', tick); };
+  }, [requestable, gapCount, refreshRequests]);
 
   const requestTitle = async (tmdbId: number) => {
     setPending(tmdbId); setRequestError(undefined);

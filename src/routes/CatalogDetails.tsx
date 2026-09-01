@@ -8,6 +8,8 @@ import { MetadataRematch } from '@/routes/MetadataRematch';
 import { AddToCollectionModal } from '@/components/media/AddToCollectionModal';
 import { DownloadModal } from '@/components/media/DownloadModal';
 import { supportsDownloads } from '@/lib/download-store';
+import { useCatalogUpdates } from '@/lib/use-live';
+import { prewarmPlayback } from '@/lib/playback-prewarm';
 
 export function CatalogDetails() {
   const { id = '' } = useParams();
@@ -37,9 +39,27 @@ export function CatalogDetails() {
     catch (caught) { setError(caught instanceof Error ? caught.message : 'Could not load this title.'); }
   }, [id, apply]);
   useEffect(() => { queueMicrotask(() => { void load(); }); }, [load]);
+  // A push means the cached copy is behind, so this refetches past the cache.
+  useCatalogUpdates(() => {
+    void api.catalogItem(id).then(({ item: next }) => apply(next)).catch(() => undefined);
+  });
   // Mutations below rewrite the cached copy so a later visit is not stale.
   useEffect(() => { if (item) primeCache(cacheKeys.catalogItem(id), item); }, [id, item]);
+  // Reading this page usually ends in pressing Play, so the stream is negotiated
+  // and its opening pulled into cache now rather than after the click.
+  useEffect(() => { if (item && (item.kind === 'movie' || item.kind === 'episode')) prewarmPlayback(item.id); }, [item]);
   useEffect(() => { queueMicrotask(async () => { try { const { user } = await api.me(); setIsAdmin(user.role === 'admin'); } catch { setIsAdmin(false); } }); }, []);
+
+  /**
+   * Keep a plain link but route it in the client. A full page load would reboot
+   * the app and throw away the stream warmed above, turning the quickest path in
+   * the product into its slowest. Modified clicks still open a new tab.
+   */
+  const routeTo = (href: string) => (event: React.MouseEvent<HTMLAnchorElement>) => {
+    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    navigate(href);
+  };
 
   async function toggleWatchlist() {
     const next = !saved;
@@ -58,9 +78,6 @@ export function CatalogDetails() {
   }
 
   const kind = item?.kind === 'show' || item?.kind === 'series' || item?.kind === 'season' ? 'show' : 'movie';
-  const episodeLabel = item?.seasonNumber != null || item?.episodeNumber != null
-    ? [item.seasonNumber != null ? `Season ${item.seasonNumber}` : undefined, item.episodeNumber != null ? `Episode ${item.episodeNumber}` : undefined].filter(Boolean).join(' · ')
-    : undefined;
   // Quality and content rating read as compact chips; genres are clickable chips into browse pages.
   const genreChips = (item?.genres ?? []).map((genre) => (
     <a key={genre.id} href={`/genre/${encodeURIComponent(genre.id)}`} className="hover:underline focus-visible:outline-none focus-visible:underline">{genre.name}</a>
@@ -69,9 +86,22 @@ export function CatalogDetails() {
     ...[item?.quality?.badge, item?.contentRating].filter((value): value is string => Boolean(value)),
     ...genreChips,
   ];
+  // A season or episode opened from a home row is otherwise a dead end: these
+  // links, and the back control below, are the way up into the show.
+  const seasonHref = item?.parent?.kind === 'season' ? `/media/${encodeURIComponent(item.parent.id)}` : undefined;
+  const seriesLink = item?.series && item.series.id !== item.id
+    ? <span key="series"><a href={`/media/${encodeURIComponent(item.series.id)}`} onClick={routeTo(`/media/${encodeURIComponent(item.series.id)}`)} className="hover:underline focus-visible:outline-none focus-visible:underline">{item.series.title}</a></span>
+    : null;
   const metaPieces: ReactNode[] = [
     item?.year != null ? String(item.year) : null,
-    episodeLabel || null,
+    seriesLink,
+    item?.seasonNumber != null || item?.episodeNumber != null ? <span key="episode">
+      {item.seasonNumber != null && (seasonHref
+        ? <a href={seasonHref} onClick={routeTo(seasonHref)} className="hover:underline focus-visible:outline-none focus-visible:underline">Season {item.seasonNumber}</a>
+        : <>Season {item.seasonNumber}</>)}
+      {item.seasonNumber != null && item.episodeNumber != null ? ' · ' : ''}
+      {item.episodeNumber != null ? `Episode ${item.episodeNumber}` : ''}
+    </span> : null,
     item?.runtime || null,
     item?.providerRating != null ? `★ ${item.providerRating.toFixed(1)}` : null,
     item?.collection ? <span key="collection">Part of <a href={`/collection/${encodeURIComponent(item.collection.id)}`} className="hover:underline focus-visible:outline-none focus-visible:underline">{item.collection.name}</a></span> : null,
@@ -88,17 +118,27 @@ export function CatalogDetails() {
     href: member.id ? `/person/${encodeURIComponent(member.id)}` : undefined,
   }));
   const hasLocalTrailer = Boolean(item?.hasLocalTrailer || (item?.trailers ?? []).some((entry) => entry.localAvailable));
+  const playable = Boolean(item && (item.kind === 'movie' || item.kind === 'episode'));
+  const partWatched = typeof item?.progress === 'number' && item.progress > 0 && item.progress < 1;
+  const watchHref = `/watch/${encodeURIComponent(item?.id ?? id)}`;
+  const restartHref = `${watchHref}?start=0`;
+  // Back climbs one level for a season or episode, and only falls to the home
+  // page for a title that has nothing above it.
+  const upHref = item?.parent ? `/media/${encodeURIComponent(item.parent.id)}` : '/';
+  const upLabel = item?.parent ? `Back to ${item.parent.title}` : undefined;
   const common = {
-    title: item?.title ?? 'Media details', backHref: '/', posterSrc: imageVariant(item?.posterUrl, { width: 600, height: 900, fit: 'cover', format: 'webp' }),
+    title: item?.title ?? 'Media details', backHref: upHref, backLabel: upLabel, posterSrc: imageVariant(item?.posterUrl, { width: 600, height: 900, fit: 'cover', format: 'webp' }),
     backdropSrc: imageVariant(item?.backdropUrl, { width: 1920, height: 1080, fit: 'cover', format: 'webp', quality: 85 }), overview: item?.overview,
     tagline: item?.tagline, badges: badges.length > 0 ? badges : undefined, recommendations,
     metadata, state: error ? 'error' as const : item ? 'loaded' as const : 'loading' as const,
     errorMessage: error, onRetry: load,
-    primaryAction: item && (item.kind === 'movie' || item.kind === 'episode') ? { label: typeof item.progress === 'number' && item.progress > 0 && item.progress < 1 ? 'Resume' : 'Play', href: `/watch/${encodeURIComponent(item.id)}` } : undefined,
+    primaryAction: playable ? { label: partWatched ? 'Resume' : 'Play', href: watchHref, onClick: routeTo(watchHref) } : undefined,
+    // Part-way through a title, both readings are valid: carry on, or start it
+    // over. Resume leads, and starting over says so rather than hiding behind it.
+    restartAction: playable && partWatched ? { label: 'Play from start', href: restartHref, onClick: routeTo(restartHref) } : undefined,
     secondaryAction: item && (item.kind === 'movie' || item.kind === 'series') ? { label: saved ? 'In Watch List' : 'Add to Watch List', onClick: () => void toggleWatchlist() } : undefined,
     extraActions: item && (item.kind === 'movie' || item.kind === 'series') ? [
       { id: 'add-to-collection', label: 'Add to collection', onClick: () => setCollectionOpen(true) },
-      ...(supportsDownloads() && item.kind === 'movie' ? [{ id: 'download', label: 'Download', onClick: () => setDownloadOpen(true) }] : []),
       ...(item.kind === 'movie' ? [{ id: 'add-to-queue', label: queued ? 'In queue' : 'Add to queue', onClick: () => void addToQueue() }] : []),
     ] : undefined,
     onPlayTrailer: hasLocalTrailer ? () => navigate(`/trailer/${encodeURIComponent(id)}`) : undefined,

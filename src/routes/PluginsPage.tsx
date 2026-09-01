@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import { api, type PluginSummary } from '@/lib/api';
+import { usePluginUpdates } from '@/lib/use-live';
 import { AdminShell } from './AdminShell';
 import { PluginStatusBadge, formatWhen } from './plugin-ui';
 
@@ -19,6 +20,8 @@ export function PluginsPage() {
   }, []);
 
   useEffect(() => { queueMicrotask(() => { void load(); }); }, [load]);
+  // Scheduled and event-triggered runs land here too, not just "Run now".
+  usePluginUpdates(() => { void load(); });
 
   async function toggle(plugin: PluginSummary, enabled: boolean) {
     setBusy((current) => ({ ...current, [plugin.id]: true }));

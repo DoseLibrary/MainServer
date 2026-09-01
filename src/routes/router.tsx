@@ -9,6 +9,7 @@ import { CategoriesPage } from '@/routes/CategoriesPage';
 import { CategoryPage } from '@/routes/CategoryPage';
 import { CollectionPage } from '@/routes/CollectionPage';
 import { CollectionsPage } from '@/routes/CollectionsPage';
+import { UserCollectionPage } from '@/routes/UserCollectionPage';
 import { PluginsPage } from '@/routes/PluginsPage';
 import { TranscodingPage } from '@/routes/TranscodingPage';
 import { PluginDetailPage } from '@/routes/PluginDetailPage';
@@ -37,6 +38,7 @@ const routes: RouteObject[] = [
   { path: '/category/:key', element: <CategoryPage /> },
   { path: '/collections', element: <CollectionsPage /> },
   { path: '/collection/:id', element: <CollectionPage /> },
+  { path: '/my-collection/:id', element: <UserCollectionPage /> },
   { path: '/profile', element: <Profile /> },
   // Device pairing: /pair runs on the device without a keyboard, /link on the phone.
   { path: '/pair', element: <PairDevice /> },

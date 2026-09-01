@@ -3,9 +3,7 @@ import { AuthPage, type LoginFormValues } from '@/pages/AuthPage';
 import { LibraryPage } from '@/pages/LibraryPage';
 import { api, ApiError, imageVariant, type CatalogHome, type Library, type User } from '@/lib/api';
 import { CatalogSearch } from '@/components/media/CatalogSearch';
-import { Button } from '@/components/ui/button';
 import { UserMenu } from '@/components/media/UserMenu';
-import { RandomPickerModal } from '@/components/media/RandomPickerModal';
 import { subscribeCatalogUpdates } from '@/lib/realtime';
 import { cached, cacheKeys, cachedValue, clearCache, prefetch, primeCache } from '@/lib/cache';
 import { flushProgressOutbox } from '@/lib/download-meta';
@@ -30,7 +28,6 @@ export function Home() {
   const [catalog, setCatalog] = useState<CatalogHome>();
   const [catalogStatus, setCatalogStatus] = useState<'loading' | 'loaded' | 'error'>('loading');
   const [catalogError, setCatalogError] = useState<string>();
-  const [randomOpen, setRandomOpen] = useState(false);
 
   // Ids that arrived through a live push, so their cards can fade in.
   const [appearingIds, setAppearingIds] = useState<ReadonlySet<string>>(new Set());
@@ -161,28 +158,30 @@ export function Home() {
     return <AuthPage mode="login" brand="DOSE" brandImageSrc="/logo.svg" brandImageAlt="DOSE logo" backdropImageSrc="/login-backdrop.webp" backdropImageAlt="A dark home cinema with a wall of film stills" heading="Welcome back" description="Sign in to your local library." alternateLabel="Accounts are managed by your administrator" secondaryAction={{ label: 'Sign in from your phone', href: '/pair' }} submitting={submitting} formError={formError} onSubmit={authenticate} />;
   }
 
-  const episodeLabel = (item: CatalogHome['sections'][number]['items'][number]) => (typeof item.seasonNumber === 'number' && typeof item.episodeNumber === 'number' ? `S${String(item.seasonNumber).padStart(2, '0')}E${String(item.episodeNumber).padStart(2, '0')}` : undefined);
+  // An episode tile borrows its show's poster, so the caption has to say which
+  // show it is; the season/episode code alone would leave every tile identical.
+  const episodeLabel = (item: CatalogHome['sections'][number]['items'][number]) => {
+    const code = typeof item.seasonNumber === 'number' && typeof item.episodeNumber === 'number' ? `S${String(item.seasonNumber).padStart(2, '0')}E${String(item.episodeNumber).padStart(2, '0')}` : undefined;
+    return [item.seriesTitle, code].filter(Boolean).join(' · ') || undefined;
+  };
   const sections = (catalog?.sections ?? []).map((section) => ({ id: section.id, title: section.title, layout: section.layout ?? 'poster', items: section.items.map((item) => ({ id: item.id, title: item.title, posterSrc: imageVariant(item.posterUrl, { width: 384, height: 576, fit: 'cover', format: 'webp' }), backdropSrc: imageVariant(item.backdropUrl, { width: 640, height: 360, fit: 'cover', format: 'webp' }), subtitle: episodeLabel(item) ?? ([item.year, item.genres?.[0]].filter(Boolean).join(' · ') || undefined), badge: item.badge, progress: typeof item.progress === 'number' ? Math.min(1, Math.max(0, item.progress)) : undefined, appearing: appearingIds.has(item.id), onPrefetch: () => prefetch(cacheKeys.catalogItem(item.id), async () => (await api.catalogItem(item.id)).item), interaction: { href: `/media/${encodeURIComponent(item.id)}` } })) }));
-  const featured = catalog?.featured ? { title: catalog.featured.title, logoSrc: imageVariant(catalog.featured.logoUrl, { width: 500, format: 'webp' }), description: catalog.featured.overview, imageSrc: imageVariant(catalog.featured.backdropUrl, { width: 1920, height: 1080, fit: 'cover', format: 'webp', quality: 85 }), videoSrc: catalog.featured.hasLocalTrailer ? api.trailerUrl(catalog.featured.id) : undefined, metadata: catalog.featured.year, primaryAction: { label: 'View details', href: `/media/${encodeURIComponent(catalog.featured.id)}` }, fullscreenHref: catalog.featured.hasLocalTrailer ? `/trailer/${encodeURIComponent(catalog.featured.id)}` : undefined } : undefined;
-  return <>
-    <LibraryPage
-      title="Your library"
-      state={state.libraries.length === 0 ? 'empty' : catalogStatus === 'error' ? 'error' : catalogStatus === 'loading' ? 'loading' : sections.every((section) => section.items.length === 0) ? 'empty' : 'loaded'}
-      emptyTitle="Your library is ready"
-      emptyMessage={state.libraries.length === 0 ? 'No media libraries have been added yet.' : 'No titles found. An administrator can scan this library for media.'}
-      errorMessage={catalogError}
-      onRetry={() => void loadCatalog(selectedLibraryId)}
-      navigation={{
-        brandLabel: 'DOSE',
-        brand: 'DOSE',
-        brandImage: { src: '/logo.svg', alt: '' },
-        brandHref: '/',
-        items: [{ id: 'categories', label: 'Categories', href: '/categories' }, { id: 'collections', label: 'Collections', href: '/collections' }],
-        actions: <><CatalogSearch libraryId={selectedLibraryId} /><Button variant="outline" size="sm" onClick={() => setRandomOpen(true)}>Random pick</Button><UserMenu user={state.user} onLogout={() => { clearCache(); setState({ name: 'login' }); }} /></>,
-      }}
-      featured={featured}
-      sections={sections}
-    />
-    <RandomPickerModal open={randomOpen} onOpenChange={setRandomOpen} />
-  </>;
+  const featured = catalog?.featured ? { title: catalog.featured.title, logoSrc: imageVariant(catalog.featured.logoUrl, { width: 500, format: 'webp' }), description: catalog.featured.overview, imageSrc: imageVariant(catalog.featured.backdropUrl, { width: 1920, height: 1080, fit: 'cover', format: 'webp', quality: 85 }), videoSrc: catalog.featured.hasLocalTrailer ? api.trailerUrl(catalog.featured.id) : undefined, metadata: catalog.featured.year, primaryAction: { label: 'View details', href: `/media/${encodeURIComponent(catalog.featured.id)}` }, fullscreenHref: catalog.featured.hasLocalTrailer ? `/trailer/${encodeURIComponent(catalog.featured.id)}?back=%2F` : undefined } : undefined;
+  return <LibraryPage
+    title="Your library"
+    state={state.libraries.length === 0 ? 'empty' : catalogStatus === 'error' ? 'error' : catalogStatus === 'loading' ? 'loading' : sections.every((section) => section.items.length === 0) ? 'empty' : 'loaded'}
+    emptyTitle="Your library is ready"
+    emptyMessage={state.libraries.length === 0 ? 'No media libraries have been added yet.' : 'No titles found. An administrator can scan this library for media.'}
+    errorMessage={catalogError}
+    onRetry={() => void loadCatalog(selectedLibraryId)}
+    navigation={{
+      brandLabel: 'DOSE',
+      brand: 'DOSE',
+      brandImage: { src: '/logo.svg', alt: '' },
+      brandHref: '/',
+      items: [{ id: 'categories', label: 'Categories', href: '/categories' }, { id: 'collections', label: 'Collections', href: '/collections' }],
+      actions: <><CatalogSearch libraryId={selectedLibraryId} /><UserMenu user={state.user} onLogout={() => { clearCache(); setState({ name: 'login' }); }} /></>,
+    }}
+    featured={featured}
+    sections={sections}
+  />;
 }

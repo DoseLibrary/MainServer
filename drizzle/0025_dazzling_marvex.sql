@@ -1,0 +1,1 @@
+ALTER TABLE "user_collections" ADD COLUMN "image_name" text;

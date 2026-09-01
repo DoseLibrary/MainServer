@@ -248,6 +248,30 @@ describe('CatalogService enrichment serialization', () => {
     }
   });
 
+  it('gives home episodes their show artwork, name, and a route back to the series', async () => {
+    const SERIES = '20000000-0000-4000-8000-000000000030';
+    const SEASON = '20000000-0000-4000-8000-000000000031';
+    const EPISODE = '20000000-0000-4000-8000-000000000032';
+    await client.query(`insert into media_items (id, library_id, kind, natural_key, title, sort_title, poster_path, backdrop_path) values ($1, $2, 'series', 'series:art:2020', 'Art Show', 'art show', '/series.jpg', '/series-b.jpg')`, [SERIES, LIB]);
+    await client.query(`insert into media_items (id, library_id, parent_id, kind, natural_key, title, sort_title, season_number, poster_path) values ($1, $2, $3, 'season', 'season:art:s1', 'Season 1', 'season 1', 1, '/season.jpg')`, [SEASON, LIB, SERIES]);
+    // No poster of its own: the episode carries only a still, as scanners leave them.
+    await client.query(`insert into media_items (id, library_id, parent_id, kind, natural_key, title, sort_title, season_number, episode_number, backdrop_path) values ($1, $2, $3, 'episode', 'episode:art:s1e1', 'Opening', 'opening', 1, 1, '/still.jpg')`, [EPISODE, LIB, SEASON]);
+
+    const home = await service.home(LIB, USER);
+    const tile = home.sections.find((section) => section.id === 'new-episodes')?.items.find((entry) => entry.id === EPISODE);
+    expect(tile).toMatchObject({ posterUrl: '/api/v1/images/season.jpg', backdropUrl: '/api/v1/images/still.jpg', seriesId: SERIES, seriesTitle: 'Art Show' });
+
+    const details = await service.item(EPISODE, USER) as Record<string, unknown>;
+    expect(details.parent).toMatchObject({ id: SEASON, kind: 'season', seasonNumber: 1 });
+    expect(details.series).toMatchObject({ id: SERIES, title: 'Art Show' });
+    // The info page borrows the same art: the season poster, its own still.
+    expect(details).toMatchObject({ posterUrl: '/api/v1/images/season.jpg', backdropUrl: '/api/v1/images/still.jpg' });
+    const season = await service.item(SEASON, USER) as Record<string, unknown>;
+    expect(season.series).toMatchObject({ id: SERIES, title: 'Art Show' });
+    // A season keeps its own poster and takes the series backdrop it lacks.
+    expect(season).toMatchObject({ posterUrl: '/api/v1/images/season.jpg', backdropUrl: '/api/v1/images/series-b.jpg' });
+  });
+
   it('tracks the next episode and surfaces watch-listed shows', async () => {
     const SERIES = '20000000-0000-4000-8000-000000000021';
     const SEASON = '20000000-0000-4000-8000-000000000022';

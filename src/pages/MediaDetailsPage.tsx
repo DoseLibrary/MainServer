@@ -63,6 +63,8 @@ interface MediaDetailsBaseProps {
   posterSrc?: string;
   posterAlt?: string;
   primaryAction?: MediaDetailsAction;
+  /** Shown next to the primary action when a part-watched title can also be started over. */
+  restartAction?: MediaDetailsAction;
   secondaryAction?: MediaDetailsAction;
   /** Extra member-facing actions (e.g. add to collection) shown beside the secondary action. */
   extraActions?: readonly (MediaDetailsAction & { id: string })[];
@@ -120,11 +122,12 @@ function ActionButton({ action, variant = 'default', size = 'lg' }: { action: Me
 
 type DetailsActionsProps = Pick<
   MediaDetailsBaseProps,
-  'primaryAction' | 'secondaryAction' | 'extraActions' | 'onPlayTrailer' | 'trailerLabel' | 'onDownload' | 'watched' | 'onToggleWatched' | 'markWatchedLabel' | 'markUnwatchedLabel' | 'canManage' | 'onEditMetadata' | 'manageLabel' | 'adminActions'
+  'primaryAction' | 'restartAction' | 'secondaryAction' | 'extraActions' | 'onPlayTrailer' | 'trailerLabel' | 'onDownload' | 'watched' | 'onToggleWatched' | 'markWatchedLabel' | 'markUnwatchedLabel' | 'canManage' | 'onEditMetadata' | 'manageLabel' | 'adminActions'
 >;
 
 function DetailsActions({
   primaryAction,
+  restartAction,
   secondaryAction,
   extraActions,
   onPlayTrailer,
@@ -140,12 +143,14 @@ function DetailsActions({
   adminActions,
 }: DetailsActionsProps) {
   const showManage = canManage && (onEditMetadata !== undefined || (adminActions?.length ?? 0) > 0);
-  const hasAny = primaryAction || secondaryAction || (extraActions?.length ?? 0) > 0 || onPlayTrailer || onToggleWatched || showManage;
+  const hasAny = primaryAction || restartAction || secondaryAction || (extraActions?.length ?? 0) > 0 || onPlayTrailer || onToggleWatched || showManage;
   if (!hasAny) return null;
 
   return (
     <div className="mt-6 flex flex-wrap items-center gap-3">
       {primaryAction && <ActionButton action={primaryAction} />}
+
+      {restartAction && <ActionButton action={restartAction} variant="secondary" />}
 
       {onPlayTrailer && (
         <Button type="button" variant="secondary" size="lg" className="gap-2" onClick={onPlayTrailer}>
@@ -351,6 +356,7 @@ export function MediaDetailsPage(props: MediaDetailsPageProps) {
     posterSrc,
     posterAlt,
     primaryAction,
+    restartAction,
     secondaryAction,
     extraActions,
     onPlayTrailer,
@@ -401,6 +407,7 @@ export function MediaDetailsPage(props: MediaDetailsPageProps) {
                 {overview != null && <div className="mt-5 max-w-2xl text-sm leading-relaxed text-foreground/90 sm:text-base">{overview}</div>}
                 <DetailsActions
                   primaryAction={primaryAction}
+                  restartAction={restartAction}
                   secondaryAction={secondaryAction}
                   extraActions={extraActions}
                   onPlayTrailer={onPlayTrailer}
