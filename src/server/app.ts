@@ -1,5 +1,6 @@
 import fastifyStatic from '@fastify/static';
 import fastifyCookie from '@fastify/cookie';
+import fastifyWebsocket from '@fastify/websocket';
 import Fastify from 'fastify';
 import { fileURLToPath } from 'node:url';
 import { join, resolve } from 'node:path';
@@ -8,6 +9,7 @@ import { createDatabase, isEmbeddedDatabase } from './db/client.ts';
 import { AuthService } from './auth-service.ts';
 import { DeviceAuthService } from './device-auth-service.ts';
 import { PlaybackSessionService } from './playback-session-service.ts';
+import { REALTIME_SUBSCRIBER, RealtimeService, registerRealtimeRoute } from './realtime.ts';
 import { registerApiRoutes } from './routes.ts';
 import { ScanCoordinator } from './scanner.ts';
 import { CatalogService } from './catalog-service.ts';
@@ -46,7 +48,7 @@ export async function buildApp(config: AppConfig) {
   // The bus is built first so every core service can emit; it resolves "enabled"
   // through the plugin service, which is constructed immediately below.
   const pluginEvents = new PluginEventBus({
-    isEnabled: (pluginId) => plugins.isEnabled(pluginId),
+    isEnabled: (pluginId) => pluginId === REALTIME_SUBSCRIBER || plugins.isEnabled(pluginId),
     log: { error: (details, message) => app.log.error(details, message), warn: (details, message) => app.log.warn(details, message) },
   });
   const plugins: PluginService = new PluginService(database, new PluginRegistry()
@@ -70,10 +72,17 @@ export async function buildApp(config: AppConfig) {
     catch (error) { app.log.error(error, 'library watcher bootstrap failed'); }
   }
 
+  const realtime = new RealtimeService();
+  realtime.attach(pluginEvents);
+
   await app.register(fastifyCookie);
-  await registerApiRoutes(app, new AuthService(database), config.NODE_ENV === 'production', undefined, scanner, new CatalogService(database, join(config.CONFIG_PATH, 'trailers'), pluginEvents), join(config.CONFIG_PATH, 'images'), config.NODE_ENV === 'development' && isEmbeddedDatabase(config.DATABASE_URL), plugins, pluginScheduler, artwork, subtitleStore, metadataMatch, libraryWatcher, spriteStore, new UserSettingsService(database), new UserCollectionsService(database), new QueueService(database), new WatchDataService(database), { plex: new PlexHistorySource(), trakt: new TraktHistorySource(), tautulli: new TautulliHistorySource() }, new DeviceAuthService(database), new PlaybackSessionService(database));
+  await app.register(fastifyWebsocket);
+  const auth = new AuthService(database);
+  registerRealtimeRoute(app, auth, realtime);
+  await registerApiRoutes(app, auth, config.NODE_ENV === 'production', undefined, scanner, new CatalogService(database, join(config.CONFIG_PATH, 'trailers'), pluginEvents), join(config.CONFIG_PATH, 'images'), config.NODE_ENV === 'development' && isEmbeddedDatabase(config.DATABASE_URL), plugins, pluginScheduler, artwork, subtitleStore, metadataMatch, libraryWatcher, spriteStore, new UserSettingsService(database), new UserCollectionsService(database), new QueueService(database), new WatchDataService(database), { plex: new PlexHistorySource(), trakt: new TraktHistorySource(), tautulli: new TautulliHistorySource() }, new DeviceAuthService(database), new PlaybackSessionService(database));
 
   app.addHook('onClose', async () => {
+    realtime.closeAll();
     plugins.abortAll();
     await pluginScheduler.stop();
     await libraryWatcher.stop();

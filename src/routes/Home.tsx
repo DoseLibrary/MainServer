@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { AuthPage, type LoginFormValues } from '@/pages/AuthPage';
 import { LibraryPage } from '@/pages/LibraryPage';
 import { api, ApiError, imageVariant, type CatalogHome, type Library, type User } from '@/lib/api';
@@ -6,6 +6,7 @@ import { CatalogSearch } from '@/components/media/CatalogSearch';
 import { Button } from '@/components/ui/button';
 import { UserMenu } from '@/components/media/UserMenu';
 import { RandomPickerModal } from '@/components/media/RandomPickerModal';
+import { subscribeCatalogUpdates } from '@/lib/realtime';
 
 type AppState =
   | { name: 'loading' }
@@ -29,10 +30,31 @@ export function Home() {
   const [catalogError, setCatalogError] = useState<string>();
   const [randomOpen, setRandomOpen] = useState(false);
 
+  // Ids that arrived through a live push, so their cards can fade in.
+  const [appearingIds, setAppearingIds] = useState<ReadonlySet<string>>(new Set());
+  const knownIdsRef = useRef<Set<string>>(new Set());
+
   const loadCatalog = useCallback(async (libraryId?: string) => {
     setCatalogStatus('loading');
-    try { setCatalog(await api.catalogHome(libraryId)); setCatalogStatus('loaded'); }
-    catch (error) { setCatalogError(errorMessage(error)); setCatalogStatus('error'); }
+    try {
+      const next = await api.catalogHome(libraryId);
+      knownIdsRef.current = new Set(next.sections.flatMap((section) => section.items.map((item) => item.id)));
+      setCatalog(next); setCatalogStatus('loaded');
+    } catch (error) { setCatalogError(errorMessage(error)); setCatalogStatus('error'); }
+  }, []);
+
+  /** A pushed update refreshes quietly: no loading state, new cards fade in. */
+  const refreshCatalog = useCallback(async (libraryId?: string) => {
+    try {
+      const next = await api.catalogHome(libraryId);
+      const fresh = new Set<string>();
+      for (const section of next.sections) {
+        for (const item of section.items) if (!knownIdsRef.current.has(item.id)) fresh.add(item.id);
+      }
+      for (const id of fresh) knownIdsRef.current.add(id);
+      setCatalog(next);
+      if (fresh.size > 0) setAppearingIds(fresh);
+    } catch { /* the current view stays useful; the next push tries again */ }
   }, []);
 
   const bootstrap = useCallback(async () => {
@@ -62,6 +84,18 @@ export function Home() {
   useEffect(() => {
     queueMicrotask(() => { void bootstrap(); });
   }, [bootstrap]);
+
+  // Live catalog pushes: a new title fades into the home rows without a reload.
+  useEffect(() => {
+    if (state.name !== 'library') return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const unsubscribe = subscribeCatalogUpdates(() => {
+      // Scans emit bursts (ingested, then enriched); one refetch covers a burst.
+      clearTimeout(timer);
+      timer = setTimeout(() => { void refreshCatalog(selectedLibraryId); }, 1_000);
+    });
+    return () => { clearTimeout(timer); unsubscribe(); };
+  }, [state.name, selectedLibraryId, refreshCatalog]);
 
   useEffect(() => {
     if (state.name !== 'library') return;
@@ -109,7 +143,7 @@ export function Home() {
   }
 
   const episodeLabel = (item: CatalogHome['sections'][number]['items'][number]) => (typeof item.seasonNumber === 'number' && typeof item.episodeNumber === 'number' ? `S${String(item.seasonNumber).padStart(2, '0')}E${String(item.episodeNumber).padStart(2, '0')}` : undefined);
-  const sections = (catalog?.sections ?? []).map((section) => ({ id: section.id, title: section.title, layout: section.layout ?? 'poster', items: section.items.map((item) => ({ id: item.id, title: item.title, posterSrc: imageVariant(item.posterUrl, { width: 384, height: 576, fit: 'cover', format: 'webp' }), backdropSrc: imageVariant(item.backdropUrl, { width: 640, height: 360, fit: 'cover', format: 'webp' }), subtitle: episodeLabel(item) ?? ([item.year, item.genres?.[0]].filter(Boolean).join(' · ') || undefined), badge: item.badge, progress: typeof item.progress === 'number' ? Math.min(1, Math.max(0, item.progress)) : undefined, interaction: { href: `/media/${encodeURIComponent(item.id)}` } })) }));
+  const sections = (catalog?.sections ?? []).map((section) => ({ id: section.id, title: section.title, layout: section.layout ?? 'poster', items: section.items.map((item) => ({ id: item.id, title: item.title, posterSrc: imageVariant(item.posterUrl, { width: 384, height: 576, fit: 'cover', format: 'webp' }), backdropSrc: imageVariant(item.backdropUrl, { width: 640, height: 360, fit: 'cover', format: 'webp' }), subtitle: episodeLabel(item) ?? ([item.year, item.genres?.[0]].filter(Boolean).join(' · ') || undefined), badge: item.badge, progress: typeof item.progress === 'number' ? Math.min(1, Math.max(0, item.progress)) : undefined, appearing: appearingIds.has(item.id), interaction: { href: `/media/${encodeURIComponent(item.id)}` } })) }));
   const featured = catalog?.featured ? { title: catalog.featured.title, logoSrc: imageVariant(catalog.featured.logoUrl, { width: 500, format: 'webp' }), description: catalog.featured.overview, imageSrc: imageVariant(catalog.featured.backdropUrl, { width: 1920, height: 1080, fit: 'cover', format: 'webp', quality: 85 }), videoSrc: catalog.featured.hasLocalTrailer ? api.trailerUrl(catalog.featured.id) : undefined, metadata: catalog.featured.year, primaryAction: { label: 'View details', href: `/media/${encodeURIComponent(catalog.featured.id)}` }, secondaryAction: catalog.featured.hasLocalTrailer ? { label: 'Fullscreen trailer', href: `/trailer/${encodeURIComponent(catalog.featured.id)}` } : undefined } : undefined;
   return <>
     <LibraryPage

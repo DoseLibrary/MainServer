@@ -61,6 +61,8 @@ export interface LibraryItem {
   badge?: ReactNode;
   /** Watch progress from 0 to 1, rendered as a bar in `card` layout. */
   progress?: number;
+  /** True when the item arrived through a live update; its card fades in. */
+  appearing?: boolean;
   interaction?: LibraryItemInteraction;
 }
 
@@ -169,7 +171,7 @@ export function LibraryPage<NavigationId extends string = string>({
               items={section.items}
               getItemKey={(item) => item.id}
               itemClassName={section.layout === 'card' ? 'w-60 sm:w-72 lg:w-80' : 'w-36 sm:w-44 lg:w-48'}
-              renderItem={(item) => section.layout === 'card' ? (
+              renderItem={(item) => <div className={item.appearing ? 'media-appear' : undefined} data-appearing={item.appearing || undefined}>{section.layout === 'card' ? (
                 <MediaCard
                   title={item.title}
                   imageSrc={item.backdropSrc ?? item.posterSrc}
@@ -188,7 +190,7 @@ export function LibraryPage<NavigationId extends string = string>({
                   badge={item.badge}
                   interaction={item.interaction}
                 />
-              )}
+              )}</div>}
             />
           ))}
         </div>

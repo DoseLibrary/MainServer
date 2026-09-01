@@ -12,7 +12,7 @@ import { stat } from 'node:fs/promises';
 const SEARCH_LIMIT = 20;
 const CAST_LIMIT = 20;
 /** Max items per home carousel. */
-const HOME_ROW_LIMIT = 20;
+const HOME_ROW_LIMIT = 25;
 
 interface QualityProfile { resolutionLabel: string | null; dynamicRange: string | null; videoCodec: string | null; audioCodec: string | null; audioChannels: string | null; }
 

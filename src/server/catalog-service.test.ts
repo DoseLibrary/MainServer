@@ -398,6 +398,28 @@ describe('CatalogService plugin events', () => {
   });
 });
 
+describe('home row limits', () => {
+  it('caps every carousel at 25 items', async () => {
+    const client = new PGlite('memory://');
+    const database = drizzle(client) as unknown as Database;
+    await migrate(database as never, { migrationsFolder: resolve(process.cwd(), 'drizzle') });
+    await client.query(`insert into libraries (id, name, kind, root_path) values ($1, 'Movies', 'movies', '/media')`, [LIB]);
+    await client.query(`insert into users (id, username, password_hash, role) values ($1, 'viewer', 'x', 'member')`, [USER]);
+    for (let index = 0; index < 30; index++) {
+      await client.query(
+        `insert into media_items (id, library_id, kind, natural_key, title, sort_title) values ($1, $2, 'movie', $3, $4, $5)`,
+        [`20000000-0000-4000-8000-0000000010${String(index).padStart(2, '0')}`, LIB, `movie:${index}`, `Movie ${index}`, `movie ${String(index).padStart(2, '0')}`]);
+    }
+
+    const home = await new CatalogService(database).home(undefined, USER);
+
+    expect(home.sections.length).toBeGreaterThan(0);
+    for (const section of home.sections) expect(section.items.length).toBeLessThanOrEqual(25);
+    expect(home.sections.find((section) => section.id === 'newly-added')?.items).toHaveLength(25);
+    await client.close();
+  });
+});
+
 describe('managed trailer paths', () => {
   it('rejects persisted paths outside the configured trailer root', () => {
     expect(managedTrailerPath('C:\\config\\trailers', 'C:\\config\\trailers\\movie.mp4')).toBe(true);
