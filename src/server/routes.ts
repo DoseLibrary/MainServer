@@ -20,10 +20,11 @@ import { UnknownPluginError } from './plugins/registry.ts';
 import { ArtworkPathError, type ArtworkService } from './artwork-service.ts';
 import type { SubtitleStore } from './subtitles.ts';
 import type { PreviewSpriteStore } from './sprites.ts';
-import { negotiatePlayback } from './playback.ts';
+import { negotiatePlayback, type PlaybackPlan } from './playback.ts';
 import { buildTranscodeArgs, contentTypeFor, decodePlaybackPlan, encodePlaybackPlan, resolveRange, resolveWithin } from './streaming.ts';
 import { audioTracksOf } from './playback.ts';
-import { SEGMENT_SECONDS, buildSegmentArgs, ladderFor, masterPlaylist, mediaPlaylist, segmentCount } from './hls.ts';
+import { SEGMENT_SECONDS, buildSegmentArgs, ladderFor, masterPlaylist, mediaPlaylist, segmentCount, type HlsVariant } from './hls.ts';
+import { SegmentCache } from './hls-cache.ts';
 import { Semaphore } from './concurrency.ts';
 import { applyAlignment, parseSubtitles, serializeVtt } from './subtitle-sync.ts';
 import { ImageVariantStore } from './images.ts';
@@ -713,6 +714,16 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
     // the progressive pipe with seek-restart, since their video is not re-encoded.
     const canHls = plan.mode === 'transcode' && !plan.remux && plan.video != null && source.durationSeconds != null;
     const hlsUrl = canHls ? `/api/v1/catalog/items/${params.data.id}/hls/master.m3u8?plan=${encodeURIComponent(encodePlaybackPlan(plan))}` : undefined;
+    if (canHls) {
+      // Warm the opening segment while the client is still parsing playlists,
+      // so a transcode's first frame comes out of the cache, not an encoder.
+      const absolute = source.rootPath ? resolveWithin(source.rootPath, source.relativePath) : null;
+      const variant = ladderFor(plan.video?.height)[0];
+      if (absolute && variant) {
+        const key = `${absolute}|${encodePlaybackPlan(plan)}|${variant.id}|0`;
+        if (!segmentCache.knows(key)) void readaheadEncodes.run(() => segmentCache.fill(key, () => encodeSegment(absolute, plan, variant, 0, source.durationSeconds!))).catch(() => undefined);
+      }
+    }
     return { plan, durationSeconds: source.durationSeconds, audioTracks: audioTracksOf(source.probe), stream: { url, hlsUrl, castUrl: `/api/v1/cast/${castToken}/stream`, direct: plan.mode === 'direct' } };
   });
   app.get('/api/v1/images/:name', async (request, reply) => {
@@ -765,6 +776,25 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
   // Seeking is the client fetching a different index; quality switching is the
   // client moving between rungs. No server-side session exists to clean up.
   const segmentEncodes = new Semaphore(3);
+  // Readahead runs beside on-demand encodes, never ahead of them in the queue.
+  const readaheadEncodes = new Semaphore(1);
+  const segmentCache = new SegmentCache();
+  const READAHEAD_SEGMENTS = 2;
+  const encodeSegment = (absolute: string, plan: PlaybackPlan, variant: HlsVariant, index: number, duration: number) =>
+    new Promise<Buffer>((resolveSegment, rejectSegment) => {
+      const child = spawn('ffmpeg', buildSegmentArgs(absolute, plan, variant, index, duration), { stdio: ['ignore', 'pipe', 'pipe'] });
+      const chunks: Buffer[] = [];
+      const stderr: Buffer[] = [];
+      const timer = setTimeout(() => child.kill('SIGKILL'), SEGMENT_SECONDS * 10_000);
+      child.stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
+      child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk));
+      child.once('error', (cause) => { clearTimeout(timer); rejectSegment(cause); });
+      child.once('close', (code) => {
+        clearTimeout(timer);
+        if (code === 0 && chunks.length > 0) resolveSegment(Buffer.concat(chunks));
+        else rejectSegment(new Error(`ffmpeg exited with code ${code}: ${Buffer.concat(stderr).toString().slice(0, 200)}`));
+      });
+    });
   const hlsSource = async (reply: FastifyReply, user: PublicUser, itemId: string) => {
     if (!catalog) { await reply.status(503).send({ error: 'Catalog unavailable' }); return null; }
     const source = await catalog.forViewer(user.maxMaturityLevel).playbackSource(itemId);
@@ -806,23 +836,21 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
     const variant = ladderFor(plan.video?.height).find((entry) => entry.id === query.data.q);
     if (!variant) return reply.status(400).send({ error: 'Unknown quality' });
 
-    // Bounded so a prefetching client cannot stampede the encoder.
-    const body = await segmentEncodes.run(() => new Promise<Buffer>((resolveSegment, rejectSegment) => {
-      const child = spawn('ffmpeg', buildSegmentArgs(resolved.absolute, plan, variant, params.data.index, duration), { stdio: ['ignore', 'pipe', 'pipe'] });
-      const chunks: Buffer[] = [];
-      const stderr: Buffer[] = [];
-      const timer = setTimeout(() => child.kill('SIGKILL'), SEGMENT_SECONDS * 10_000);
-      child.stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
-      child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk));
-      child.once('error', (cause) => { clearTimeout(timer); rejectSegment(cause); });
-      child.once('close', (code) => {
-        clearTimeout(timer);
-        if (code === 0 && chunks.length > 0) resolveSegment(Buffer.concat(chunks));
-        else rejectSegment(new Error(`ffmpeg exited with code ${code}: ${Buffer.concat(stderr).toString().slice(0, 200)}`));
-      });
-      request.raw.on('close', () => child.kill('SIGKILL'));
-    })).catch(() => null);
+    // Cache first; a miss encodes under the semaphore so a prefetching client
+    // cannot stampede the encoder. An encode outlives its request on purpose:
+    // the finished segment serves the retry, the next viewer, or a resume.
+    const keyOf = (index: number) => `${resolved.absolute}|${query.data.plan}|${query.data.q}|${index}`;
+    const body = segmentCache.get(keyOf(params.data.index))
+      ?? await segmentEncodes.run(() => segmentCache.fill(keyOf(params.data.index), () => encodeSegment(resolved.absolute, plan, variant, params.data.index, duration))).catch(() => null);
     if (!body) return reply.status(502).send({ error: 'Segment could not be encoded' });
+    // Warm the segments after this one while it plays, so sequential playback
+    // never waits at a boundary — the readahead lane leaves on-demand slots free.
+    for (let ahead = params.data.index + 1; ahead <= params.data.index + READAHEAD_SEGMENTS; ahead++) {
+      if (ahead >= segmentCount(duration)) break;
+      const key = keyOf(ahead);
+      if (segmentCache.knows(key)) continue;
+      void readaheadEncodes.run(() => segmentCache.fill(key, () => encodeSegment(resolved.absolute, plan, variant, ahead, duration))).catch(() => undefined);
+    }
     reply.header('Content-Type', 'video/mp2t');
     // Deterministic output: the same segment at the same quality is cacheable.
     reply.header('Cache-Control', 'private, max-age=3600');

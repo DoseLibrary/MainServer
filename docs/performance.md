@@ -107,3 +107,26 @@ All four are now fixed; the table below records what changed and the new cost.
    first pass, a small worker pool (2–3 concurrent files, like the scanner's
    ingest pool) would cut the intro/sync/extract phases 2–3× on an array that
    can serve parallel reads.
+
+## Transcode playback vs Plex/Jellyfin
+
+Plex and Jellyfin run one persistent transcoder per playback session that
+writes segments ahead of the play head — smooth in steady state, but a seek
+tears the session down and restarts it (a multi-second stall), and every
+viewer holds a session the server must clean up.
+
+Dose keeps transcode HLS stateless (any segment can be encoded from a cold
+start, so seeks are one request with no session to rebuild) and adds:
+
+- **A segment cache** (in-memory LRU, 256 MB, single-flight): a rewind,
+  quality switch back, retry, or second viewer of the same title is served
+  bytes instead of an encode.
+- **Readahead**: serving segment *n* warms *n+1* and *n+2* in a background
+  lane, so sequential playback finds every boundary already encoded.
+- **First-segment warmup**: the opening segment starts encoding when the
+  playback plan is issued, while the client is still fetching playlists —
+  time to first frame is the cache read, not the encoder.
+
+Net: seek latency beats the session model, steady-state matches it, and
+repeat traffic (the common household case: two people watching the same new
+episode) costs one encode instead of two.
