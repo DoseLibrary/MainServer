@@ -16,6 +16,7 @@ describe('subtitle extractor plugin', () => {
   let client: PGlite;
   let database: Database;
   let extract: ReturnType<typeof vi.fn>;
+  let extractAll: ReturnType<typeof vi.fn>;
   let probe: ReturnType<typeof vi.fn>;
   let store: SubtitleStore;
 
@@ -28,6 +29,7 @@ describe('subtitle extractor plugin', () => {
     await client.query(`insert into media_files (id, media_item_id, library_id, relative_path, size_bytes, modified_at) values ($1, $2, $3, 'One.mkv', 1000, now())`, [FILE, MOVIE, LIB]);
 
     extract = vi.fn(async () => {});
+    extractAll = vi.fn(async () => {});
     probe = vi.fn(async () => ([
       { index: 2, codec: 'subrip', language: 'eng', title: 'English', forced: false },
       { index: 3, codec: 'hdmv_pgs_subtitle', language: 'eng', forced: false },
@@ -38,13 +40,13 @@ describe('subtitle extractor plugin', () => {
   afterEach(async () => { await client.close(); });
 
   it('extracts only text subtitle streams and records them', async () => {
-    const plugin = createSubtitleExtractorPlugin(database, { probe, extract } as unknown as SubtitleTools, store);
+    const plugin = createSubtitleExtractorPlugin(database, { probe, extract, extractAll } as unknown as SubtitleTools, store);
     const result = await plugin.run!({ settings: { languages: [], includeForced: true }, signal: idle });
 
     const absolute = join('/media', 'One.mkv');
     expect(probe).toHaveBeenCalledWith(absolute);
-    expect(extract).toHaveBeenCalledTimes(1);
-    expect(extract).toHaveBeenCalledWith(absolute, 2, `/subs/${FILE}.2.vtt`);
+    expect(extractAll).toHaveBeenCalledTimes(1);
+    expect(extractAll).toHaveBeenCalledWith(absolute, [{ streamIndex: 2, outputPath: `/subs/${FILE}.2.vtt` }]);
     const { rows } = await client.query<{ language: string; label: string; storage_key: string }>(`select language, label, storage_key from media_subtitles where media_file_id = $1`, [FILE]);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ language: 'eng', label: 'English', storage_key: `${FILE}.2.vtt` });
@@ -52,7 +54,7 @@ describe('subtitle extractor plugin', () => {
   });
 
   it('honours the language filter', async () => {
-    const plugin = createSubtitleExtractorPlugin(database, { probe, extract } as unknown as SubtitleTools, store);
+    const plugin = createSubtitleExtractorPlugin(database, { probe, extract, extractAll } as unknown as SubtitleTools, store);
     await plugin.run!({ settings: { languages: ['swe'], includeForced: true }, signal: idle });
     expect(extract).not.toHaveBeenCalled();
     const { rows } = await client.query(`select 1 from media_subtitles where media_file_id = $1`, [FILE]);

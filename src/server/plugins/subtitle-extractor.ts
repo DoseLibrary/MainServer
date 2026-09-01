@@ -5,6 +5,7 @@ import type { Database } from '../db/client.ts';
 import { libraries, mediaFiles, mediaSubtitles } from '../db/schema.ts';
 import { isTextSubtitle, type SubtitleStore, type SubtitleTools } from '../subtitles.ts';
 import type { PluginDefinition } from './types.ts';
+import { mapPool } from '../concurrency.ts';
 
 const settingsSchema = z.object({
   languages: z.array(z.string().min(2).max(10)).default([]),
@@ -42,11 +43,11 @@ export function createSubtitleExtractorPlugin(database: Database, tools: Subtitl
         .where(eq(mediaFiles.available, true));
       await store.ensureDir();
       let scanned = 0; let extracted = 0; let failed = 0;
-      for (const file of files) {
-        if (signal.aborted) throw signal.reason ?? new Error('Subtitle extraction cancelled');
+      // Demuxing is I/O bound; a few files in flight keeps an array busy.
+      await mapPool(files, 3, async (file) => {
         try { extracted += await extract(database, tools, store, file, settings, signal); scanned++; }
-        catch { failed++; }
-      }
+        catch (cause) { if (signal.aborted) throw cause; failed++; }
+      }, signal);
       return { summary: `Scanned ${scanned} files, extracted ${extracted} subtitles${failed ? `, ${failed} failed` : ''}` };
     },
   };
@@ -62,10 +63,13 @@ async function extract(database: Database, tools: SubtitleTools, store: Subtitle
   const streams = (await tools.probe(absolute)).filter((stream) => isTextSubtitle(stream.codec)
     && (settings.includeForced || !stream.forced)
     && (wanted.size === 0 || (stream.language != null && wanted.has(stream.language.toLowerCase()))));
+  if (streams.length === 0) return 0;
+  // Demuxing reads the whole file; extracting every wanted track in one pass
+  // reads it once instead of once per track.
+  await tools.extractAll(absolute, streams.map((stream) => ({ streamIndex: stream.index, outputPath: store.pathFor(`${file.id}.${stream.index}.vtt`) })));
   let extracted = 0;
   for (const stream of streams) {
     const key = `${file.id}.${stream.index}.vtt`;
-    await tools.extract(absolute, stream.index, store.pathFor(key));
     await database.insert(mediaSubtitles)
       .values({ mediaFileId: file.id, streamIndex: stream.index, language: stream.language, label: label(stream), forced: stream.forced, storageKey: key, source: 'embedded' })
       .onConflictDoUpdate({ target: [mediaSubtitles.mediaFileId, mediaSubtitles.streamIndex], set: { language: stream.language, label: label(stream), forced: stream.forced, storageKey: key, updatedAt: new Date() } });

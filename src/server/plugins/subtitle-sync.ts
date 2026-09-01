@@ -6,6 +6,7 @@ import type { Database } from '../db/client.ts';
 import { libraries, mediaFiles, mediaSubtitles } from '../db/schema.ts';
 import type { SubtitleStore } from '../subtitles.ts';
 import { ffmpegAudioDecoder, PCM_SAMPLE_RATE, type AudioDecoder } from '../audio-pcm.ts';
+import { mapPool } from '../concurrency.ts';
 import { applyAlignment, findAlignment, parseSubtitles, serializeVtt, speechMask, type Alignment } from '../subtitle-sync.ts';
 import type { PluginDefinition } from './types.ts';
 
@@ -160,8 +161,8 @@ export function createSubtitleSyncPlugin(
   async function sweep(settings: SubtitleSyncSettings, signal: AbortSignal, force: boolean) {
     const files = await filesWithLibrary();
     let imported = 0; let adjusted = 0; let checked = 0; let failed = 0;
-    for (const file of files) {
-      if (signal.aborted) throw signal.reason ?? new Error('Subtitle sync cancelled');
+    // Alignment searches are CPU bound; two in flight overlaps them with reads.
+    await mapPool(files, 2, async (file) => {
       try {
         const result = await syncFile(file, settings, signal, force);
         imported += result.imported; adjusted += result.adjusted; checked += result.checked;
@@ -169,7 +170,7 @@ export function createSubtitleSyncPlugin(
         if (signal.aborted) throw cause;
         failed++;
       }
-    }
+    }, signal);
     return { summary: `Imported ${imported} sidecars, checked ${checked} tracks, re-timed ${adjusted}${failed ? `, ${failed} failed` : ''}` };
   }
 

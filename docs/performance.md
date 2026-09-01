@@ -62,7 +62,18 @@ fix below before running against 25 TB.
   (x264 `veryfast`, 1080p) run ~8–12× realtime each — comfortable headroom for
   **4–6 simultaneous 1080p transcodes**, fewer for 4K HEVC sources (~2).
 
-## Findings — where the estimates say the code should change
+## Findings — where the estimates said the code should change
+
+All four are now fixed; the table below records what changed and the new cost.
+
+| Finding | Fix | Effect on the 25 TB pass |
+| --- | --- | --- |
+| Rescans re-enriched everything, series once per episode | Enrichment gated on `enrichmentVersion` + success stamp; one series pass per scan | First scan: ~10k fewer TMDB calls. No-change rescan: **~2 h → ~20 min** |
+| Sprites decoded every frame | Per-tile input seeks (4-wide) composed with sharp; measured **~73 ms/tile** | **~1–3 weeks → ~1–2 days** (≈15 s per movie sheet, 2 files in flight) |
+| Subtitle extraction read the file once per stream | All wanted streams extracted in one ffmpeg pass | **~20–40 h → ~15–20 h** (one read per file) |
+| Plugin sweeps were single-file sequential | `mapPool` worker pools (2–3 wide) in extract/sprites/intro/sync sweeps | Each I/O-bound phase ~2× faster on an array that serves parallel reads |
+
+### Original notes
 
 1. **Rescans re-enrich everything.** `scanner.ingest` calls `enrich()` even for
    unchanged files, and enriches the *series* once per episode file

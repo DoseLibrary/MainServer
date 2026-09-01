@@ -6,6 +6,7 @@ import type { Database } from '../db/client.ts';
 import { libraries, mediaFiles, mediaPreviewSprites } from '../db/schema.ts';
 import type { PreviewSpriteStore, SpriteTools } from '../sprites.ts';
 import type { PluginDefinition } from './types.ts';
+import { mapPool } from '../concurrency.ts';
 
 export const previewSpriteSettingsSchema = z.object({
   interval: z.number().int().min(1).max(120).default(10),
@@ -56,15 +57,16 @@ export function createPreviewSpritePlugin(database: Database, tools: SpriteTools
         .where(eq(mediaFiles.available, true));
       await store.ensureDir();
       let scanned = 0; let generated = 0; let current = 0; let skipped = 0; let failed = 0;
-      for (const file of files) {
-        if (signal.aborted) throw signal.reason ?? new Error('Preview sprite generation cancelled');
+      // Sheets are seek-bound, and each sheet already runs its tiles 4-wide;
+      // two files in flight overlaps seeks with composition.
+      await mapPool(files, 2, async (file) => {
         const outcome = await generateSheet(database, tools, store, file, parsed, signal);
-        if (outcome === 'skipped') { skipped++; continue; }
+        if (outcome === 'skipped') { skipped++; return; }
         scanned++;
         if (outcome === 'generated') generated++;
         else if (outcome === 'current') current++;
         else failed++;
-      }
+      }, signal);
       return { summary: `Scanned ${scanned} files, generated ${generated} sprite sheets, ${current} current, skipped ${skipped}${failed ? `, ${failed} failed (ffmpeg unavailable?)` : ''}` };
     },
   };

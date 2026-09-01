@@ -24,11 +24,17 @@ export class ScanCoordinator {
   private readonly probeLimit: Semaphore; private readonly tmdb?: TmdbClient; private readonly images: ImageStore; private readonly enrichment?: EnrichmentService;
   // One catalog instance so availability changes carry the event bus.
   private readonly catalog: CatalogService;
-  constructor(private readonly database: Database, private readonly config: AppConfig, private readonly events?: PluginEventBus) {
+  constructor(private readonly database: Database, private readonly config: AppConfig, private readonly events?: PluginEventBus, enrichment?: EnrichmentService) {
     this.probeLimit = new Semaphore(config.FFPROBE_CONCURRENCY ?? 3);
     this.images = new ImageStore(join(config.CONFIG_PATH, 'images'));
     this.catalog = new CatalogService(database, undefined, events);
-    if (config.TMDB_API_TOKEN) { this.tmdb = new TmdbClient(config.TMDB_API_TOKEN, config.TMDB_CONCURRENCY ?? 4, config.TMDB_REQUESTS_PER_SECOND ?? 8, config.TMDB_TIMEOUT_MS ?? 8000); this.enrichment = new EnrichmentService(database, this.tmdb, this.images, events); }
+    if (config.TMDB_API_TOKEN) { this.tmdb = new TmdbClient(config.TMDB_API_TOKEN, config.TMDB_CONCURRENCY ?? 4, config.TMDB_REQUESTS_PER_SECOND ?? 8, config.TMDB_TIMEOUT_MS ?? 8000); this.enrichment = enrichment ?? new EnrichmentService(database, this.tmdb, this.images, events); }
+    else if (enrichment) this.enrichment = enrichment;
+  }
+
+  /** Whether an item still needs a provider pass at the current model version. */
+  private static needsEnrichment(item: { enrichmentVersion: number; enrichmentLastSuccessAt: Date | null }): boolean {
+    return item.enrichmentVersion < ENRICHMENT_VERSION || item.enrichmentLastSuccessAt == null;
   }
   async start(libraryId: string): Promise<{ scan: Scan; coalesced: boolean } | null> {
     const library = await this.database.query.libraries.findFirst({ where: eq(libraries.id, libraryId) }); if (!library) return null;
@@ -77,10 +83,12 @@ export class ScanCoordinator {
       await this.database.update(scanRuns).set({ discoveredFiles: paths.length, heartbeatAt: new Date() }).where(eq(scanRuns.id, scanId));
       let processed = 0; let failed = 0;
       let cursor = 0; let sinceFlush = 0;
+      // One provider pass per series per scan; episodes of one show share it.
+      const seriesEnriched = new Set<string>();
       const worker = async () => { while (cursor < paths.length) { const absolute = paths[cursor++];
         const relativePath = relative(library.rootPath, absolute).split(sep).join('/'); const parsed = parseMediaPath(relativePath, library.kind);
         if (!parsed) { failed++; sinceFlush++; continue; }
-        try { await this.ingest(scanId, library, absolute, relativePath, parsed); processed++; } catch { failed++; }
+        try { await this.ingest(scanId, library, absolute, relativePath, parsed, seriesEnriched); processed++; } catch { failed++; }
         sinceFlush++; if (sinceFlush >= 25) { sinceFlush = 0; await this.database.update(scanRuns).set({ processedFiles: processed, failedFiles: failed, heartbeatAt: new Date() }).where(eq(scanRuns.id, scanId)); }
       } };
       await Promise.all(Array.from({ length: Math.min(this.config.SCAN_INGEST_CONCURRENCY ?? 8, paths.length) }, worker));
@@ -131,7 +139,7 @@ export class ScanCoordinator {
     }
     return files;
   }
-  private async ingest(scanId: string, library: typeof libraries.$inferSelect, absolute: string, relativePath: string, parsed: NonNullable<ReturnType<typeof parseMediaPath>>) {
+  private async ingest(scanId: string, library: typeof libraries.$inferSelect, absolute: string, relativePath: string, parsed: NonNullable<ReturnType<typeof parseMediaPath>>, seriesEnriched: Set<string> = new Set()) {
     const fileStat = await stat(absolute); let probe: Record<string, unknown> = {}; let durationSeconds: number | undefined;
     const existing = await this.database.query.mediaFiles.findFirst({ where: and(eq(mediaFiles.libraryId, library.id), eq(mediaFiles.relativePath, relativePath)) });
     const unchanged = existing && existing.sizeBytes === fileStat.size && existing.modifiedAt.getTime() === fileStat.mtime.getTime();
@@ -143,9 +151,10 @@ export class ScanCoordinator {
     }
     if (!unchanged) try { const result = await this.probeLimit.run(() => execFileAsync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration,format_name,bit_rate:stream=codec_type,codec_name,width,height,channels,bit_rate,color_transfer,color_primaries,color_space', '-of', 'json', absolute], { timeout: this.config.FFPROBE_TIMEOUT_MS ?? 20_000, maxBuffer: 1024 * 1024 })); probe = JSON.parse(result.stdout); const duration = Number((probe.format as { duration?: string } | undefined)?.duration); if (Number.isFinite(duration)) durationSeconds = Math.round(duration); } catch { /* a missing/broken ffprobe never aborts discovery */ }
     let parentId: string | null = null; let metadataItemId: string | null = null; const itemKey = parsed.key;
+    let seriesRow: typeof mediaItems.$inferSelect | null = null;
     if (parsed.type === 'episode') {
       const seriesKey = `series:${parsed.series.toLowerCase()}`; const series = await this.upsertItem(library.id, seriesKey, { kind: 'series', title: parsed.series, sortTitle: parsed.series.toLowerCase() });
-      metadataItemId = series.id;
+      metadataItemId = series.id; seriesRow = series;
       parentId = (await this.upsertItem(library.id, `${seriesKey}:season:${parsed.season}`, { kind: 'season', title: `Season ${parsed.season}`, sortTitle: String(parsed.season).padStart(3, '0'), seasonNumber: parsed.season, parentId: series.id })).id;
     }
     const item = await this.upsertItem(library.id, itemKey, { kind: parsed.type === 'movie' ? 'movie' : 'episode', title: parsed.title, sortTitle: parsed.title.toLowerCase(), year: parsed.type === 'movie' ? parsed.year : undefined, seasonNumber: parsed.type === 'episode' ? parsed.season : undefined, episodeNumber: parsed.type === 'episode' ? parsed.episode : undefined, parentId });
@@ -155,13 +164,19 @@ export class ScanCoordinator {
     if (this.enrichment) {
       // Enrichment failures are isolated per item and never abort unrelated files.
       if (parsed.type === 'movie') {
-        try { await this.enrichment.enrich(library.id, item.id, 'movie', parsed.title, parsed.year); } catch { /* isolated per item */ }
+        if (ScanCoordinator.needsEnrichment(item)) {
+          try { await this.enrichment.enrich(library.id, item.id, 'movie', parsed.title, parsed.year); } catch { /* isolated per item */ }
+        }
       } else {
         // Enrich the series first so it carries a TMDB id, then resolve this
-        // specific season/episode against it.
+        // specific season/episode against it. One provider pass per series per
+        // scan, and none at all when the series is already current.
         try {
-          await this.enrichment.enrich(library.id, metadataItemId!, 'series', parsed.series);
-          await this.enrichment.enrichEpisode(metadataItemId!, parentId!, item.id, parsed.season, parsed.episode);
+          if (!seriesEnriched.has(metadataItemId!)) {
+            seriesEnriched.add(metadataItemId!);
+            if (ScanCoordinator.needsEnrichment(seriesRow!)) await this.enrichment.enrich(library.id, metadataItemId!, 'series', parsed.series);
+          }
+          if (ScanCoordinator.needsEnrichment(item)) await this.enrichment.enrichEpisode(metadataItemId!, parentId!, item.id, parsed.season, parsed.episode);
         } catch { /* isolated per item */ }
       }
     }

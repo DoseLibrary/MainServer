@@ -6,6 +6,7 @@ import type { Database } from '../db/client.ts';
 import { libraries, mediaFiles, mediaIntroMarkers, mediaItems } from '../db/schema.ts';
 import type { PluginDefinition } from './types.ts';
 import { ffmpegAudioDecoder, PCM_SAMPLE_RATE, type AudioDecoder } from '../audio-pcm.ts';
+import { mapPool } from '../concurrency.ts';
 
 export const introDetectorSettingsSchema = z.object({
   /** How much of each episode's start is decoded and searched. */
@@ -206,11 +207,11 @@ export function createIntroDetectorPlugin(database: Database, tools: IntroAudioT
     async run({ settings, signal }) {
       const seasons = await database.select({ id: mediaItems.id }).from(mediaItems).where(eq(mediaItems.kind, 'season'));
       let markers = 0; let failed = 0;
-      for (const season of seasons) {
-        if (signal.aborted) throw signal.reason ?? new Error('Intro detection cancelled');
+      // Decoding dominates; two seasons in flight keeps the disk and one core busy.
+      await mapPool(seasons, 2, async (season) => {
         try { markers += await detectSeason(season.id, settings, signal); }
         catch (cause) { if (signal.aborted) throw cause; failed++; }
-      }
+      }, signal);
       return { summary: `Scanned ${seasons.length} seasons, wrote ${markers} intro markers${failed ? `, ${failed} failed` : ''}` };
     },
   };

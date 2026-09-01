@@ -23,6 +23,9 @@ export interface SubtitleStream {
 export interface SubtitleTools {
   probe(absolutePath: string): Promise<SubtitleStream[]>;
   extract(absolutePath: string, streamIndex: number, outputPath: string): Promise<void>;
+  /** Extract several streams in one pass over the file; demuxing reads the
+   * whole container, so per-stream passes multiply the I/O by the track count. */
+  extractAll(absolutePath: string, targets: Array<{ streamIndex: number; outputPath: string }>): Promise<void>;
 }
 
 /** Manages the on-disk WebVTT sidecar files produced by subtitle extraction. */
@@ -52,6 +55,13 @@ export function ffmpegSubtitleTools(timeoutMs = 60_000): SubtitleTools {
     },
     async extract(absolutePath, streamIndex, outputPath) {
       await execFileAsync('ffmpeg', ['-y', '-i', absolutePath, '-map', `0:${streamIndex}`, '-f', 'webvtt', outputPath], { timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 });
+    },
+    async extractAll(absolutePath, targets) {
+      if (targets.length === 0) return;
+      const args = ['-y', '-i', absolutePath];
+      for (const target of targets) args.push('-map', `0:${target.streamIndex}`, '-f', 'webvtt', target.outputPath);
+      // One pass costs roughly one read of the file regardless of track count.
+      await execFileAsync('ffmpeg', args, { timeout: timeoutMs * Math.max(1, targets.length), maxBuffer: 4 * 1024 * 1024 });
     },
   };
 }
