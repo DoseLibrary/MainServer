@@ -26,7 +26,7 @@ export async function verifyPassword(password: string, hash: string) {
 }
 
 export function createSessionToken() {
-  return randomBytes(32).toString('hex');
+  return randomBytes(32).toString('base64url');
 }
 
 export function hashSessionToken(token: string) {

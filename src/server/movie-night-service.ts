@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import type { MovieCard, MovieDeckFilters } from './catalog-service.ts';
-import { createSessionToken, hashSessionToken } from './security.ts';
+import { hashSessionToken } from './security.ts';
 
 export type Vote = 'yes' | 'no' | 'maybe';
 export type Phase = 'lobby' | 'swiping' | 'ended';
@@ -106,7 +106,7 @@ export class MovieNightService {
     for (const other of session.participants.values()) {
       if (other.nickname.toLowerCase() === name.toLowerCase()) throw new MovieNightError('nickname_taken');
     }
-    const token = createSessionToken();
+    const token = randomBytes(32).toString('hex');
     const participant: StoredParticipant = { id: randomBytes(8).toString('hex'), nickname: name, joinedAt: this.now(), tokenHash: hashSessionToken(token) };
     session.participants.set(participant.id, participant);
     session.votes.set(participant.id, new Map());
