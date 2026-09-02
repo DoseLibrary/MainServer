@@ -10,6 +10,8 @@ import { api, ApiError, type CatalogCategorySummary, type MovieNightFilters, typ
 import { useMovieNightSocket } from '@/lib/movie-night';
 
 const HOST_KEY = 'dose.movieNight.host';
+/** Mirrors MOVIE_DECK_LIMIT on the server: a bigger match set is sampled down to this. */
+const DECK_CAP = 500;
 type Screen = 'loading' | 'setup' | 'session' | 'ended';
 
 /** The TV: filters → lobby with QR → live board → match or ranked fallback. */
@@ -34,6 +36,9 @@ export function MovieNightTv() {
     return open.length > 0 ? open[open.length - 1] : undefined;
   }, [state]);
   const showFallback = !!state && state.phase === 'swiping' && state.allDone && !activeMatch;
+  // While people are still swiping the board is a live scoreboard, so titles nobody
+  // has warmed to yet are noise; the final ranking shows everything it was given.
+  const shownLeaders = showFallback ? leaders : leaders.filter((entry) => entry.yes + entry.maybe > 0);
 
   const syncRequestRef = useRef(0);
   const sync = useCallback(async (session: string) => {
@@ -41,6 +46,9 @@ export function MovieNightTv() {
     const { state: next } = await api.movieNight.state(session);
     if (syncRequestRef.current !== requestId) return;
     setState(next); setCode(session); setScreen('session');
+    // The host state carries where everyone already is, so a reload or a reconnect
+    // shows filled bars instead of zeros until the next vote arrives.
+    if (next.progress) setProgress(Object.fromEntries(Object.entries(next.progress).map(([id, done]) => [id, { done, total: next.deckSize }])));
     if (next.phase === 'swiping') {
       try {
         const { entries } = await api.movieNight.leaders(session);
@@ -168,7 +176,7 @@ export function MovieNightTv() {
     {countError ? <div className="flex flex-col items-center gap-2">
       <p role="alert" className="text-center text-lg text-destructive">Could not count the deck</p>
       <Button variant="outline" onClick={() => setCountRetry((n) => n + 1)}>Retry</Button>
-    </div> : <p role="status" className="text-center text-lg">{count == null ? 'Counting…' : `${count} movies in the deck`}</p>}
+    </div> : <p role="status" className="text-center text-lg">{count == null ? 'Counting…' : count > DECK_CAP ? `${count} movies match — up to ${DECK_CAP} will be dealt` : `${count} movies in the deck`}</p>}
     {error && <p role="alert" className="text-center text-sm text-destructive">{error}</p>}
     <Button size="lg" className="mx-auto" disabled={busy || !count || countError} onClick={() => void create()}>Create movie night</Button>
     <Button asChild variant="ghost" className="mx-auto"><Link to="/">Cancel</Link></Button>
@@ -225,12 +233,20 @@ export function MovieNightTv() {
         <h2 className="text-xl font-semibold text-muted-foreground">{showFallback ? 'No unanimous pick — the crowd favourites' : 'Leading so far'}</h2>
         {showFallback && <p className="mt-1 text-sm text-muted-foreground">Everyone finished the deck. Tap a title to play it.</p>}
         <ul className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-5">
-          {leaders.map(({ card, yes, maybe }) => <li key={card.id} className="aspect-[2/3]">
+          {shownLeaders.map(({ card, yes, maybe }) => <li key={card.id} className="aspect-[2/3]">
             {showFallback
-              ? <Link to={`/watch/${encodeURIComponent(card.id)}`} aria-label={`${card.title}: ${yes} yes, ${maybe} maybe`} className="block h-full rounded-3xl ring-offset-background transition hover:ring-4 hover:ring-foreground"><MovieCardFace card={card} /></Link>
-              : <div className="relative h-full"><MovieCardFace card={card} /><span className="absolute right-3 top-3 rounded-full bg-emerald-500 px-2 py-0.5 text-sm font-bold text-black">{yes} yes</span></div>}
+              ? <Link to={`/watch/${encodeURIComponent(card.id)}`} aria-label={`${card.title}: ${yes} yes, ${maybe} maybe`} className="block h-full rounded-3xl ring-offset-background transition hover:ring-4 hover:ring-foreground"><MovieCardFace card={card} compact /></Link>
+              : <div className="relative h-full overflow-hidden rounded-2xl bg-neutral-900">
+                {card.posterUrl
+                  ? <img src={card.posterUrl} alt="" className="absolute inset-0 h-full w-full object-cover" />
+                  : <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-neutral-800 to-neutral-950 text-4xl font-black text-white opacity-30">{card.title.slice(0, 1)}</div>}
+                <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 to-transparent px-2 pb-2 pt-8">
+                  <p className="truncate text-sm font-semibold text-white">{card.title}</p>
+                </div>
+                <span className="absolute right-2 top-2 rounded-full bg-emerald-500 px-2 py-0.5 text-xs font-bold text-black">{yes} yes</span>
+              </div>}
           </li>)}
-          {leaders.length === 0 && <li className="col-span-full text-muted-foreground">No votes yet.</li>}
+          {shownLeaders.length === 0 && <li className="col-span-full text-muted-foreground">No votes yet.</li>}
         </ul>
       </section>
     </div>}

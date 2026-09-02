@@ -128,6 +128,36 @@ describe('MovieNightJoin (the phone)', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Undo' })).toBeDisabled());
   });
 
+  it('shows a removed screen and clears the token when the host kicks us', async () => {
+    localStorage.setItem('dose.movieNight.AAAA-BBBB', JSON.stringify({ participantId: 'p1', token: 'tok' }));
+    mockApi({ phase: 'swiping' });
+    renderAt('/movie-night/join?code=AAAA-BBBB');
+    await screen.findByRole('heading', { name: 'Alpha' });
+    // Someone else leaving is not our problem.
+    FakeSocket.last?.push({ type: 'participant.left', participantId: 'p2' });
+    expect(await screen.findByRole('heading', { name: 'Alpha' })).toBeInTheDocument();
+    FakeSocket.last?.push({ type: 'participant.left', participantId: 'p1' });
+    expect(await screen.findByText(/The host removed you/)).toBeInTheDocument();
+    expect(localStorage.getItem('dose.movieNight.AAAA-BBBB')).toBeNull();
+  });
+
+  it('treats a 404 from a vote as having been removed', async () => {
+    localStorage.setItem('dose.movieNight.AAAA-BBBB', JSON.stringify({ participantId: 'p1', token: 'tok' }));
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/deck')) return json({ cards });
+      if (url.endsWith('/votes/a') && init?.method === 'PUT') return json({ error: 'No movie night with that code', reason: 'not_found' }, 404);
+      return json({ role: 'participant', state: { code: 'AAAA-BBBB', phase: 'swiping', deckSize: 2, participants: [{ id: 'p1', nickname: 'Ann', joinedAt: 1 }], matches: [], dismissed: [], allDone: false, votes: {}, participantId: 'p1' } });
+    }) as unknown as typeof fetch;
+    renderAt('/movie-night/join?code=AAAA-BBBB');
+    await screen.findByRole('heading', { name: 'Alpha' });
+    fireEvent.click(screen.getByRole('button', { name: 'Yes' }));
+    const top = screen.getAllByTestId('swipe-card').find((el) => el.dataset.depth === '0')!;
+    fireEvent.transitionEnd(top);
+    expect(await screen.findByText(/The host removed you/)).toBeInTheDocument();
+    expect(localStorage.getItem('dose.movieNight.AAAA-BBBB')).toBeNull();
+  });
+
   it('clears the token and says goodbye when the night ends', async () => {
     localStorage.setItem('dose.movieNight.AAAA-BBBB', JSON.stringify({ participantId: 'p1', token: 'tok' }));
     mockApi({ phase: 'swiping' });

@@ -38,6 +38,22 @@ function dragTimed(el: HTMLElement, dx: number, times: number[], steps = 3) {
   }
 }
 
+/** Makes `(prefers-reduced-motion: reduce)` match; returns the undo. */
+function stubReducedMotion() {
+  const original = window.matchMedia;
+  window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+    matches: query === '(prefers-reduced-motion: reduce)',
+    media: query,
+    onchange: null,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  })) as unknown as typeof window.matchMedia;
+  return () => { window.matchMedia = original; };
+}
+
 describe('SwipeCard', () => {
   beforeAll(() => {
     // jsdom has no layout; give the card a width so thresholds are computable.
@@ -119,32 +135,57 @@ describe('SwipeCard', () => {
     expect(onSwipe).toHaveBeenCalledWith('up');
   });
 
-  it('fires onSwipe exactly once under reduced motion, even if a transitionend follows', () => {
-    const originalMatchMedia = window.matchMedia;
-    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
-      matches: query === '(prefers-reduced-motion: reduce)',
-      media: query,
-      onchange: null,
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-      addListener: vi.fn(),
-      removeListener: vi.fn(),
-      dispatchEvent: vi.fn(),
-    })) as unknown as typeof window.matchMedia;
+  it('fires onSwipe once from the fade under reduced motion, not before it', () => {
+    const restore = stubReducedMotion();
     try {
       const onSwipe = vi.fn();
       const ref = createRef<SwipeCardHandle>();
       render(<SwipeCard ref={ref} card={card} onSwipe={onSwipe} />);
       act(() => ref.current?.fly('right'));
-      expect(onSwipe).toHaveBeenCalledTimes(1);
-      expect(onSwipe).toHaveBeenCalledWith('right');
+      // The fade has to be visible: nothing fires until it ends.
+      expect(onSwipe).not.toHaveBeenCalled();
       const el = screen.getByTestId('swipe-card');
       expect(el.style.transition).toContain('opacity');
       expect(el.style.transition).not.toContain('transform');
       fireEvent.transitionEnd(el);
       expect(onSwipe).toHaveBeenCalledTimes(1);
+      expect(onSwipe).toHaveBeenCalledWith('right');
+      fireEvent.transitionEnd(el);
+      expect(onSwipe).toHaveBeenCalledTimes(1);
     } finally {
-      window.matchMedia = originalMatchMedia;
+      restore();
+    }
+  });
+
+  it('ignores a transitionend bubbling up from something inside the card', () => {
+    const onSwipe = vi.fn();
+    const ref = createRef<SwipeCardHandle>();
+    render(<SwipeCard ref={ref} card={card} onSwipe={onSwipe} />);
+    act(() => ref.current?.fly('right'));
+    fireEvent.transitionEnd(screen.getByRole('heading', { name: 'Alpha' }));
+    expect(onSwipe).not.toHaveBeenCalled();
+    fireEvent.transitionEnd(screen.getByTestId('swipe-card'));
+    expect(onSwipe).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to a timer when transitionend never arrives', () => {
+    vi.useFakeTimers();
+    const restore = stubReducedMotion();
+    try {
+      const onSwipe = vi.fn();
+      const ref = createRef<SwipeCardHandle>();
+      render(<SwipeCard ref={ref} card={card} onSwipe={onSwipe} />);
+      act(() => ref.current?.fly('left'));
+      expect(onSwipe).not.toHaveBeenCalled();
+      act(() => { vi.advanceTimersByTime(500); });
+      expect(onSwipe).toHaveBeenCalledTimes(1);
+      expect(onSwipe).toHaveBeenCalledWith('left');
+      // A late transitionend must not double-report it.
+      fireEvent.transitionEnd(screen.getByTestId('swipe-card'));
+      expect(onSwipe).toHaveBeenCalledTimes(1);
+    } finally {
+      restore();
+      vi.useRealTimers();
     }
   });
 

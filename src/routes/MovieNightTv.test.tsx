@@ -3,6 +3,11 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MovieNightTv } from './MovieNightTv';
 
+// The real generator is slow enough in jsdom to race the assertion below; the
+// component only ever hands the result to an <img src>, so a stub data URL is
+// all this screen needs to be exercised.
+vi.mock('qrcode', () => ({ default: { toDataURL: async () => 'data:image/png;base64,AAA' } }));
+
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
 class FakeSocket {
   static last: FakeSocket | undefined;
@@ -51,7 +56,7 @@ describe('MovieNightTv', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Create movie night' }));
     expect(await screen.findByText('AAAA-BBBB')).toBeInTheDocument();
     const qr = await screen.findByRole('img', { name: /QR code/ });
-    await waitFor(() => expect(qr.getAttribute('src')).toMatch(/^data:image\/png/));
+    await waitFor(() => expect(qr.getAttribute('src')).toBe('data:image/png;base64,AAA'));
     expect(sessionStorage.getItem('dose.movieNight.host')).toBe('AAAA-BBBB');
     expect(screen.getByRole('button', { name: 'Start swiping' })).toBeDisabled();
     FakeSocket.last?.push({ type: 'participant.joined', participant: { id: 'p1', nickname: 'Ann', joinedAt: 1 } });

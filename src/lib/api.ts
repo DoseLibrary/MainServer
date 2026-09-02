@@ -212,6 +212,8 @@ export interface MovieNightState {
   code: string; phase: MovieNightPhase; deckSize: number; participants: MovieNightParticipant[];
   matches: MovieNightCard[]; dismissed: string[]; allDone: boolean;
   votes?: Record<string, MovieNightVote>; participantId?: string;
+  /** Votes cast per participant. Host only. */
+  progress?: Record<string, number>;
 }
 export type MovieNightMessage =
   | { type: 'participant.joined'; participant: MovieNightParticipant }

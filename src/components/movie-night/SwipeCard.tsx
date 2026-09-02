@@ -1,4 +1,4 @@
-import { forwardRef, useImperativeHandle, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type TransitionEvent as ReactTransitionEvent } from 'react';
 import type { MovieNightCard } from '@/lib/api';
 import { MovieCardFace } from './MovieCardFace';
 
@@ -24,6 +24,11 @@ const MIN_VELOCITY_SPAN_MS = 16;
 // has actually travelled a meaningful distance — otherwise a trivial jitter
 // with a fast instantaneous delta could count as a flick.
 const MIN_VELOCITY_TRAVEL_PX = 24;
+// transitionend is the normal signal that a card has left; this is the backstop
+// for the cases where it never arrives (the element is hidden mid-flight, the
+// tab is backgrounded, a zero-duration transition is optimised away). Comfortably
+// longer than the 350ms fly-out so it never pre-empts the real event.
+const FLY_FALLBACK_MS = 500;
 
 const reducedMotion = () => typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 
@@ -52,11 +57,19 @@ export const SwipeCard = forwardRef<SwipeCardHandle, Props>(function SwipeCard({
   const [entered, setEntered] = useState(!entering);
   const [readyToSlide, setReadyToSlide] = useState(false);
   // onSwipe must fire exactly once per card no matter which path gets there:
-  // the immediate reduced-motion call, or transitionend for the normal
-  // animated fly-out. Both paths check this before calling.
+  // transitionend (the fade under reduced motion, the fly-out otherwise) or the
+  // fallback timer. Every path goes through fire().
   const fired = useRef(false);
+  const fallback = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   const width = () => el.current?.offsetWidth || 320;
+
+  function fire(direction: SwipeDirection) {
+    if (fired.current) return;
+    fired.current = true;
+    clearTimeout(fallback.current);
+    onSwipe(direction);
+  }
 
   function fly(direction: SwipeDirection) {
     if (leaving) return;
@@ -64,11 +77,13 @@ export const SwipeCard = forwardRef<SwipeCardHandle, Props>(function SwipeCard({
     setLeaving(direction);
     const w = width();
     setOffset(direction === 'up' ? { x: 0, y: -w * 2 } : { x: (direction === 'right' ? 1 : -1) * w * FLY_DISTANCE, y: offset.y });
-    if (reducedMotion() && !fired.current) {
-      fired.current = true;
-      onSwipe(direction);
-    }
+    // Under reduced motion the card fades rather than flies, and the fade's own
+    // transitionend is what reports the swipe — firing synchronously here would
+    // unmount the card before anyone saw it go.
+    fallback.current = setTimeout(() => fire(direction), FLY_FALLBACK_MS);
   }
+
+  useEffect(() => () => clearTimeout(fallback.current), []);
   useImperativeHandle(ref, () => ({ fly }));
 
   function pushSample(d: { samples: Sample[] }, x: number) {
@@ -118,11 +133,11 @@ export const SwipeCard = forwardRef<SwipeCardHandle, Props>(function SwipeCard({
     setDragging(false);
     setOffset({ x: 0, y: 0 });
   }
-  function onTransitionEnd() {
-    if (leaving && !fired.current) {
-      fired.current = true;
-      onSwipe(leaving);
-    }
+  function onTransitionEnd(event: ReactTransitionEvent<HTMLDivElement>) {
+    // Only this card's own transitions count — a poster or a stamp finishing its
+    // own transition must not be read as the card having left.
+    if (event.target !== el.current) return;
+    if (leaving) fire(leaving);
     if (!entered) setEntered(true);
   }
 
@@ -147,9 +162,9 @@ export const SwipeCard = forwardRef<SwipeCardHandle, Props>(function SwipeCard({
   const transform = `translate3d(${offset.x}px, ${offset.y}px, 0) rotate(${rotation}deg)${stackTransform}`;
   // Reduced motion replaces motion with a fade: the offset still jumps
   // straight to the fly-out position (no transform transition), but opacity
-  // still transitions to 0 so the card doesn't just vanish. The `fired`
-  // guard above covers the resulting transitionend so onSwipe still fires
-  // only once.
+  // still transitions to 0 so the card doesn't just vanish. That fade's
+  // transitionend reports the swipe, through the same fire-once path as the
+  // animated fly-out.
   const transition = dragging ? 'none'
     : leaving ? (reducedMotion() ? 'opacity 350ms' : 'transform 350ms cubic-bezier(.2,.8,.2,1), opacity 350ms')
       : entering && !entered && !readyToSlide ? 'none'

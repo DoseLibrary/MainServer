@@ -7,7 +7,7 @@ import { SwipeDeck } from '@/components/movie-night/SwipeDeck';
 import { api, ApiError, type MovieNightCard, type MovieNightMessage, type MovieNightState, type MovieNightVote } from '@/lib/api';
 import { clearParticipant, loadParticipant, saveParticipant, useMovieNightSocket, type StoredParticipant } from '@/lib/movie-night';
 
-type Phase = 'entry' | 'joining' | 'waiting' | 'swiping' | 'ended' | 'error';
+type Phase = 'entry' | 'joining' | 'waiting' | 'swiping' | 'ended' | 'removed';
 
 /**
  * The phone. Reached by scanning the QR on the TV; no Dose account involved.
@@ -75,7 +75,15 @@ export function MovieNightJoin() {
     }
   }
 
+  /** The host kicked us (or the server no longer knows this token): stop pretending we are in. */
+  const removed = useCallback(() => {
+    if (code) clearParticipant(code);
+    setParticipant(undefined);
+    setPhase('removed');
+  }, [code]);
+
   const onMessage = useCallback((incoming: MovieNightMessage) => {
+    if (incoming.type === 'participant.left' && participant && incoming.participantId === participant.participantId) { removed(); return; }
     setState((current) => {
       if (!current) return current;
       switch (incoming.type) {
@@ -93,7 +101,7 @@ export function MovieNightJoin() {
       else if (incoming.phase === 'ended') { if (code) clearParticipant(code); setPhase('ended'); }
     }
     if (incoming.type === 'ended') { if (code) clearParticipant(code); setPhase('ended'); }
-  }, [code]);
+  }, [code, participant, removed]);
   const onClose = useCallback((closeCode: number) => { if (closeCode === 4000 || closeCode === 4404) { if (code) clearParticipant(code); setPhase('ended'); } }, [code]);
   const onOpen = useCallback(() => { if (participant && code) void sync(code, participant).catch(() => undefined); }, [participant, code, sync]);
   useMovieNightSocket(participant ? code : undefined, participant?.token, onMessage, onClose, onOpen);
@@ -104,7 +112,13 @@ export function MovieNightJoin() {
     setHistory((h) => [...h, { id: card.id, vote: value }]);
     setIndex((i) => i + 1);
     try { await api.movieNight.vote(code, participant.token, card.id, value); }
-    catch { void sync(code, participant).catch(() => undefined); }
+    catch (caught) { recover(caught); }
+  }
+  /** A rejected vote is either a hiccup (resync) or proof we are no longer in the night. */
+  function recover(caught: unknown) {
+    if (!participant) return;
+    if (caught instanceof ApiError && (caught.status === 401 || caught.status === 404)) { removed(); return; }
+    void sync(code, participant).catch(() => undefined);
   }
   async function undo() {
     const last = history.length > 0 ? history[history.length - 1] : undefined;
@@ -113,7 +127,7 @@ export function MovieNightJoin() {
     setVotes((v) => { const next = { ...v }; delete next[last.id]; return next; });
     setIndex((i) => Math.max(0, i - 1));
     try { await api.movieNight.undo(code, participant.token, last.id); }
-    catch { void sync(code, participant).catch(() => undefined); }
+    catch (caught) { recover(caught); }
   }
   async function leave() {
     if (participant) { try { await api.movieNight.leave(code, participant.participantId, participant.token); } catch { /* ignore */ } }
@@ -156,6 +170,11 @@ export function MovieNightJoin() {
       <p className="mt-2 text-white/70">Thanks for swiping.</p>
     </div>}
 
-    {activeMatch && phase !== 'ended' && <MatchOverlay card={activeMatch} open subtitle="Look at the TV" />}
+    {phase === 'removed' && <div className="m-auto text-center">
+      <p className="text-2xl font-bold">You have left the night</p>
+      <p className="mt-2 text-white/70">The host removed you from this night.</p>
+    </div>}
+
+    {activeMatch && phase !== 'ended' && phase !== 'removed' && <MatchOverlay card={activeMatch} open subtitle="Look at the TV" />}
   </main>;
 }
