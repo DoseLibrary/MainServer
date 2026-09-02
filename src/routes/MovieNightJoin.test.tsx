@@ -106,6 +106,28 @@ describe('MovieNightJoin (the phone)', () => {
     await waitFor(() => expect(calls.filter((c) => c.endsWith('/deck')).length).toBeGreaterThan(deckCallsBefore));
   });
 
+  it('disables Undo after a failed vote is reconciled by a resync', async () => {
+    localStorage.setItem('dose.movieNight.AAAA-BBBB', JSON.stringify({ participantId: 'p1', token: 'tok' }));
+    const calls: string[] = [];
+    let voteAttempts = 0;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input); calls.push(`${init?.method ?? 'GET'} ${url}`);
+      if (url.endsWith('/deck')) return json({ cards });
+      if (url.endsWith('/votes/a') && init?.method === 'PUT') {
+        voteAttempts += 1;
+        return voteAttempts === 1 ? json({ error: 'boom' }, 500) : json({ ok: true });
+      }
+      return json({ role: 'participant', state: { code: 'AAAA-BBBB', phase: 'swiping', deckSize: 2, participants: [{ id: 'p1', nickname: 'Ann', joinedAt: 1 }], matches: [], dismissed: [], allDone: false, votes: {}, participantId: 'p1' } });
+    }) as unknown as typeof fetch;
+    renderAt('/movie-night/join?code=AAAA-BBBB');
+    await screen.findByRole('heading', { name: 'Alpha' });
+    fireEvent.click(screen.getByRole('button', { name: 'Yes' }));
+    const top = screen.getAllByTestId('swipe-card').find((el) => el.dataset.depth === '0')!;
+    fireEvent.transitionEnd(top);
+    await waitFor(() => expect(calls).toContain('PUT /api/v1/movie-night/AAAA-BBBB/votes/a'));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Undo' })).toBeDisabled());
+  });
+
   it('clears the token and says goodbye when the night ends', async () => {
     localStorage.setItem('dose.movieNight.AAAA-BBBB', JSON.stringify({ participantId: 'p1', token: 'tok' }));
     mockApi({ phase: 'swiping' });

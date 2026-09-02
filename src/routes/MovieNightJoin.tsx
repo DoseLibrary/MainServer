@@ -40,6 +40,9 @@ export function MovieNightJoin() {
     setVotes(own);
     const first = deck.findIndex((card) => !own[card.id]);
     setIndex(first === -1 ? deck.length : first);
+    // Server truth is the new baseline: any locally-tracked undo history is stale after a
+    // resync (in particular one triggered by a failed vote/undo), so don't offer undo across it.
+    setHistory([]);
     setPhase(next.phase === 'lobby' ? 'waiting' : next.phase === 'swiping' ? 'swiping' : 'ended');
   }, []);
 
