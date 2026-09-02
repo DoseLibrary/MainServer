@@ -60,6 +60,28 @@ export interface RandomItemFilters {
   ratingMin?: number;
 }
 
+export interface MovieDeckFilters {
+  genre?: string;
+  yearMin?: number;
+  yearMax?: number;
+  ratingMin?: number;
+  /** Drop titles the viewer has already marked watched. */
+  unwatchedOnly?: boolean;
+}
+
+/** One card in a movie-night deck: everything a phone shows without another request. */
+export interface MovieCard {
+  id: string;
+  title: string;
+  year?: number;
+  posterUrl?: string;
+  rating?: number;
+  overview?: string;
+  runtimeMinutes?: number;
+}
+
+export const MOVIE_DECK_LIMIT = 500;
+
 export class CatalogService {
   constructor(
     private readonly database: Database,
@@ -124,6 +146,63 @@ export class CatalogService {
       overview: item.userOverview ?? item.overview ?? undefined,
       providerRating: item.providerRating ?? undefined,
     };
+  }
+
+  private movieDeckClauses(filters: MovieDeckFilters, viewerId?: string) {
+    const clauses = [
+      eq(mediaItems.available, true), this.withinMaturity,
+      isNull(mediaItems.archivedAt), isNull(mediaItems.parentId),
+      eq(mediaItems.kind, 'movie'),
+    ];
+    if (filters.yearMin != null) clauses.push(sql`${mediaItems.year} >= ${filters.yearMin}`);
+    if (filters.yearMax != null) clauses.push(sql`${mediaItems.year} <= ${filters.yearMax}`);
+    if (filters.ratingMin != null) clauses.push(sql`${mediaItems.providerRating} >= ${filters.ratingMin}`);
+    if (filters.genre) {
+      const genre = filters.genre.trim().toLowerCase();
+      clauses.push(sql`exists (
+        select 1 from ${mediaItemGenres}
+        inner join ${genres} on ${genres.id} = ${mediaItemGenres.genreId}
+        where ${mediaItemGenres.mediaItemId} = ${mediaItems.id}
+          and (lower(${genres.name}) = ${genre} or ${genres.normalizedName} = ${genre})
+      )`);
+    }
+    if (filters.unwatchedOnly && viewerId) {
+      clauses.push(sql`not exists (
+        select 1 from ${playbackProgress}
+        where ${playbackProgress.mediaItemId} = ${mediaItems.id}
+          and ${playbackProgress.userId} = ${viewerId}
+          and ${playbackProgress.watched} = true
+      )`);
+    }
+    return and(...clauses);
+  }
+
+  /** Every movie the viewer may see that matches the filters, as deck cards. Unshuffled; capped. */
+  async listMovieCards(filters: MovieDeckFilters, viewerId?: string): Promise<MovieCard[]> {
+    // The outer table's id is written literally rather than via `${mediaItems.id}`:
+    // drizzle renders a single-table query's own columns unqualified, which would
+    // otherwise collide with media_files' own `id` column inside this subquery.
+    const runtime = sql<number | null>`(select max(${mediaFiles.durationSeconds}) from ${mediaFiles} where ${mediaFiles.mediaItemId} = "media_items"."id")`;
+    const rows = await this.database.select({
+      id: mediaItems.id, title: mediaItems.title, userTitle: mediaItems.userTitle,
+      year: mediaItems.year, userYear: mediaItems.userYear,
+      posterPath: mediaItems.posterPath, overview: mediaItems.overview, userOverview: mediaItems.userOverview,
+      providerRating: mediaItems.providerRating, durationSeconds: runtime,
+    }).from(mediaItems).where(this.movieDeckClauses(filters, viewerId)).orderBy(mediaItems.id).limit(MOVIE_DECK_LIMIT);
+    return rows.map((row) => ({
+      id: row.id,
+      title: row.userTitle ?? row.title,
+      year: row.userYear ?? row.year ?? undefined,
+      posterUrl: row.posterPath ? imageLocalUrl(row.posterPath) : undefined,
+      rating: row.providerRating ?? undefined,
+      overview: row.userOverview ?? row.overview ?? undefined,
+      runtimeMinutes: row.durationSeconds ? Math.round(row.durationSeconds / 60) : undefined,
+    }));
+  }
+
+  async countMovieCards(filters: MovieDeckFilters, viewerId?: string): Promise<number> {
+    const [row] = await this.database.select({ count: sql<number>`count(*)::int` }).from(mediaItems).where(this.movieDeckClauses(filters, viewerId));
+    return row?.count ?? 0;
   }
 
   /** Soft-archive an item and roll availability up through its parent hierarchy. */

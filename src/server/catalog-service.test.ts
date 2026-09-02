@@ -461,3 +461,55 @@ describe('managed trailer paths', () => {
     expect(managedTrailerPath('C:\\config\\trailers', 'C:\\config\\secrets.txt')).toBe(false);
   });
 });
+
+describe('CatalogService movie deck', () => {
+  let client: PGlite;
+  let service: CatalogService;
+  const LIB2 = '10000000-0000-4000-8000-000000000002';
+  const A = '20000000-0000-4000-8000-000000000011';
+  const B = '20000000-0000-4000-8000-000000000012';
+  const C = '20000000-0000-4000-8000-000000000013';
+  const SERIES = '20000000-0000-4000-8000-000000000014';
+  const FILE_A = '30000000-0000-4000-8000-000000000011';
+  const VIEWER = '70000000-0000-4000-8000-000000000002';
+  const G = '40000000-0000-4000-8000-000000000002';
+
+  beforeEach(async () => {
+    client = new PGlite('memory://');
+    const database = drizzle(client) as unknown as Database;
+    await migrate(database as never, { migrationsFolder: resolve(process.cwd(), 'drizzle') });
+    service = new CatalogService(database);
+    await client.query(`insert into libraries (id, name, kind, root_path) values ($1, 'Movies', 'movies', '/media')`, [LIB2]);
+    await client.query(`insert into users (id, username, password_hash, role) values ($1, 'viewer', 'x', 'member')`, [VIEWER]);
+    await client.query(`insert into media_items (id, library_id, kind, natural_key, title, sort_title, year, overview, provider_rating, poster_path, maturity_level) values ($1, $2, 'movie', 'movie:a:2001', 'Alpha', 'alpha', 2001, 'First', 8.1, '/a.jpg', 1)`, [A, LIB2]);
+    await client.query(`insert into media_items (id, library_id, kind, natural_key, title, sort_title, year, provider_rating, maturity_level) values ($1, $2, 'movie', 'movie:b:2015', 'Beta', 'beta', 2015, 6.0, 4)`, [B, LIB2]);
+    await client.query(`insert into media_items (id, library_id, kind, natural_key, title, sort_title, year, provider_rating) values ($1, $2, 'movie', 'movie:c:2020', 'Gamma', 'gamma', 2020, 7.0)`, [C, LIB2]);
+    await client.query(`insert into media_items (id, library_id, kind, natural_key, title, sort_title, year) values ($1, $2, 'series', 'series:s', 'Show', 'show', 2020)`, [SERIES, LIB2]);
+    await client.query(`insert into media_files (id, media_item_id, library_id, relative_path, size_bytes, modified_at, duration_seconds) values ($1, $2, $3, 'A.mkv', 1, now(), 5400)`, [FILE_A, A, LIB2]);
+    await client.query(`insert into genres (id, library_id, provider_id, name, normalized_name) values ($1, $2, '1', 'Drama', 'drama')`, [G, LIB2]);
+    await client.query(`insert into media_item_genres (media_item_id, genre_id, position) values ($1, $2, 0)`, [A, G]);
+    await client.query(`insert into playback_progress (user_id, media_item_id, watched) values ($1, $2, true)`, [VIEWER, B]);
+  });
+  afterEach(async () => { await client.close(); });
+
+  it('lists top-level movies as cards with runtime and rating', async () => {
+    const cards = await service.listMovieCards({});
+    expect(cards.map((card) => card.title).sort()).toEqual(['Alpha', 'Beta', 'Gamma']);
+    expect(cards.find((card) => card.id === A)).toEqual({ id: A, title: 'Alpha', year: 2001, posterUrl: '/api/v1/images/a.jpg', rating: 8.1, overview: 'First', runtimeMinutes: 90 });
+    expect(await service.countMovieCards({})).toBe(3);
+  });
+
+  it('applies genre, year, rating and unwatched filters', async () => {
+    expect((await service.listMovieCards({ genre: 'drama' })).map((c) => c.id)).toEqual([A]);
+    expect((await service.listMovieCards({ yearMin: 2010, yearMax: 2016 })).map((c) => c.id)).toEqual([B]);
+    expect((await service.listMovieCards({ ratingMin: 7 })).map((c) => c.id).sort()).toEqual([A, C].sort());
+    expect((await service.listMovieCards({ unwatchedOnly: true }, VIEWER)).map((c) => c.id).sort()).toEqual([A, C].sort());
+    expect(await service.countMovieCards({ unwatchedOnly: true }, VIEWER)).toBe(2);
+  });
+
+  it('respects the viewer maturity limit', async () => {
+    const limited = service.forViewer(2);
+    // Gamma is unrated and therefore hidden from a restricted viewer.
+    expect((await limited.listMovieCards({})).map((c) => c.id)).toEqual([A]);
+  });
+});
