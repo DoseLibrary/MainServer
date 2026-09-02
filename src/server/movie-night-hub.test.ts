@@ -51,4 +51,17 @@ describe('MovieNightHub', () => {
     expect(healthy.close).toHaveBeenCalledWith(4000, 'Movie night ended');
     expect(hub.connections('AAAA-AAAA')).toBe(0);
   });
+
+  it('removes the room entry once its last socket is pruned during a non-ended dispatch', () => {
+    const { hub, emit } = hubWithEmitter();
+    const broken = fakeSocket();
+    broken.send = () => { throw new Error('gone'); };
+    hub.add('AAAA-AAAA', broken as unknown as RealtimeSocket, 'participant');
+
+    emit({ code: 'AAAA-AAAA', audience: 'all', message: { type: 'phase.changed', phase: 'swiping' } });
+
+    expect(hub.connections('AAAA-AAAA')).toBe(0);
+    // The room entry itself must be gone, not merely empty, or it would leak forever.
+    expect((hub as unknown as { rooms: Map<string, unknown> }).rooms.size).toBe(0);
+  });
 });

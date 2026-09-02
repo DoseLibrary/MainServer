@@ -42,6 +42,8 @@ export class MovieNightHub {
     if (event.message.type === 'ended') {
       for (const member of room) { try { member.socket.close(4000, 'Movie night ended'); } catch { /* gone */ } }
       this.rooms.delete(event.code);
+    } else if (room.size === 0) {
+      this.rooms.delete(event.code);
     }
   }
 
