@@ -44,8 +44,10 @@ export function MovieNightJoin() {
   }, []);
 
   // Silent rejoin from a stored token: participant/phase already reflect it from initial
-  // state above, so this effect only needs to fire off the confirming sync, once.
-  const rejoinAttempted = useRef(false);
+  // state above, so this effect only needs to fire off the confirming sync, once. Seed the
+  // guard as already-fired when there was no stored token at mount, so a later join() (which
+  // also sets `participant`) never re-triggers this effect and double-syncs.
+  const rejoinAttempted = useRef(!(codeFromScan && loadParticipant(codeFromScan)));
   useEffect(() => {
     if (!codeFromScan || !participant || rejoinAttempted.current) return;
     rejoinAttempted.current = true;
@@ -82,7 +84,11 @@ export function MovieNightJoin() {
         default: return current;
       }
     });
-    if (incoming.type === 'phase.changed' && incoming.phase === 'swiping') setPhase('swiping');
+    if (incoming.type === 'phase.changed') {
+      if (incoming.phase === 'swiping') setPhase('swiping');
+      else if (incoming.phase === 'lobby') setPhase('waiting');
+      else if (incoming.phase === 'ended') { if (code) clearParticipant(code); setPhase('ended'); }
+    }
     if (incoming.type === 'ended') { if (code) clearParticipant(code); setPhase('ended'); }
   }, [code]);
   const onClose = useCallback((closeCode: number) => { if (closeCode === 4000 || closeCode === 4404) { if (code) clearParticipant(code); setPhase('ended'); } }, [code]);
@@ -95,7 +101,7 @@ export function MovieNightJoin() {
     setHistory((h) => [...h, { id: card.id, vote: value }]);
     setIndex((i) => i + 1);
     try { await api.movieNight.vote(code, participant.token, card.id, value); }
-    catch { /* the next sync repairs any gap */ }
+    catch { void sync(code, participant).catch(() => undefined); }
   }
   async function undo() {
     const last = history.length > 0 ? history[history.length - 1] : undefined;
@@ -103,7 +109,8 @@ export function MovieNightJoin() {
     setHistory((h) => h.slice(0, -1));
     setVotes((v) => { const next = { ...v }; delete next[last.id]; return next; });
     setIndex((i) => Math.max(0, i - 1));
-    try { await api.movieNight.undo(code, participant.token, last.id); } catch { /* ignore */ }
+    try { await api.movieNight.undo(code, participant.token, last.id); }
+    catch { void sync(code, participant).catch(() => undefined); }
   }
   async function leave() {
     if (participant) { try { await api.movieNight.leave(code, participant.participantId, participant.token); } catch { /* ignore */ } }
