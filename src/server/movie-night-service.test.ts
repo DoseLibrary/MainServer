@@ -74,3 +74,112 @@ describe('MovieNightService sessions', () => {
     expect(service.state(code.toLowerCase().replace('-', '')).code).toBe(code);
   });
 });
+
+describe('MovieNightService voting and matching', () => {
+  async function swipingSession() {
+    const built = build();
+    const { code } = await built.service.create(host, {});
+    const ann = built.service.join(code, 'Ann', '1');
+    const bob = built.service.join(code, 'Bob', '2');
+    built.service.start(code, 'host-1');
+    built.events.length = 0;
+    return { ...built, code, ann: ann.participantId, bob: bob.participantId };
+  }
+
+  it('only the host may start, and only from the lobby', async () => {
+    const { service } = build();
+    const { code } = await service.create(host, {});
+    expect(() => service.start(code, 'other')).toThrow(new MovieNightError('forbidden'));
+    service.start(code, 'host-1');
+    expect(service.state(code).phase).toBe('swiping');
+    expect(() => service.start(code, 'host-1')).toThrow(new MovieNightError('wrong_phase'));
+  });
+
+  it('rejects votes before swiping starts and for unknown cards', async () => {
+    const { service } = build();
+    const { code } = await service.create(host, {});
+    const ann = service.join(code, 'Ann', '1').participantId;
+    expect(() => service.vote(code, ann, 'a', 'yes')).toThrow(new MovieNightError('wrong_phase'));
+    service.start(code, 'host-1');
+    expect(() => service.vote(code, ann, 'zzz', 'yes')).toThrow(new MovieNightError('unknown_card'));
+  });
+
+  it('announces a match when every participant said yes to the same card', async () => {
+    const { service, events, code, ann, bob } = await swipingSession();
+    service.vote(code, ann, 'a', 'yes');
+    service.vote(code, ann, 'b', 'yes');
+    service.vote(code, bob, 'a', 'no');
+    expect(events.filter((e) => e.message.type === 'match')).toHaveLength(0);
+    expect(events.find((e) => e.message.type === 'progress' && e.audience === 'all')?.message).toEqual({ type: 'progress', participantId: ann, done: 1, total: 3 });
+    service.vote(code, bob, 'b', 'yes');
+    const match = events.find((e) => e.message.type === 'match');
+    expect(match).toMatchObject({ audience: 'all', message: { type: 'match', card: { id: 'b' } } });
+    expect(service.state(code).matches.map((c) => c.id)).toEqual(['b']);
+    // A re-vote overwrites; maybe never matches.
+    service.vote(code, bob, 'c', 'maybe'); service.vote(code, ann, 'c', 'yes');
+    expect(service.state(code).matches.map((c) => c.id)).toEqual(['b']);
+  });
+
+  it('a late joiner blocks a match and a leaver unblocks one', async () => {
+    const { service, events, code, ann, bob } = await swipingSession();
+    service.vote(code, ann, 'a', 'yes');
+    const cat = service.join(code, 'Cat', '3').participantId;
+    service.vote(code, bob, 'a', 'yes');
+    expect(events.filter((e) => e.message.type === 'match')).toHaveLength(0);
+    service.leave(code, cat);
+    expect(events.at(-1)).toMatchObject({ message: { type: 'match', card: { id: 'a' } } });
+    expect(events.some((e) => e.message.type === 'participant.left' && e.message.participantId === cat)).toBe(true);
+  });
+
+  it('dismissing a match lets the night find the next one', async () => {
+    const { service, events, code, ann, bob } = await swipingSession();
+    for (const id of ['a', 'b']) { service.vote(code, ann, id, 'yes'); service.vote(code, bob, id, 'yes'); }
+    expect(service.state(code).matches.map((c) => c.id)).toEqual(['a']);
+    expect(() => service.dismiss(code, 'other', 'a')).toThrow(new MovieNightError('forbidden'));
+    service.dismiss(code, 'host-1', 'a');
+    expect(events.at(-2)?.message).toEqual({ type: 'match.dismissed', cardId: 'a' });
+    expect(events.at(-1)?.message).toMatchObject({ type: 'match', card: { id: 'b' } });
+    expect(service.state(code)).toMatchObject({ matches: [{ id: 'a' }, { id: 'b' }], dismissed: ['a'] });
+  });
+
+  it('undo removes a vote and rolls progress back', async () => {
+    const { service, events, code, ann } = await swipingSession();
+    service.vote(code, ann, 'a', 'yes');
+    service.undo(code, ann, 'a');
+    expect(service.state(code, ann).votes).toEqual({});
+    expect(events.at(-1)?.message).toMatchObject({ type: 'progress', participantId: ann, done: 0 });
+  });
+
+  it('ranks leaders by yes then maybe then deck order, for the host only', async () => {
+    const { service, events, code, ann, bob } = await swipingSession();
+    const order = service.deck(code).map((c) => c.id);
+    service.vote(code, ann, 'c', 'yes'); service.vote(code, bob, 'c', 'maybe');
+    service.vote(code, ann, 'a', 'maybe'); service.vote(code, bob, 'a', 'maybe');
+    service.vote(code, ann, 'b', 'no'); service.vote(code, bob, 'b', 'no');
+    expect(service.leaders(code).map((e) => [e.card.id, e.yes, e.maybe])).toEqual([['c', 1, 1], ['a', 0, 2], ['b', 0, 0]]);
+    expect(order.indexOf('b')).toBeGreaterThanOrEqual(0);
+    const leaderEvents = events.filter((e) => e.message.type === 'leaders');
+    expect(leaderEvents.length).toBeGreaterThan(0);
+    expect(leaderEvents.every((e) => e.audience === 'host')).toBe(true);
+    expect(service.state(code).allDone).toBe(true);
+  });
+
+  it('ending removes the session and tells everyone', async () => {
+    const { service, events, code } = await swipingSession();
+    expect(() => service.end(code, 'other')).toThrow(new MovieNightError('forbidden'));
+    service.end(code, 'host-1');
+    expect(events.at(-1)).toEqual({ code, audience: 'all', message: { type: 'ended' } });
+    expect(() => service.state(code)).toThrow(new MovieNightError('not_found'));
+  });
+
+  it('sweeps sessions idle past the TTL', async () => {
+    let clock = 1_000;
+    const { service, events } = build(DECK, { now: () => clock, ttlMs: 100 });
+    const { code } = await service.create(host, {});
+    clock += 50; service.sweep();
+    expect(service.state(code).phase).toBe('lobby');
+    clock += 100; service.sweep();
+    expect(() => service.state(code)).toThrow(new MovieNightError('not_found'));
+    expect(events.at(-1)).toEqual({ code, audience: 'all', message: { type: 'ended' } });
+  });
+});

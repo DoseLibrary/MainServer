@@ -148,6 +148,109 @@ export class MovieNightService {
     return [...this.get(code).deck];
   }
 
+  start(code: string, hostUserId: string): void {
+    const session = this.requireHost(code, hostUserId);
+    if (session.phase !== 'lobby') throw new MovieNightError('wrong_phase');
+    session.phase = 'swiping';
+    this.touch(session);
+    this.emit(session.code, 'all', { type: 'phase.changed', phase: 'swiping' });
+  }
+
+  vote(code: string, participantId: string, cardId: string, vote: Vote): void {
+    const session = this.get(code);
+    if (session.phase !== 'swiping') throw new MovieNightError('wrong_phase');
+    const votes = session.votes.get(participantId);
+    if (!votes) throw new MovieNightError('not_found');
+    this.cardOf(session, cardId);
+    votes.set(cardId, vote);
+    this.afterVoteChange(session, participantId);
+  }
+
+  undo(code: string, participantId: string, cardId: string): void {
+    const session = this.get(code);
+    if (session.phase !== 'swiping') throw new MovieNightError('wrong_phase');
+    const votes = session.votes.get(participantId);
+    if (!votes) throw new MovieNightError('not_found');
+    votes.delete(cardId);
+    this.afterVoteChange(session, participantId);
+  }
+
+  leave(code: string, participantId: string): void {
+    const session = this.get(code);
+    if (!session.participants.delete(participantId)) throw new MovieNightError('not_found');
+    session.votes.delete(participantId);
+    this.touch(session);
+    this.emit(session.code, 'all', { type: 'participant.left', participantId });
+    this.emit(session.code, 'host', { type: 'leaders', entries: this.leaders(session.code) });
+    this.checkMatch(session);
+  }
+
+  dismiss(code: string, hostUserId: string, cardId: string): void {
+    const session = this.requireHost(code, hostUserId);
+    if (!session.matches.includes(cardId)) throw new MovieNightError('unknown_card');
+    session.dismissed.add(cardId);
+    this.touch(session);
+    this.emit(session.code, 'all', { type: 'match.dismissed', cardId });
+    this.checkMatch(session);
+  }
+
+  end(code: string, hostUserId: string): void {
+    const session = this.requireHost(code, hostUserId);
+    session.phase = 'ended';
+    this.sessions.delete(session.code);
+    this.emit(session.code, 'all', { type: 'ended' });
+  }
+
+  /** Fallback ranking: yes desc, maybe desc, then deck order. Top ten. */
+  leaders(code: string): LeaderEntry[] {
+    const session = this.get(code);
+    const tally = new Map<string, { yes: number; maybe: number }>();
+    for (const votes of session.votes.values()) {
+      for (const [cardId, vote] of votes) {
+        const entry = tally.get(cardId) ?? { yes: 0, maybe: 0 };
+        if (vote === 'yes') entry.yes += 1; else if (vote === 'maybe') entry.maybe += 1;
+        tally.set(cardId, entry);
+      }
+    }
+    return session.deck
+      .map((card, index) => ({ card, index, ...(tally.get(card.id) ?? { yes: 0, maybe: 0 }) }))
+      .sort((a, b) => b.yes - a.yes || b.maybe - a.maybe || a.index - b.index)
+      .slice(0, 10)
+      .map(({ card, yes, maybe }) => ({ card, yes, maybe }));
+  }
+
+  private requireHost(code: string, hostUserId: string): Session {
+    const session = this.get(code);
+    if (session.hostUserId !== hostUserId) throw new MovieNightError('forbidden');
+    return session;
+  }
+
+  private afterVoteChange(session: Session, participantId: string): void {
+    this.touch(session);
+    this.emit(session.code, 'host', { type: 'leaders', entries: this.leaders(session.code) });
+    this.emit(session.code, 'all', { type: 'progress', participantId, done: session.votes.get(participantId)?.size ?? 0, total: session.deck.length });
+    this.checkMatch(session);
+  }
+
+  /** First card in deck order every current participant said yes to, not yet announced or dismissed. */
+  private checkMatch(session: Session): void {
+    if (session.phase !== 'swiping' || session.participants.size === 0) return;
+    const active = session.matches.some((id) => !session.dismissed.has(id));
+    if (active) return;
+    for (const card of session.deck) {
+      if (session.matches.includes(card.id) || session.dismissed.has(card.id)) continue;
+      let unanimous = true;
+      for (const id of session.participants.keys()) {
+        if (session.votes.get(id)?.get(card.id) !== 'yes') { unanimous = false; break; }
+      }
+      if (unanimous) {
+        session.matches.push(card.id);
+        this.emit(session.code, 'all', { type: 'match', card });
+        return;
+      }
+    }
+  }
+
   // ---- internals shared with Task 3 ----
 
   protected get(code: string): Session {
