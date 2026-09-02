@@ -47,7 +47,7 @@ describe('MovieNightHub', () => {
     expect(hub.connections('AAAA-AAAA')).toBe(1);
 
     emit({ code: 'AAAA-AAAA', audience: 'all', message: { type: 'ended' } });
-    expect(JSON.parse(healthy.sent.at(-1)!)).toEqual({ type: 'ended' });
+    expect(JSON.parse(healthy.sent[healthy.sent.length - 1]!)).toEqual({ type: 'ended' });
     expect(healthy.close).toHaveBeenCalledWith(4000, 'Movie night ended');
     expect(hub.connections('AAAA-AAAA')).toBe(0);
   });

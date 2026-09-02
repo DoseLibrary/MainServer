@@ -40,7 +40,7 @@ describe('MovieNightService sessions', () => {
     expect(() => service.join(code, 'ann', '10.0.0.3')).toThrow(new MovieNightError('nickname_taken'));
     expect(() => service.join(code, '', '10.0.0.3')).toThrow(new MovieNightError('invalid_nickname'));
     expect(() => service.join('ZZZZ-ZZZZ', 'Bob', '10.0.0.3')).toThrow(new MovieNightError('not_found'));
-    expect(events.at(-1)).toMatchObject({ code, audience: 'all', message: { type: 'participant.joined', participant: { id: ann.participantId, nickname: 'Ann' } } });
+    expect(events[events.length - 1]).toMatchObject({ code, audience: 'all', message: { type: 'participant.joined', participant: { id: ann.participantId, nickname: 'Ann' } } });
     expect(service.authenticateParticipant(code, ann.token)).toMatchObject({ id: ann.participantId, nickname: 'Ann' });
     expect(() => service.authenticateParticipant(code, 'nope')).toThrow(new MovieNightError('not_found'));
     expect(service.isHost(code, 'host-1')).toBe(true);
@@ -135,7 +135,7 @@ describe('MovieNightService voting and matching', () => {
     service.vote(code, bob, 'a', 'yes');
     expect(events.filter((e) => e.message.type === 'match')).toHaveLength(0);
     service.leave(code, cat);
-    expect(events.at(-1)).toMatchObject({ message: { type: 'match', card: { id: 'a' } } });
+    expect(events[events.length - 1]).toMatchObject({ message: { type: 'match', card: { id: 'a' } } });
     expect(events.some((e) => e.message.type === 'participant.left' && e.message.participantId === cat)).toBe(true);
   });
 
@@ -145,8 +145,8 @@ describe('MovieNightService voting and matching', () => {
     expect(service.state(code).matches.map((c) => c.id)).toEqual(['a']);
     expect(() => service.dismiss(code, 'other', 'a')).toThrow(new MovieNightError('forbidden'));
     service.dismiss(code, 'host-1', 'a');
-    expect(events.at(-2)?.message).toEqual({ type: 'match.dismissed', cardId: 'a' });
-    expect(events.at(-1)?.message).toMatchObject({ type: 'match', card: { id: 'b' } });
+    expect(events[events.length - 2]?.message).toEqual({ type: 'match.dismissed', cardId: 'a' });
+    expect(events[events.length - 1]?.message).toMatchObject({ type: 'match', card: { id: 'b' } });
     expect(service.state(code)).toMatchObject({ matches: [{ id: 'a' }, { id: 'b' }], dismissed: ['a'] });
   });
 
@@ -155,7 +155,7 @@ describe('MovieNightService voting and matching', () => {
     service.vote(code, ann, 'a', 'yes');
     service.undo(code, ann, 'a');
     expect(service.state(code, ann).votes).toEqual({});
-    expect(events.at(-1)?.message).toMatchObject({ type: 'progress', participantId: ann, done: 0 });
+    expect(events[events.length - 1]?.message).toMatchObject({ type: 'progress', participantId: ann, done: 0 });
   });
 
   it('ranks leaders by yes then maybe then deck order, for the host only', async () => {
@@ -176,7 +176,7 @@ describe('MovieNightService voting and matching', () => {
     const { service, events, code } = await swipingSession();
     expect(() => service.end(code, 'other')).toThrow(new MovieNightError('forbidden'));
     service.end(code, 'host-1');
-    expect(events.at(-1)).toEqual({ code, audience: 'all', message: { type: 'ended' } });
+    expect(events[events.length - 1]).toEqual({ code, audience: 'all', message: { type: 'ended' } });
     expect(() => service.state(code)).toThrow(new MovieNightError('not_found'));
   });
 
@@ -188,6 +188,6 @@ describe('MovieNightService voting and matching', () => {
     expect(service.state(code).phase).toBe('lobby');
     clock += 100; service.sweep();
     expect(() => service.state(code)).toThrow(new MovieNightError('not_found'));
-    expect(events.at(-1)).toEqual({ code, audience: 'all', message: { type: 'ended' } });
+    expect(events[events.length - 1]).toEqual({ code, audience: 'all', message: { type: 'ended' } });
   });
 });
