@@ -32,7 +32,7 @@ export function SwipeDeck({ cards, index, onVote, onUndo, canUndo, lastUndoneVot
 
   return (
     <div className="relative h-full w-full">
-      <div data-testid="swipe-stack" className="absolute inset-x-4 top-14 bottom-28">
+      <div data-testid="swipe-stack" className="absolute inset-x-4 top-[calc(max(1rem,env(safe-area-inset-top))+2.5rem)] bottom-28">
         {done
           ? <div data-testid="deck-done" className="flex h-full flex-col items-center justify-center rounded-3xl border border-white/10 bg-white/5 p-8 text-center">
             <p className="text-2xl font-bold">You're through the deck</p>
