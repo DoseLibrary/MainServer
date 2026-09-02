@@ -202,6 +202,26 @@ export interface ChapterMarker { title: string; startSeconds: number; endSeconds
 export interface CatalogSection { id: string; title: string; items: CatalogItem[]; layout?: 'poster' | 'card' }
 export interface CatalogHome { sections: CatalogSection[]; featured?: CatalogItem }
 export interface RandomItemFilters { kind?: 'movie' | 'series'; genre?: string; yearMin?: number; yearMax?: number; ratingMin?: number }
+export type MovieNightVote = 'yes' | 'no' | 'maybe';
+export type MovieNightPhase = 'lobby' | 'swiping' | 'ended';
+export interface MovieNightFilters { genre?: string; yearMin?: number; yearMax?: number; ratingMin?: number; unwatchedOnly?: boolean }
+export interface MovieNightCard { id: string; title: string; year?: number; posterUrl?: string; rating?: number; overview?: string; runtimeMinutes?: number }
+export interface MovieNightParticipant { id: string; nickname: string; joinedAt: number }
+export interface MovieNightLeader { card: MovieNightCard; yes: number; maybe: number }
+export interface MovieNightState {
+  code: string; phase: MovieNightPhase; deckSize: number; participants: MovieNightParticipant[];
+  matches: MovieNightCard[]; dismissed: string[]; allDone: boolean;
+  votes?: Record<string, MovieNightVote>; participantId?: string;
+}
+export type MovieNightMessage =
+  | { type: 'participant.joined'; participant: MovieNightParticipant }
+  | { type: 'participant.left'; participantId: string }
+  | { type: 'phase.changed'; phase: MovieNightPhase }
+  | { type: 'progress'; participantId: string; done: number; total: number }
+  | { type: 'match'; card: MovieNightCard }
+  | { type: 'match.dismissed'; cardId: string }
+  | { type: 'leaders'; entries: MovieNightLeader[] }
+  | { type: 'ended' };
 export interface CatalogSearchItem { id: string; title: string; year?: number; posterUrl?: string; kind: string; meta?: string; badge?: string; genres?: string[] }
 export interface CatalogSearch { query: string; groups: Array<{ id: string; label: string; items: CatalogSearchItem[] }> }
 export interface ClientCapabilities { containers: string[]; videoCodecs: string[]; audioCodecs: string[]; maxHeight?: number; maxBitrate?: number }
@@ -282,6 +302,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
+}
+
+function bearer(token?: string): Record<string, string> {
+  return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
 export const api = {
@@ -419,6 +443,25 @@ export const api = {
   configurePlugin: (id: string, change: { enabled?: boolean; schedule?: string | null; settings?: Record<string, unknown> }) =>
     request<{ plugin: PluginSummary }>(`/api/v1/plugins/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(change) }),
   runPlugin: (id: string) => request<{ run: { id: string; status: PluginRunStatus; durationMs: number; summary?: string | null; error?: string } }>(`/api/v1/plugins/${encodeURIComponent(id)}/run`, { method: 'POST' }),
+  movieNight: {
+    create: (filters: MovieNightFilters) => request<{ code: string; joinPath: string; deckSize: number }>('/api/v1/movie-night', { method: 'POST', body: JSON.stringify(filters) }),
+    count: (filters: MovieNightFilters) => {
+      const query = new URLSearchParams();
+      for (const [key, value] of Object.entries(filters)) if (value != null && value !== '' && value !== false) query.set(key, String(value));
+      const suffix = query.toString();
+      return request<{ count: number }>(`/api/v1/movie-night/count${suffix ? `?${suffix}` : ''}`);
+    },
+    state: (code: string, token?: string) => request<{ role: 'host' | 'participant'; state: MovieNightState }>(`/api/v1/movie-night/${encodeURIComponent(code)}`, { headers: bearer(token) }),
+    join: (code: string, nickname: string) => request<{ participantId: string; token: string }>(`/api/v1/movie-night/${encodeURIComponent(code)}/join`, { method: 'POST', body: JSON.stringify({ nickname }) }),
+    deck: (code: string, token: string) => request<{ cards: MovieNightCard[] }>(`/api/v1/movie-night/${encodeURIComponent(code)}/deck`, { headers: bearer(token) }),
+    vote: (code: string, token: string, cardId: string, vote: MovieNightVote) => request<{ ok: true }>(`/api/v1/movie-night/${encodeURIComponent(code)}/votes/${encodeURIComponent(cardId)}`, { method: 'PUT', headers: bearer(token), body: JSON.stringify({ vote }) }),
+    undo: (code: string, token: string, cardId: string) => request<{ ok: true }>(`/api/v1/movie-night/${encodeURIComponent(code)}/votes/${encodeURIComponent(cardId)}`, { method: 'DELETE', headers: bearer(token) }),
+    leave: (code: string, participantId: string, token?: string) => request<{ ok: true }>(`/api/v1/movie-night/${encodeURIComponent(code)}/participants/${encodeURIComponent(participantId)}`, { method: 'DELETE', headers: bearer(token) }),
+    start: (code: string) => request<{ ok: true }>(`/api/v1/movie-night/${encodeURIComponent(code)}/start`, { method: 'POST' }),
+    dismiss: (code: string, cardId: string) => request<{ ok: true }>(`/api/v1/movie-night/${encodeURIComponent(code)}/dismiss/${encodeURIComponent(cardId)}`, { method: 'POST' }),
+    end: (code: string) => request<{ ok: true }>(`/api/v1/movie-night/${encodeURIComponent(code)}/end`, { method: 'POST' }),
+    leaders: (code: string) => request<{ entries: MovieNightLeader[] }>(`/api/v1/movie-night/${encodeURIComponent(code)}/leaders`),
+  },
 };
 
 export function imageVariant(url: string | undefined, options: { width?: number; height?: number; fit?: 'cover' | 'contain' | 'inside'; format?: 'webp' | 'avif' | 'jpeg'; quality?: number }): string | undefined {
