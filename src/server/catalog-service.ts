@@ -335,7 +335,7 @@ export class CatalogService {
     const empty: ShowAncestry = {};
     if (!item.parentId || (item.kind !== 'episode' && item.kind !== 'season')) return empty;
     const columns = { id: mediaItems.id, title: mediaItems.title, kind: mediaItems.kind, parentId: mediaItems.parentId, seasonNumber: mediaItems.seasonNumber, posterPath: mediaItems.posterPath, backdropPath: mediaItems.backdropPath };
-    type Row = Awaited<ReturnType<typeof this.database.select<typeof columns>>>[number];
+    type Row = Pick<typeof mediaItems.$inferSelect, keyof typeof columns>;
     const ref = (row: Row) => ({ id: row.id, title: row.title, kind: row.kind, seasonNumber: row.seasonNumber ?? undefined });
     // The nearer relative wins: a season's own art describes the episode better
     // than the series poster does.

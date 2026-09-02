@@ -7,6 +7,26 @@
       "runtimeArgs": ["run", "dev:web"],
       "port": 5173,
       "autoPort": true
+    },
+    {
+      "name": "dose-api-dev",
+      "runtimeExecutable": "pwsh",
+      "runtimeArgs": [
+        "-NoProfile",
+        "-Command",
+        "$env:NODE_ENV='development'; $env:PORT='3000'; $env:HOST='127.0.0.1'; $env:DATABASE_URL=\"pglite://$PWD/.dose/prod/database\"; $env:CONFIG_PATH=\"$PWD/.dose/config\"; $env:TRANSCODE_PATH=\"$PWD/.dose/prod/transcode\"; bun src/server/index.ts"
+      ],
+      "port": 3000
+    },
+    {
+      "name": "dose-prod",
+      "runtimeExecutable": "pwsh",
+      "runtimeArgs": [
+        "-NoProfile",
+        "-Command",
+        "$env:NODE_ENV='production'; $env:PORT='3001'; $env:HOST='127.0.0.1'; $env:DATABASE_URL=\"pglite://$PWD/.dose/prod/database\"; $env:CONFIG_PATH=\"$PWD/.dose/config\"; $env:TRANSCODE_PATH=\"$PWD/.dose/prod/transcode\"; bun src/server/index.ts"
+      ],
+      "port": 3001
     }
   ]
 }

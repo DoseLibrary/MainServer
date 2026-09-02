@@ -41,6 +41,13 @@ import { TautulliHistorySource } from './history-sources/tautulli.ts';
 import { HardwareAccelerator } from './hwaccel.ts';
 import { createSeerrPlugin } from './plugins/seerr.ts';
 
+/** Vite hashes everything under `assets/`, so a file never changes under the
+ * same name and can be cached for good; the entry HTML, manifest, and service
+ * worker keep their names and must be revalidated on every load. */
+export function staticCacheControl(filePath: string): string {
+  return /[\\/]assets[\\/]/.test(filePath) ? 'public, max-age=31536000, immutable' : 'public, max-age=0, must-revalidate';
+}
+
 export async function buildApp(config: AppConfig) {
   const app = Fastify({ logger: config.NODE_ENV !== 'test', trustProxy: config.TRUST_PROXY === true });
   const connection = createDatabase(config);
@@ -148,6 +155,7 @@ export async function buildApp(config: AppConfig) {
     await app.register(fastifyStatic, {
       root: resolve(fileURLToPath(new URL('.', import.meta.url)), '../../dist'),
       wildcard: false,
+      setHeaders: (reply, path) => { void reply.header('Cache-Control', staticCacheControl(path)); },
     });
 
     app.setNotFoundHandler((request, reply) => {

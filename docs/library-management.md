@@ -92,6 +92,12 @@ Because YouTube changes often, the plugin keeps `yt-dlp` fresh automatically:
   the trailer failed. `yt-dlp -U` only works for a standalone binary; a
   package-manager install cannot self-update, and that failure is ignored safely.
 
+Trailers only play when downloaded locally, and a large library rarely wants one per
+title. `storageLimitGb` (default 0 = unlimited) caps the disk space managed trailers
+may use. Titles are processed newest-added first, so the newest fill the budget and
+older ones stay metadata-only; lowering the cap later evicts trailers of the oldest
+titles until usage fits. The run summary reports `capped`, `evicted`, and usage.
+
 If `yt-dlp` is missing, the plugin degrades to metadata only (no crash) and the run
 summary says so.
 

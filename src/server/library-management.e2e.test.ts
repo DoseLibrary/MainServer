@@ -85,7 +85,7 @@ describe('library-management offline end-to-end', () => {
     // Trailer plugin downloads locally (mocked binary) and the catalog serves the file.
     const downloader: TrailerDownloader = { available: vi.fn(async () => true), download: vi.fn(async (_key, path) => { await writeFile(path, 'trailer'); }), update: vi.fn(async () => true) };
     const tmdb = { getVideos: vi.fn(async () => [trailerVideo]), find: vi.fn(async () => seriesMetadata), getById: vi.fn(async () => seriesMetadata) } as unknown as TmdbClient;
-    await createTrailerFetcherPlugin(database, tmdb, downloader, trailerRoot).run!({ settings: { languages: ['en'], includeClips: false, qualityCap: '1080', storageDir: 'trailers', autoUpdate: true, updateIntervalDays: 7 }, signal: new AbortController().signal });
+    await createTrailerFetcherPlugin(database, tmdb, downloader, trailerRoot).run!({ settings: { languages: ['en'], includeClips: false, qualityCap: '1080', storageDir: 'trailers', autoUpdate: true, updateIntervalDays: 7, storageLimitGb: 0 }, signal: new AbortController().signal });
     const trailer = await catalog.localTrailerSource(MOVIE);
     expect(trailer?.localPath).toBeTruthy();
 

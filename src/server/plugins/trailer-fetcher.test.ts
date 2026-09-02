@@ -18,13 +18,18 @@ async function fixture() {
   await client.query(`insert into libraries (id,name,kind,root_path) values ($1,'Movies','movies','/media')`, [library]);
   await client.query(`insert into media_items (id,library_id,kind,natural_key,title,sort_title,provider_ids) values ($1,$2,'movie','movie:test','Test','Test','{"tmdb":"42"}')`, [item, library]);
   const dir = await mkdtemp(join(tmpdir(), 'dose-trailer-')); cleanup.push(dir);
-  return { client, database: database as unknown as Database, item, dir };
+  return { client, database: database as unknown as Database, item, library, dir };
 }
+/** Adds a further movie to the fixture library, created `daysAgo` days before now. */
+async function addMovie(client: PGlite, library: string, id: string, daysAgo: number) {
+  await client.query(`insert into media_items (id,library_id,kind,natural_key,title,sort_title,provider_ids,created_at) values ($1,$2,'movie',$3,$3,$3,'{"tmdb":"42"}',now() - ($4 || ' days')::interval)`, [id, library, `movie:${id}`, String(daysAgo)]);
+}
+const bytes = (count: number) => count / 1024 ** 3;
 afterEach(async () => { await Promise.all(cleanup.splice(0).map((path) => rm(path, { recursive: true, force: true }))); });
 
 const video: TmdbVideo = { id: 'tmdb-video', key: 'youtube-key', site: 'YouTube', name: 'Trailer', type: 'Trailer', official: true, language: 'en' };
 const tmdbWith = (getVideos: ReturnType<typeof vi.fn>) => ({ getVideos } as unknown as TmdbClient);
-const settings = (storageDir = 'trailers') => ({ languages: ['en'], includeClips: false, qualityCap: '1080' as const, storageDir, autoUpdate: true, updateIntervalDays: 7 });
+const settings = (storageDir = 'trailers') => ({ languages: ['en'], includeClips: false, qualityCap: '1080' as const, storageDir, autoUpdate: true, updateIntervalDays: 7, storageLimitGb: 0 });
 
 describe('trailer fetcher', () => {
   it('deterministically prefers official YouTube trailers in preferred language', () => {
@@ -115,6 +120,43 @@ describe('trailer fetcher', () => {
     expect(update).not.toHaveBeenCalled(); expect(result?.summary).toContain('failed 1');
     expect((await client.query<{ status: string }>(`select status from media_trailers where preferred=true`)).rows[0]?.status).toBe('failed'); await client.close();
   }, 15_000);
+
+  it('fills the storage cap with the newest titles first and skips the rest', async () => {
+    const { client, database, item, library, dir } = await fixture();
+    const older = '20000000-0000-4000-8000-000000000002'; const oldest = '20000000-0000-4000-8000-000000000003';
+    await addMovie(client, library, older, 10); await addMovie(client, library, oldest, 20);
+    const downloader: TrailerDownloader = { available: vi.fn(async () => true), download: vi.fn(async (_key, path) => { await writeFile(path, 'trailer'); }) };
+    // Each fake trailer is 7 bytes; the cap fits exactly two of them.
+    const result = await createTrailerFetcherPlugin(database, tmdbWith(vi.fn(async () => [video])), downloader, dir).run!({ settings: { ...settings(), storageLimitGb: bytes(14) }, signal: new AbortController().signal });
+    expect(downloader.download).toHaveBeenCalledTimes(2);
+    const rows = (await client.query<{ media_item_id: string; status: string; local_path: string | null }>(`select media_item_id,status,local_path from media_trailers where preferred=true`)).rows;
+    const byItem = Object.fromEntries(rows.map((row) => [row.media_item_id, row]));
+    expect(byItem[item]?.status).toBe('ready'); expect(byItem[older]?.status).toBe('ready');
+    expect(byItem[oldest]).toMatchObject({ status: 'metadata', local_path: null });
+    expect(result?.summary).toContain('capped 1'); await client.close();
+  }, 15_000);
+
+  it('evicts the oldest titles when existing trailers exceed a lowered cap', async () => {
+    const { client, database, item, library, dir } = await fixture();
+    const older = '20000000-0000-4000-8000-000000000002'; const oldest = '20000000-0000-4000-8000-000000000003';
+    await addMovie(client, library, older, 10); await addMovie(client, library, oldest, 20);
+    const downloader: TrailerDownloader = { available: vi.fn(async () => true), download: vi.fn(async (_key, path) => { await writeFile(path, 'trailer'); }) };
+    const plugin = createTrailerFetcherPlugin(database, tmdbWith(vi.fn(async () => [video])), downloader, dir); const signal = new AbortController().signal;
+    await plugin.run!({ settings: settings(), signal });
+    const oldestPath = (await client.query<{ local_path: string }>(`select local_path from media_trailers where media_item_id=$1`, [oldest])).rows[0]!.local_path;
+    const result = await plugin.run!({ settings: { ...settings(), storageLimitGb: bytes(14) }, signal });
+    expect(downloader.download).toHaveBeenCalledTimes(3);
+    const rows = (await client.query<{ media_item_id: string; status: string; local_path: string | null }>(`select media_item_id,status,local_path from media_trailers where preferred=true`)).rows;
+    const byItem = Object.fromEntries(rows.map((row) => [row.media_item_id, row]));
+    expect(byItem[item]?.status).toBe('ready'); expect(byItem[older]?.status).toBe('ready');
+    expect(byItem[oldest]).toMatchObject({ status: 'metadata', local_path: null }); await expect(access(oldestPath)).rejects.toThrow();
+    expect(result?.summary).toContain('evicted 1'); await client.close();
+  }, 15_000);
+
+  it('defaults the storage limit to unlimited', () => {
+    expect(trailerFetcherSettingsSchema.parse({}).storageLimitGb).toBe(0);
+    expect(() => trailerFetcherSettingsSchema.parse({ storageLimitGb: -1 })).toThrow();
+  });
 
   it('accepts safe managed subdirectories and rejects absolute or escaping settings', async () => {
     expect(trailerFetcherSettingsSchema.parse({ storageDir: 'language/en' }).storageDir).toBe('language/en');

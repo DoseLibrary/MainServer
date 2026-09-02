@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull } from 'drizzle-orm';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { access, mkdir, rm, stat, writeFile } from 'node:fs/promises';
@@ -23,6 +23,9 @@ export const trailerFetcherSettingsSchema = z.object({
   // recover a failed download by self-updating before giving up.
   autoUpdate: z.boolean().default(true),
   updateIntervalDays: z.coerce.number().int().min(1).max(90).default(7),
+  // Large libraries rarely want a trailer per title. 0 means unlimited; above
+  // that, newest titles fill the budget and older ones go without.
+  storageLimitGb: z.coerce.number().min(0).default(0),
 });
 
 export interface TrailerDownloader {
@@ -60,6 +63,7 @@ export function createTrailerFetcherPlugin(database: Database, tmdb: TmdbClient,
         { value: '720', label: '720p' }, { value: '1080', label: '1080p' }, { value: '1440', label: '1440p' }, { value: '2160', label: '2160p' },
       ], group: 'Selection' },
       { kind: 'path', key: 'storageDir', label: 'Storage subdirectory', description: `Relative folder under managed trailer storage (default root: ${managedStorageRoot})`, required: true, group: 'Storage' },
+      { kind: 'number', key: 'storageLimitGb', label: 'Storage limit (GB)', description: 'Most disk space trailers may use; 0 means unlimited. Newest titles are downloaded first and older ones go without once the limit is reached.', min: 0, step: 1, group: 'Storage' },
       { kind: 'boolean', key: 'autoUpdate', label: 'Auto-update yt-dlp', description: 'Self-update yt-dlp on the cadence below and after a failed download.', group: 'Downloader' },
       { kind: 'number', key: 'updateIntervalDays', label: 'Update interval (days)', description: 'How often to refresh yt-dlp before a run (default 7).', min: 1, max: 90, group: 'Downloader' },
     ],
@@ -86,8 +90,10 @@ export function createTrailerFetcherPlugin(database: Database, tmdb: TmdbClient,
       };
       if (canDownload && parsedSettings.autoUpdate && downloader.update && await updateDue(updateSentinel, parsedSettings.updateIntervalDays)) await runUpdate();
       const items = await database.select({ id: mediaItems.id, kind: mediaItems.kind, providerIds: mediaItems.providerIds }).from(mediaItems)
-        .where(inArray(mediaItems.kind, ['movie', 'series'])).orderBy(asc(mediaItems.id));
-      let refreshed = 0; let skipped = 0; let trailers = 0; let downloaded = 0; let current = 0; let failed = 0;
+        .where(inArray(mediaItems.kind, ['movie', 'series'])).orderBy(desc(mediaItems.createdAt), desc(mediaItems.id));
+      const limitBytes = parsedSettings.storageLimitGb > 0 ? parsedSettings.storageLimitGb * 1024 ** 3 : Infinity;
+      let usage = limitBytes === Infinity ? 0 : await managedUsage(database, storageDir);
+      let refreshed = 0; let skipped = 0; let trailers = 0; let downloaded = 0; let current = 0; let failed = 0; let capped = 0;
       for (const item of items) {
         if (signal.aborted) throw signal.reason ?? new Error('Trailer fetch cancelled');
         const providerId = Number(item.providerIds.tmdb);
@@ -99,14 +105,16 @@ export function createTrailerFetcherPlugin(database: Database, tmdb: TmdbClient,
         const [existing] = preferred ? await database.select().from(mediaTrailers).where(and(eq(mediaTrailers.mediaItemId, item.id), eq(mediaTrailers.providerId, preferred.id))) : [];
         let localPath = existing?.localPath ?? null;
         let downloadedAt = existing?.downloadedAt ?? null;
-        let status = localPath ? existing?.status ?? 'ready' : canDownload && preferred ? 'pending' : 'metadata';
-        if (localPath) { try { await access(localPath); current++; } catch { localPath = null; downloadedAt = null; status = canDownload ? 'pending' : 'metadata'; } }
+        if (localPath) { try { await access(localPath); current++; } catch { localPath = null; downloadedAt = null; } }
+        const overBudget = !localPath && usage >= limitBytes;
+        const status = localPath ? existing?.status ?? 'ready' : canDownload && preferred && !overBudget ? 'pending' : 'metadata';
         await database.transaction(async (tx) => {
           await tx.delete(mediaTrailers).where(eq(mediaTrailers.mediaItemId, item.id));
           if (videos.length) await tx.insert(mediaTrailers).values(videos.map((video) => ({ mediaItemId: item.id, providerId: video.id, site: video.site, key: video.key, name: video.name, type: video.type, official: video.official, language: video.language, country: video.country, publishedAt: video.publishedAt, preferred: video.id === preferred?.id, ...(video.id === preferred?.id ? { localPath, downloadedAt, status } : {}) })));
         });
         if (!preferred) await removeManaged(previous?.localPath, storageDir);
-        if (canDownload && preferred && !localPath) {
+        if (canDownload && preferred && overBudget) capped++;
+        else if (canDownload && preferred && !localPath) {
           const providerSuffix = createHash('sha256').update(preferred.id).digest('hex').slice(0, 16);
           const destination = resolve(storageDir, `${item.id}-${providerSuffix}.mp4`);
           const attempt = async () => {
@@ -127,16 +135,42 @@ export function createTrailerFetcherPlugin(database: Database, tmdb: TmdbClient,
           if (ok) {
             await database.update(mediaTrailers).set({ localPath: destination, downloadedAt: new Date(), status: 'ready', updatedAt: new Date() }).where(and(eq(mediaTrailers.mediaItemId, item.id), eq(mediaTrailers.providerId, preferred.id)));
             if (previous?.localPath !== destination) await removeManaged(previous?.localPath, storageDir);
-            downloaded++;
+            downloaded++; usage += await fileSize(destination);
           } else {
             await database.update(mediaTrailers).set({ status: 'failed', updatedAt: new Date() }).where(and(eq(mediaTrailers.mediaItemId, item.id), eq(mediaTrailers.providerId, preferred.id))); failed++;
           }
         }
         refreshed++; trailers += videos.length;
       }
-      return { summary: `Refreshed ${refreshed} titles, stored ${trailers} trailers, downloaded ${downloaded}, current ${current}, failed ${failed}, skipped ${skipped} without TMDB IDs${canDownload ? '' : '; yt-dlp unavailable (metadata only)'}` };
+      // A lowered cap leaves more on disk than allowed: drop trailers of the
+      // oldest titles until the budget holds again.
+      let evicted = 0;
+      for (const item of [...items].reverse()) {
+        if (usage <= limitBytes) break;
+        if (signal.aborted) throw signal.reason ?? new Error('Trailer fetch cancelled');
+        const [row] = await database.select({ id: mediaTrailers.id, localPath: mediaTrailers.localPath }).from(mediaTrailers)
+          .where(and(eq(mediaTrailers.mediaItemId, item.id), eq(mediaTrailers.preferred, true), isNotNull(mediaTrailers.localPath))).limit(1);
+        if (!row?.localPath || !managedTrailerDirectory(storageDir, row.localPath)) continue;
+        const size = await fileSize(row.localPath);
+        await removeManaged(row.localPath, storageDir);
+        await database.update(mediaTrailers).set({ localPath: null, downloadedAt: null, status: 'metadata', updatedAt: new Date() }).where(eq(mediaTrailers.id, row.id));
+        usage -= size; evicted++;
+      }
+      const budget = limitBytes === Infinity ? '' : `, capped ${capped}, evicted ${evicted}, using ${gigabytes(usage)} of ${parsedSettings.storageLimitGb} GB`;
+      return { summary: `Refreshed ${refreshed} titles, stored ${trailers} trailers, downloaded ${downloaded}, current ${current}, failed ${failed}, skipped ${skipped} without TMDB IDs${budget}${canDownload ? '' : '; yt-dlp unavailable (metadata only)'}` };
     },
   };
+}
+
+async function fileSize(path: string) { try { return (await stat(path)).size; } catch { return 0; } }
+const gigabytes = (bytes: number) => (bytes / 1024 ** 3).toFixed(2);
+
+/** Bytes already held by managed trailer files inside `storageDir`. */
+async function managedUsage(database: Database, storageDir: string) {
+  const rows = await database.select({ localPath: mediaTrailers.localPath }).from(mediaTrailers).where(isNotNull(mediaTrailers.localPath));
+  let total = 0;
+  for (const row of rows) if (row.localPath && managedTrailerDirectory(storageDir, row.localPath)) total += await fileSize(row.localPath);
+  return total;
 }
 
 async function updateDue(sentinelPath: string, intervalDays: number) {
