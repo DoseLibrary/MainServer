@@ -176,6 +176,10 @@ export function registerMovieNightRoutes(app: FastifyInstance, auth: AuthService
       const params = codeParams.safeParse(request.params);
       if (!params.success) { socket.close(4404, 'Unknown movie night'); return; }
       const code = normalizeCode(params.data.code);
+      // Session existence is resolved before any auth check, so the close code
+      // always reflects whether the code exists rather than which credential
+      // (if any) the caller happened to present.
+      if (!service.has(code)) { socket.close(4404, 'Unknown movie night'); return; }
       try {
         const user = await auth.authenticate(cookieOf(request));
         if (user && service.isHost(code, user.id)) { hub.add(code, socket as unknown as RealtimeSocket, 'host'); return; }
@@ -183,8 +187,8 @@ export function registerMovieNightRoutes(app: FastifyInstance, auth: AuthService
         if (!token) { socket.close(4401, 'Authentication required'); return; }
         service.authenticateParticipant(code, token);
         hub.add(code, socket as unknown as RealtimeSocket, 'participant');
-      } catch (error) {
-        socket.close(error instanceof MovieNightError && error.reason === 'not_found' ? 4404 : 4401, 'Not allowed');
+      } catch {
+        socket.close(4401, 'Not allowed');
       }
     })();
   });

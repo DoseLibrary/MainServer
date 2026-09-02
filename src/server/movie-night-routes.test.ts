@@ -1,6 +1,7 @@
 import cookie from '@fastify/cookie';
 import websocket from '@fastify/websocket';
 import Fastify from 'fastify';
+import WebSocketClient from 'ws';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AuthService } from './auth-service.ts';
 import type { CatalogService, MovieCard } from './catalog-service.ts';
@@ -97,5 +98,21 @@ describe('movie night routes', () => {
     expect((await app.inject({ method: 'GET', url: `/api/v1/movie-night/${code}`, headers: hostHeaders })).json().state.participants).toEqual([]);
     expect((await app.inject({ method: 'POST', url: `/api/v1/movie-night/${code}/end`, headers: hostHeaders })).statusCode).toBe(200);
     expect((await app.inject({ method: 'GET', url: `/api/v1/movie-night/${code}`, headers: hostHeaders })).statusCode).toBe(404);
+  });
+
+  it('closes the socket 4404 for an unknown code and 4401 for any auth failure', async () => {
+    const built = await appWith(); app = built.app;
+    const { code } = (await app.inject({ method: 'POST', url: '/api/v1/movie-night', headers: hostHeaders, payload: {} })).json();
+    const address = (await app.listen({ port: 0, host: '127.0.0.1' })).replace('http', 'ws');
+
+    const closeCode = (url: string) => new Promise<number>((resolve, reject) => {
+      const client = new WebSocketClient(url);
+      client.on('close', (value) => resolve(value));
+      client.on('error', () => reject(new Error('socket error')));
+    });
+
+    await expect(closeCode(`${address}/api/v1/movie-night/ZZZZ-ZZZZ/socket`)).resolves.toBe(4404);
+    await expect(closeCode(`${address}/api/v1/movie-night/${code}/socket`)).resolves.toBe(4401);
+    await expect(closeCode(`${address}/api/v1/movie-night/${code}/socket?token=bogus`)).resolves.toBe(4401);
   });
 });

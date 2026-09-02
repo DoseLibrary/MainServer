@@ -73,6 +73,14 @@ describe('MovieNightService sessions', () => {
     const { code } = await service.create(host, {});
     expect(service.state(code.toLowerCase().replace('-', '')).code).toBe(code);
   });
+
+  it('has() reports existence without throwing, tolerant of dash-less or lower-case form', async () => {
+    const { service } = build();
+    const { code } = await service.create(host, {});
+    expect(service.has(code)).toBe(true);
+    expect(service.has(code.toLowerCase().replace('-', ''))).toBe(true);
+    expect(service.has('ZZZZ-ZZZZ')).toBe(false);
+  });
 });
 
 describe('MovieNightService voting and matching', () => {

@@ -128,6 +128,11 @@ export class MovieNightService {
     return this.get(code).hostUserId === userId;
   }
 
+  /** Cheap existence check that never throws, for callers that must branch before any auth check. */
+  has(code: string): boolean {
+    return this.sessions.has(normalizeCode(code));
+  }
+
   state(code: string, participantId?: string): PublicState {
     const session = this.get(code);
     const state: PublicState = {
