@@ -10,21 +10,16 @@ const MAX_ROTATION = 18;
 const THRESHOLD_RATIO = 0.35;
 const VELOCITY_THRESHOLD = 0.5; // px per ms
 const FLY_DISTANCE = 3; // × card width
-// pointermove fires far more often than the display refreshes, and under
-// test/CI dispatch (or a machine briefly stalling under load) two events can
-// land anywhere from ~0ms to tens of ms apart with no relation to a real
-// per-frame gap; a short travel (a handful of px, as one drag step normally
-// is) divided by a short-but-nonzero interval still reads as an implausible
-// velocity, so intervals below this floor are dropped as dispatch jitter
-// rather than treated as real finger motion.
-const MIN_SAMPLE_DT_MS = 50;
-// No deliberate flick — real or synthetic — completes faster than this; used
-// as a floor on the down-to-up elapsed time so a near-instant test dispatch
-// (or a slow CI machine briefly stalling between events) can't read back as
-// an implausibly high velocity. Kept well clear of VELOCITY_THRESHOLD's
-// break-even point for a modest drag (e.g. 60px / 300ms = 0.2 px/ms, safely
-// under 0.5) so ordinary scheduling jitter can't flip the outcome.
-const MIN_FLICK_DURATION_MS = 300;
+// A rolling window of recent pointer positions, so velocity reflects the
+// finger's most recent motion rather than the whole gesture (a slow drag
+// that ends in a fast flick should register as a flick).
+interface Sample { t: number; x: number }
+const MAX_SAMPLES = 8;
+const VELOCITY_WINDOW_MS = 100;
+// Below this span the two samples are too close together in time for their
+// distance to be a meaningful rate — treat velocity as unknown (0) rather
+// than let a near-zero denominator blow it up.
+const MIN_VELOCITY_SPAN_MS = 16;
 // A velocity reading only overrides the distance threshold once the finger
 // has actually travelled a meaningful distance — otherwise a trivial jitter
 // with a fast instantaneous delta could count as a flick.
@@ -49,7 +44,7 @@ interface Props {
  */
 export const SwipeCard = forwardRef<SwipeCardHandle, Props>(function SwipeCard({ card, onSwipe, interactive = true, depth = 0, entering }, ref) {
   const el = useRef<HTMLDivElement>(null);
-  const drag = useRef<{ startX: number; startY: number; downTime: number; lastX: number; lastT: number; velocity: number } | null>(null);
+  const drag = useRef<{ startX: number; startY: number; samples: Sample[] } | null>(null);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);
   const [leaving, setLeaving] = useState<SwipeDirection | null>(null);
@@ -76,21 +71,21 @@ export const SwipeCard = forwardRef<SwipeCardHandle, Props>(function SwipeCard({
   }
   useImperativeHandle(ref, () => ({ fly }));
 
+  function pushSample(d: { samples: Sample[] }, x: number) {
+    d.samples.push({ t: performance.now(), x });
+    if (d.samples.length > MAX_SAMPLES) d.samples.shift();
+  }
+
   function onPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
     if (!interactive || leaving || !event.isPrimary) return;
-    const now = performance.now();
-    drag.current = { startX: event.clientX, startY: event.clientY, downTime: now, lastX: event.clientX, lastT: now, velocity: 0 };
+    drag.current = { startX: event.clientX, startY: event.clientY, samples: [] };
+    pushSample(drag.current, event.clientX);
     el.current?.setPointerCapture?.(event.pointerId);
     setDragging(true);
   }
   function onPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
     const d = drag.current; if (!d) return;
-    const now = performance.now();
-    const dt = now - d.lastT;
-    if (dt >= MIN_SAMPLE_DT_MS) {
-      d.velocity = (event.clientX - d.lastX) / dt;
-      d.lastX = event.clientX; d.lastT = now;
-    }
+    pushSample(d, event.clientX);
     setOffset({ x: event.clientX - d.startX, y: (event.clientY - d.startY) * 0.4 });
   }
   function onPointerUp(event: ReactPointerEvent<HTMLDivElement>) {
@@ -98,21 +93,21 @@ export const SwipeCard = forwardRef<SwipeCardHandle, Props>(function SwipeCard({
     drag.current = null;
     el.current?.releasePointerCapture?.(event.pointerId);
     const dx = event.clientX - d.startX;
-    // A per-sample velocity can read 0 when the whole flick lands inside one
-    // frame (or one synchronous test dispatch); fall back to the average
-    // velocity across the whole gesture so a fast, short flick still counts.
-    // The elapsed time is floored so a near-instant dispatch can't read back
-    // as an implausible velocity, and the fallback only applies once the
-    // finger has moved a real distance.
-    const elapsed = Math.max(MIN_FLICK_DURATION_MS, performance.now() - d.downTime);
-    const overallVelocity = Math.abs(dx) / elapsed;
-    // Below the minimum travel, velocity never overrides the distance
-    // threshold — not even the raw per-sample reading — so a trivial jitter
-    // can't count as a flick.
-    const velocity = Math.abs(dx) >= MIN_VELOCITY_TRAVEL_PX ? Math.max(Math.abs(d.velocity), overallVelocity) : 0;
-    const past = Math.abs(dx) > width() * THRESHOLD_RATIO || velocity > VELOCITY_THRESHOLD;
-    if (past) fly(dx > 0 || (Math.abs(dx) <= width() * THRESHOLD_RATIO && d.velocity > 0) ? 'right' : 'left');
-    else { setDragging(false); setOffset({ x: 0, y: 0 }); }
+    // Velocity comes from the most recent samples only (the last
+    // VELOCITY_WINDOW_MS of motion), so a drag that slows to a stop after an
+    // earlier fast stretch doesn't still read as fast.
+    const newest = d.samples[d.samples.length - 1];
+    const windowStart = newest.t - VELOCITY_WINDOW_MS;
+    const windowed = d.samples.filter((s) => s.t >= windowStart);
+    const oldest = windowed[0];
+    const span = newest.t - oldest.t;
+    const velocity = span >= MIN_VELOCITY_SPAN_MS ? Math.abs(newest.x - oldest.x) / span : 0;
+    const velocityPast = Math.abs(dx) >= MIN_VELOCITY_TRAVEL_PX && velocity > VELOCITY_THRESHOLD;
+    const past = Math.abs(dx) > width() * THRESHOLD_RATIO || velocityPast;
+    if (past) {
+      const direction = velocityPast ? (newest.x - oldest.x > 0 ? 'right' : 'left') : (dx > 0 ? 'right' : 'left');
+      fly(direction);
+    } else { setDragging(false); setOffset({ x: 0, y: 0 }); }
   }
   function onPointerCancel(event: ReactPointerEvent<HTMLDivElement>) {
     const d = drag.current; if (!d) return;
@@ -150,12 +145,13 @@ export const SwipeCard = forwardRef<SwipeCardHandle, Props>(function SwipeCard({
   const progress = Math.min(1, Math.abs(offset.x) / (width() * THRESHOLD_RATIO));
   const stackTransform = depth === 0 ? '' : ` scale(${1 - depth * 0.05}) translateY(${depth * 12}px)`;
   const transform = `translate3d(${offset.x}px, ${offset.y}px, 0) rotate(${rotation}deg)${stackTransform}`;
-  // Reduced motion replaces motion with an instant cut: no transform
-  // transition at all (the offset jumps straight to the fly-out position),
-  // and the opacity style below (already 0 while leaving) has nothing to
-  // transition either, so no transitionend ever fires for this path.
+  // Reduced motion replaces motion with a fade: the offset still jumps
+  // straight to the fly-out position (no transform transition), but opacity
+  // still transitions to 0 so the card doesn't just vanish. The `fired`
+  // guard above covers the resulting transitionend so onSwipe still fires
+  // only once.
   const transition = dragging ? 'none'
-    : leaving ? (reducedMotion() ? 'none' : 'transform 350ms cubic-bezier(.2,.8,.2,1), opacity 350ms')
+    : leaving ? (reducedMotion() ? 'opacity 350ms' : 'transform 350ms cubic-bezier(.2,.8,.2,1), opacity 350ms')
       : entering && !entered && !readyToSlide ? 'none'
         : 'transform 300ms cubic-bezier(.34,1.56,.64,1)';
 
