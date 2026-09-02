@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, ilike, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, getTableName, ilike, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import type { Database } from './db/client.ts';
 import { castCredits, collectionExpectedMembers, collectionMembers, collections, genres, libraries, mediaFiles, mediaItemGenres, mediaItems, mediaIntroMarkers, mediaPreviewSprites, mediaSubtitles, mediaTechnicalProfiles, mediaTrailers, people, playbackProgress, recommendationEdges, watchlistEntries } from './db/schema.ts';
@@ -109,6 +109,17 @@ export class CatalogService {
   }
 
 
+  /** EXISTS clause matching a top-level item tagged with the given genre (by name or normalized name). */
+  private genreClause(genre: string) {
+    const normalized = genre.trim().toLowerCase();
+    return sql`exists (
+      select 1 from ${mediaItemGenres}
+      inner join ${genres} on ${genres.id} = ${mediaItemGenres.genreId}
+      where ${mediaItemGenres.mediaItemId} = ${mediaItems.id}
+        and (lower(${genres.name}) = ${normalized} or ${genres.normalizedName} = ${normalized})
+    )`;
+  }
+
   /** Pick one uniformly random member-visible top-level title matching every filter. */
   async randomItem(filters: RandomItemFilters = {}) {
     const clauses = [
@@ -121,15 +132,7 @@ export class CatalogService {
     if (filters.yearMin != null) clauses.push(sql`${mediaItems.year} >= ${filters.yearMin}`);
     if (filters.yearMax != null) clauses.push(sql`${mediaItems.year} <= ${filters.yearMax}`);
     if (filters.ratingMin != null) clauses.push(sql`${mediaItems.providerRating} >= ${filters.ratingMin}`);
-    if (filters.genre) {
-      const genre = filters.genre.trim().toLowerCase();
-      clauses.push(sql`exists (
-        select 1 from ${mediaItemGenres}
-        inner join ${genres} on ${genres.id} = ${mediaItemGenres.genreId}
-        where ${mediaItemGenres.mediaItemId} = ${mediaItems.id}
-          and (lower(${genres.name}) = ${genre} or ${genres.normalizedName} = ${genre})
-      )`);
-    }
+    if (filters.genre) clauses.push(this.genreClause(filters.genre));
     const [item] = await this.database.select({
       id: mediaItems.id, title: mediaItems.title, userTitle: mediaItems.userTitle,
       year: mediaItems.year, userYear: mediaItems.userYear, kind: mediaItems.kind,
@@ -157,15 +160,7 @@ export class CatalogService {
     if (filters.yearMin != null) clauses.push(sql`${mediaItems.year} >= ${filters.yearMin}`);
     if (filters.yearMax != null) clauses.push(sql`${mediaItems.year} <= ${filters.yearMax}`);
     if (filters.ratingMin != null) clauses.push(sql`${mediaItems.providerRating} >= ${filters.ratingMin}`);
-    if (filters.genre) {
-      const genre = filters.genre.trim().toLowerCase();
-      clauses.push(sql`exists (
-        select 1 from ${mediaItemGenres}
-        inner join ${genres} on ${genres.id} = ${mediaItemGenres.genreId}
-        where ${mediaItemGenres.mediaItemId} = ${mediaItems.id}
-          and (lower(${genres.name}) = ${genre} or ${genres.normalizedName} = ${genre})
-      )`);
-    }
+    if (filters.genre) clauses.push(this.genreClause(filters.genre));
     if (filters.unwatchedOnly && viewerId) {
       clauses.push(sql`not exists (
         select 1 from ${playbackProgress}
@@ -179,10 +174,13 @@ export class CatalogService {
 
   /** Every movie the viewer may see that matches the filters, as deck cards. Unshuffled; capped. */
   async listMovieCards(filters: MovieDeckFilters, viewerId?: string): Promise<MovieCard[]> {
-    // The outer table's id is written literally rather than via `${mediaItems.id}`:
-    // drizzle renders a single-table query's own columns unqualified, which would
-    // otherwise collide with media_files' own `id` column inside this subquery.
-    const runtime = sql<number | null>`(select max(${mediaFiles.durationSeconds}) from ${mediaFiles} where ${mediaFiles.mediaItemId} = "media_items"."id")`;
+    // The outer table's id is qualified via sql.identifier rather than interpolating
+    // `${mediaItems.id}` directly: drizzle renders a single-table query's own columns
+    // unqualified, which would otherwise collide with media_files' own `id` column
+    // inside this subquery. Deriving the identifier from the schema (table name +
+    // column name) keeps this correct if either table is ever renamed.
+    const mediaItemsId = sql`${sql.identifier(getTableName(mediaItems))}.${sql.identifier(mediaItems.id.name)}`;
+    const runtime = sql<number | null>`(select max(${mediaFiles.durationSeconds}) from ${mediaFiles} where ${mediaFiles.mediaItemId} = ${mediaItemsId})`;
     const rows = await this.database.select({
       id: mediaItems.id, title: mediaItems.title, userTitle: mediaItems.userTitle,
       year: mediaItems.year, userYear: mediaItems.userYear,
