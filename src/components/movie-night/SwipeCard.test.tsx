@@ -68,4 +68,42 @@ describe('SwipeCard', () => {
     fireEvent.transitionEnd(el);
     expect(onSwipe).toHaveBeenCalledWith('up');
   });
+
+  it('fires onSwipe exactly once under reduced motion, even if a transitionend follows', () => {
+    const originalMatchMedia = window.matchMedia;
+    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+      matches: query === '(prefers-reduced-motion: reduce)',
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })) as unknown as typeof window.matchMedia;
+    try {
+      const onSwipe = vi.fn();
+      const ref = createRef<SwipeCardHandle>();
+      render(<SwipeCard ref={ref} card={card} onSwipe={onSwipe} />);
+      act(() => ref.current?.fly('right'));
+      expect(onSwipe).toHaveBeenCalledTimes(1);
+      expect(onSwipe).toHaveBeenCalledWith('right');
+      const el = screen.getByTestId('swipe-card');
+      fireEvent.transitionEnd(el);
+      expect(onSwipe).toHaveBeenCalledTimes(1);
+    } finally {
+      window.matchMedia = originalMatchMedia;
+    }
+  });
+
+  it('springs back on pointer cancel even past the threshold', () => {
+    const onSwipe = vi.fn();
+    render(<SwipeCard card={card} onSwipe={onSwipe} />);
+    const el = screen.getByTestId('swipe-card');
+    drag(el, -150);
+    fireEvent.pointerCancel(el, { pointerId: 1, clientX: 50, clientY: 300 });
+    expect(el.style.transform).toMatch(/translate3d\(0px, 0px, 0\) rotate\(0deg\)/);
+    expect(el.dataset.leaving).toBeUndefined();
+    expect(onSwipe).not.toHaveBeenCalled();
+  });
 });
