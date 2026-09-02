@@ -135,6 +135,12 @@
   .page-enter { animation: none; }
 }
 
+/* The match card scales in from below full size as the overlay opens. */
+@keyframes zoomIn {
+  from { transform: scale(0.6); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
 /* A ring after a mouse click is noise: the viewer knows what they clicked.
    Keyboard focus still shows a ring, since :focus-visible stays untouched. */
 :focus:not(:focus-visible) {
