@@ -40,6 +40,24 @@ const findLastSeasonFolderIndex = (parts: string[]) => {
   return -1;
 };
 
+/**
+ * Folder-name decoration that identifies the same show twice: a disambiguating
+ * year (`The Flash (2014)`, `The Flash 2014`) or a provider id tag Sonarr-style
+ * layouts append (`The Flash {tvdb-279121}`). Stripping it keeps one series row
+ * per show, so seasons from both spellings land together.
+ */
+const SERIES_ID_TAG = /[{[(](?:tmdb|tvdb|imdb|anidb|tvmaze)[-=][^)\]}]*[)\]}]/giu;
+const SERIES_YEAR = /[\s._-]*[[(]?(?:19|20)\d{2}[)\]]?$/u;
+
+/** Collapse a series folder/name to the identity shared by its spellings. */
+const normalizeSeriesTitle = (value: string) => {
+  const cleaned = cleanTitle(cleanTitle(value).replace(SERIES_ID_TAG, ' '));
+  // Only strip a trailing year when a title survives it: a show really named
+  // `1923` or `2012` must keep its digits.
+  const stripped = cleanTitle(cleaned.replace(SERIES_YEAR, ''));
+  return stripped || cleaned;
+};
+
 const validEpisodeNumbers = (season: number, episode: number) => Number.isInteger(season) && season >= 0 && Number.isInteger(episode) && episode > 0;
 
 /**
@@ -50,6 +68,13 @@ const validEpisodeNumbers = (season: number, episode: number) => Number.isIntege
  */
 const EXTRAS_TOKENS = 'trailer|teaser|sample|clip|featurette|interview|short|other|extra|bonus|blooper|outtake|gag[ ._-]?reel|making[ ._-]?of|deleted([ ._-]?scene)?|behind[ ._-]?the[ ._-]?scenes';
 const EXTRAS_SUFFIX = new RegExp(`(?:^|[._-])(?:${EXTRAS_TOKENS})s?$`, 'iu');
+/**
+ * A `trailer` token anywhere in the name, not only as a suffix: downloaders leave
+ * names like `Movie.2020.trailer.1080p.mkv`. The token is never matched at the
+ * start of the stem, so a real title that opens with the word (`Trailer Park
+ * Boys (2001)`) is still imported.
+ */
+const TRAILER_ANYWHERE = /(?!^)(?:^|[\s._-])trailers?(?=$|[\s._-])/iu;
 const EXTRAS_FOLDER = new RegExp(`^(?:${EXTRAS_TOKENS}|extras|trailers|featurettes|interviews|scenes|shorts|others|deleted[ ._-]?scenes|samples)$`, 'iu');
 
 /** True when a path is bonus material rather than a title of its own. */
@@ -57,7 +82,8 @@ export function isExtrasPath(relativePath: string): boolean {
   if (typeof relativePath !== 'string' || relativePath.trim() === '') return false;
   const path = normalize(relativePath);
   const parts = pathParts(path);
-  return EXTRAS_SUFFIX.test(basename(path, extname(path))) || parts.slice(0, -1).some((part) => EXTRAS_FOLDER.test(part));
+  const stem = basename(path, extname(path));
+  return EXTRAS_SUFFIX.test(stem) || TRAILER_ANYWHERE.test(stem) || parts.slice(0, -1).some((part) => EXTRAS_FOLDER.test(part));
 }
 
 export function parseMediaPath(relativePath: string, kind: 'movies' | 'shows'): ParsedMedia | null {
@@ -119,7 +145,7 @@ export function parseMediaPath(relativePath: string, kind: 'movies' | 'shows'): 
 
     const seasonFolderIndex = findLastSeasonFolderIndex(parentParts);
     const folderSeries = seasonFolderIndex > 0 ? parentParts[seasonFolderIndex - 1] : parentParts[parentParts.length - 1];
-    const series = cleanTitle(seriesSource || folderSeries || 'Unknown Series');
+    const series = normalizeSeriesTitle(seriesSource || folderSeries || 'Unknown Series');
     if (!series) return null;
     const title = removeReleaseNoise(episodeTitle) || `Episode ${episode}`;
     return { type: 'episode', series, season, episode, title, key: `episode:${normalizeKeyPart(series)}:${season}:${episode}` };

@@ -3,7 +3,7 @@ import { drizzle } from 'drizzle-orm/pglite';
 import { migrate } from 'drizzle-orm/pglite/migrator';
 import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { EnrichmentService } from './enrichment.ts';
+import { EnrichmentService, ENRICHMENT_VERSION } from './enrichment.ts';
 import type { Database } from './db/client.ts';
 import type { ImageStore } from './images.ts';
 import { PluginEventBus } from './plugins/events.ts';
@@ -54,7 +54,7 @@ describe('EnrichmentService', () => {
       `select overview, tagline, provider_rating, content_rating, enrichment_version, original_title from media_items where id = $1`, [MOVIE])).rows[0];
     expect(item).toMatchObject({ overview: 'A film', tagline: 'Tagline', content_rating: 'PG-13', original_title: 'Uno' });
     expect(Number(item?.provider_rating)).toBeCloseTo(7.5);
-    expect(item?.enrichment_version).toBe(1);
+    expect(item?.enrichment_version).toBe(ENRICHMENT_VERSION);
 
     expect(await count('media_item_genres', 'media_item_id = $1', [MOVIE])).toBe(2);
     expect(await count('cast_credits', 'media_item_id = $1', [MOVIE])).toBe(2);

@@ -2,9 +2,9 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readdir, stat } from 'node:fs/promises';
 import { join, relative, sep } from 'node:path';
-import { and, desc, eq, inArray, isNull, lt, ne, or } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, isNull, lt, ne, or, sql } from 'drizzle-orm';
 import type { Database } from './db/client.ts';
-import { libraries, mediaFiles, mediaItems, mediaTechnicalProfiles, scanRuns } from './db/schema.ts';
+import { libraries, mediaFiles, mediaItems, mediaTechnicalProfiles, playbackProgress, scanRuns } from './db/schema.ts';
 import { deriveTechnicalProfile, type Probe } from './media-profile.ts';
 import type { AppConfig } from './config.ts';
 import { Semaphore } from './concurrency.ts';
@@ -73,6 +73,9 @@ export class ScanCoordinator {
       try { await this.enrichment.enrich(libraryId, item.id, item.kind === 'series' ? 'series' : 'movie', item.title, item.year ?? undefined, Number.isFinite(providerId) && providerId > 0 ? providerId : undefined); refreshed += 1; }
       catch { failed += 1; }
     }
+    // A refresh can be the first time two folder spellings both carry a provider
+    // id, so the same collapse a scan does applies here.
+    if (library.kind === 'shows') await this.mergeSeriesByProvider(libraryId);
     return { libraryId, refreshed, failed };
   }
   private async run(scanId: string, library: typeof libraries.$inferSelect) {
@@ -94,6 +97,9 @@ export class ScanCoordinator {
         sinceFlush++; if (sinceFlush >= 25) { sinceFlush = 0; await this.database.update(scanRuns).set({ processedFiles: processed, failedFiles: failed, heartbeatAt: new Date() }).where(eq(scanRuns.id, scanId)); }
       } };
       await Promise.all(Array.from({ length: Math.min(this.config.SCAN_INGEST_CONCURRENCY ?? 8, paths.length) }, worker));
+      // Collapse shows that two folder spellings created before availability is
+      // resolved, so the sweep below sees one series with all of its episodes.
+      if (library.kind === 'shows') await this.mergeSeriesByProvider(library.id);
       await this.cacheLibraryArtwork(library.id);
       await this.database.update(mediaFiles).set({ available: false, updatedAt: new Date() }).where(missingFilePredicate(library.id, scanId));
       const leaves = await this.database.select({ id: mediaItems.id })
@@ -184,6 +190,79 @@ export class ScanCoordinator {
     }
   }
   private async upsertItem(libraryId: string, naturalKey: string, values: Omit<typeof mediaItems.$inferInsert, 'libraryId' | 'naturalKey'>) {
-    const [item] = await this.database.insert(mediaItems).values({ libraryId, naturalKey, ...values, available: true, archivedAt: null }).onConflictDoUpdate({ target: [mediaItems.libraryId, mediaItems.naturalKey], set: { ...values, available: true, archivedAt: null, updatedAt: new Date() } }).returning(); return item;
+    // A filename only names a title until the provider does. Once an item is
+    // enriched, a rescan must not push the parsed name back over the TMDB one --
+    // that is what made episodes read as `S01E04` instead of their real titles.
+    const keepEnriched = (column: typeof mediaItems.title | typeof mediaItems.sortTitle | typeof mediaItems.year, incoming: string) =>
+      sql`case when ${mediaItems.metadataSource} = 'tmdb' then ${column} else excluded.${sql.raw(incoming)} end`;
+    const [item] = await this.database.insert(mediaItems).values({ libraryId, naturalKey, ...values, available: true, archivedAt: null })
+      .onConflictDoUpdate({ target: [mediaItems.libraryId, mediaItems.naturalKey], set: {
+        ...values,
+        title: keepEnriched(mediaItems.title, 'title'),
+        sortTitle: keepEnriched(mediaItems.sortTitle, 'sort_title'),
+        year: keepEnriched(mediaItems.year, 'year'),
+        available: true, archivedAt: null, updatedAt: new Date(),
+      } }).returning(); return item;
+  }
+
+  /**
+   * Two folders can name the same show (`The Handmaid's Tale` and
+   * `The Handmaids Tale (2017)`), so filename parsing alone cannot always
+   * collapse them. Once enrichment has resolved a provider id, that id is the
+   * real identity: series sharing one TMDB id become one series, their seasons
+   * merge by season number and their episodes by episode number. Runs after
+   * ingestion so no worker is writing into a series while it is being merged.
+   */
+  private async mergeSeriesByProvider(libraryId: string) {
+    const tmdbId = sql<string>`${mediaItems.providerIds}->>'tmdb'`;
+    const series = await this.database.select({ id: mediaItems.id, tmdb: tmdbId, createdAt: mediaItems.createdAt })
+      .from(mediaItems).where(and(eq(mediaItems.libraryId, libraryId), eq(mediaItems.kind, 'series'), isNotNull(tmdbId)))
+      .orderBy(mediaItems.createdAt);
+    const byProvider = new Map<string, string[]>();
+    for (const row of series) {
+      if (!row.tmdb) continue;
+      const group = byProvider.get(row.tmdb); if (group) group.push(row.id); else byProvider.set(row.tmdb, [row.id]);
+    }
+    for (const ids of byProvider.values()) {
+      // The oldest row wins: it is the one existing history and collections point at.
+      const [canonical, ...duplicates] = ids;
+      for (const duplicate of duplicates) {
+        // One transaction per duplicate: a provider hiccup elsewhere never leaves
+        // half a show reparented.
+        await this.database.transaction(async (tx) => {
+          const canonicalSeasons = await tx.select({ id: mediaItems.id, seasonNumber: mediaItems.seasonNumber }).from(mediaItems)
+            .where(and(eq(mediaItems.parentId, canonical), eq(mediaItems.kind, 'season')));
+          const seasonByNumber = new Map(canonicalSeasons.map((season) => [season.seasonNumber, season.id]));
+          const duplicateSeasons = await tx.select({ id: mediaItems.id, seasonNumber: mediaItems.seasonNumber }).from(mediaItems)
+            .where(and(eq(mediaItems.parentId, duplicate), eq(mediaItems.kind, 'season')));
+          for (const season of duplicateSeasons) {
+            const target = seasonByNumber.get(season.seasonNumber);
+            if (!target) { await tx.update(mediaItems).set({ parentId: canonical, updatedAt: new Date() }).where(eq(mediaItems.id, season.id)); continue; }
+            const canonicalEpisodes = await tx.select({ id: mediaItems.id, episodeNumber: mediaItems.episodeNumber }).from(mediaItems)
+              .where(and(eq(mediaItems.parentId, target), eq(mediaItems.kind, 'episode')));
+            const episodeByNumber = new Map(canonicalEpisodes.map((episode) => [episode.episodeNumber, episode.id]));
+            const duplicateEpisodes = await tx.select({ id: mediaItems.id, episodeNumber: mediaItems.episodeNumber }).from(mediaItems)
+              .where(and(eq(mediaItems.parentId, season.id), eq(mediaItems.kind, 'episode')));
+            for (const episode of duplicateEpisodes) {
+              const targetEpisode = episodeByNumber.get(episode.episodeNumber);
+              if (!targetEpisode) { await tx.update(mediaItems).set({ parentId: target, updatedAt: new Date() }).where(eq(mediaItems.id, episode.id)); continue; }
+              // The same episode from two folders: both files play the one episode.
+              await tx.update(mediaFiles).set({ mediaItemId: targetEpisode, updatedAt: new Date() }).where(eq(mediaFiles.mediaItemId, episode.id));
+              // Watch state follows the episode rather than dying with the row it was recorded against.
+              await tx.execute(sql`
+                update ${playbackProgress} set media_item_id = ${targetEpisode}
+                where media_item_id = ${episode.id}
+                  and user_id not in (select user_id from ${playbackProgress} where media_item_id = ${targetEpisode})
+              `);
+              await tx.delete(mediaItems).where(eq(mediaItems.id, episode.id));
+            }
+            await tx.delete(mediaItems).where(eq(mediaItems.id, season.id));
+          }
+          // Any file hung directly off the duplicate series follows it too.
+          await tx.update(mediaFiles).set({ mediaItemId: canonical, updatedAt: new Date() }).where(eq(mediaFiles.mediaItemId, duplicate));
+          await tx.delete(mediaItems).where(eq(mediaItems.id, duplicate));
+        });
+      }
+    }
   }
 }

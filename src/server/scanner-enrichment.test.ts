@@ -95,6 +95,62 @@ describe('scan-time enrichment gating', () => {
     expect(enrichment.enrichEpisode).toHaveBeenCalledTimes(1);
   });
 
+  /** Stamps a provider id per show and a provider title, the way a real pass does. */
+  function fakeProviderEnrichment(idByTitle: Record<string, string>) {
+    const enrich = vi.fn(async (_libraryId: string, itemId: string, _kind: string, title: string) => {
+      const id = idByTitle[title] ?? '1';
+      await client.query(
+        `update media_items set enrichment_version = $1, enrichment_last_success_at = now(), metadata_source = 'tmdb', provider_ids = $2, title = $3 where id = $4`,
+        [ENRICHMENT_VERSION, JSON.stringify({ tmdb: id }), `Provider ${id}`, itemId]);
+      return true;
+    });
+    const enrichEpisode = vi.fn(async (_seriesId: string, seasonItemId: string, episodeItemId: string, season: number, episode: number) => {
+      await client.query(`update media_items set enrichment_version = $1, enrichment_last_success_at = now(), metadata_source = 'tmdb', title = $2 where id = $3`, [ENRICHMENT_VERSION, `Season ${season}`, seasonItemId]);
+      await client.query(`update media_items set enrichment_version = $1, enrichment_last_success_at = now(), metadata_source = 'tmdb', title = $2 where id = $3`, [ENRICHMENT_VERSION, `Provider episode ${episode}`, episodeItemId]);
+    });
+    return { enrich, enrichEpisode } as unknown as EnrichmentService & { enrich: ReturnType<typeof vi.fn>; enrichEpisode: ReturnType<typeof vi.fn> };
+  }
+
+  it('keeps the provider title when a rescan re-reads the filename', async () => {
+    const scanner = new ScanCoordinator(database, config(), undefined, fakeProviderEnrichment({}));
+    await scanner.reconcileLibrary(libraryId);
+    await scanner.reconcileLibrary(libraryId);
+
+    const titles = (await client.query<{ title: string; kind: string }>(
+      `select title, kind from media_items where kind in ('series', 'episode') order by kind, title`)).rows;
+    expect(titles.filter((row) => row.kind === 'episode').map((row) => row.title))
+      .toEqual(['Provider episode 1', 'Provider episode 2', 'Provider episode 3']);
+    expect(titles.filter((row) => row.kind === 'series').map((row) => row.title)).toEqual(['Provider 1']);
+  });
+
+  it('collapses two folder spellings of one show into a single series', async () => {
+    await mkdir(join(mediaDir, "The Handmaid's Tale", 'Season 01'), { recursive: true });
+    await writeFile(join(mediaDir, "The Handmaid's Tale", 'Season 01', "The Handmaid's Tale S01E01.mkv"), 'x');
+    await mkdir(join(mediaDir, 'The Handmaids Tale (2017)', 'Season 01'), { recursive: true });
+    await writeFile(join(mediaDir, 'The Handmaids Tale (2017)', 'Season 01', 'The Handmaids Tale S01E01.mkv'), 'x');
+    await mkdir(join(mediaDir, 'The Handmaids Tale (2017)', 'Season 02'), { recursive: true });
+    await writeFile(join(mediaDir, 'The Handmaids Tale (2017)', 'Season 02', 'The Handmaids Tale S02E01.mkv'), 'x');
+
+    const enrichment = fakeProviderEnrichment({ "The Handmaid's Tale": '42', 'The Handmaids Tale': '42', 'The Wire': '7' });
+    const scanner = new ScanCoordinator(database, config(), undefined, enrichment);
+    await scanner.reconcileLibrary(libraryId);
+
+    const series = (await client.query<{ id: string }>(`select id from media_items where kind = 'series' and provider_ids->>'tmdb' = '42'`)).rows;
+    expect(series).toHaveLength(1);
+    const seasons = (await client.query<{ id: string; season_number: number }>(
+      `select id, season_number from media_items where kind = 'season' and parent_id = $1 order by season_number`, [series[0].id])).rows;
+    expect(seasons.map((row) => row.season_number)).toEqual([1, 2]);
+    // Both copies of S01E01 play the one episode; S02E01 came along with its season.
+    const episodes = (await client.query<{ season_number: number; episode_number: number; files: number }>(
+      `select i.season_number, i.episode_number, count(f.id)::int as files from media_items i
+         join media_files f on f.media_item_id = i.id
+        where i.kind = 'episode' and i.parent_id in (select id from media_items where parent_id = $1)
+        group by i.season_number, i.episode_number order by i.season_number`, [series[0].id])).rows;
+    expect(episodes).toEqual([{ season_number: 1, episode_number: 1, files: 2 }, { season_number: 2, episode_number: 1, files: 1 }]);
+    // The duplicate series row is gone, not merely hidden.
+    expect((await client.query(`select id from media_items where kind = 'series'`)).rows).toHaveLength(2);
+  });
+
   it('retries a series whose enrichment never succeeded', async () => {
     const enrichment = fakeEnrichment();
     // The provider fails on the first pass: nothing gets stamped.

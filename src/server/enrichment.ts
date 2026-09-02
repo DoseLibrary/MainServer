@@ -7,7 +7,7 @@ import { maturityLevel } from './maturity.ts';
 import type { PluginEventBus } from './plugins/events.ts';
 
 /** Bump when the enrichment model changes so unchanged files can be backfilled. */
-export const ENRICHMENT_VERSION = 1;
+export const ENRICHMENT_VERSION = 2;
 
 type Tx = Parameters<Parameters<Database['transaction']>[0]>[0];
 
@@ -54,6 +54,10 @@ export class EnrichmentService {
     }
     await this.database.transaction(async (tx) => {
       await tx.update(mediaItems).set({
+        // The provider owns the display title. Filenames only bootstrap the
+        // lookup; once a title is matched, the catalog shows what TMDB calls it.
+        title: metadata.title,
+        sortTitle: metadata.title.toLowerCase(),
         originalTitle: preserveUserMatch ? metadata.originalTitle ?? null : metadata.originalTitle,
         releaseDate: preserveUserMatch ? metadata.releaseDate ?? null : metadata.releaseDate,
         year: preserveUserMatch ? metadata.year ?? null : metadata.year ?? undefined,

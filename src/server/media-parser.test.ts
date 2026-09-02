@@ -70,9 +70,26 @@ describe('parseMediaPath', () => {
   });
 });
 
+describe('series identity', () => {
+  it.each([
+    ['The Flash/Season 1/The.Flash.S01E01.mkv', 'The Flash'],
+    ['The Flash 2014/Season 1/The.Flash.2014.S01E01.mkv', 'The Flash'],
+    ['The Flash (2014)/Season 1/01 - Pilot.mkv', 'The Flash'],
+    ['The Flash {tvdb-279121}/Season 1/02 - Fastest Man Alive.mkv', 'The Flash'],
+  ])('resolves %s to one series', (path, series) => {
+    expect(parseMediaPath(path, 'shows')).toMatchObject({ series, key: expect.stringContaining('episode:the flash:') });
+  });
+
+  it('keeps a series whose title is only a year', () => {
+    expect(parseMediaPath('1923/Season 1/1923.S01E01.mkv', 'shows')).toMatchObject({ series: '1923', key: 'episode:1923:1:1' });
+  });
+});
+
 describe('bonus material', () => {
   it.each([
     'Allegiant_downloaded_trailer.mp4',
+    'The.Matrix.1999.trailer.1080p.mkv',
+    'Dune (2021) - Trailer 2.mkv',
     'Allegiant (2016)-trailer.mp4',
     'The.Matrix.1999-teaser.mkv',
     'sample.mkv',
