@@ -31,8 +31,8 @@ export function SwipeDeck({ cards, index, onVote, onUndo, canUndo, lastUndoneVot
   }
 
   return (
-    <div className="flex h-full flex-col">
-      <div className="relative flex-1">
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div data-testid="swipe-stack" className="relative min-h-[60vh] flex-1">
         {done
           ? <div data-testid="deck-done" className="flex h-full flex-col items-center justify-center rounded-3xl border border-white/10 bg-white/5 p-8 text-center">
             <p className="text-2xl font-bold">You're through the deck</p>

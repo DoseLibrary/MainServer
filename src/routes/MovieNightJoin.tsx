@@ -148,7 +148,7 @@ export function MovieNightJoin() {
         <span>{Object.keys(votes).length} / {cards.length}</span>
         <button type="button" onClick={() => void leave()} className="underline-offset-2 hover:underline">Leave</button>
       </div>
-      <div className="flex-1"><SwipeDeck cards={cards} index={index} onVote={(card, value) => void vote(card, value)} onUndo={() => void undo()} canUndo={history.length > 0} lastUndoneVote={lastUndoneVote} /></div>
+      <div className="flex min-h-0 flex-1 flex-col"><SwipeDeck cards={cards} index={index} onVote={(card, value) => void vote(card, value)} onUndo={() => void undo()} canUndo={history.length > 0} lastUndoneVote={lastUndoneVote} /></div>
     </div>}
 
     {phase === 'ended' && <div className="m-auto text-center">

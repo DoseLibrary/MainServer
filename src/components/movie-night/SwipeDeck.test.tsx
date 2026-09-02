@@ -25,6 +25,11 @@ describe('SwipeDeck', () => {
     expect(onVote).toHaveBeenCalledWith(cards[0], 'maybe');
   });
 
+  it('gives the stack a min-height floor so it never collapses to zero', () => {
+    render(<SwipeDeck cards={cards} index={0} onVote={vi.fn()} onUndo={vi.fn()} canUndo={false} />);
+    expect(screen.getByTestId('swipe-stack').className).toMatch(/min-h-\[/);
+  });
+
   it('enables undo only when allowed and shows the done panel at the end', () => {
     const onUndo = vi.fn();
     const { rerender } = render(<SwipeDeck cards={cards} index={1} onVote={vi.fn()} onUndo={onUndo} canUndo />);
