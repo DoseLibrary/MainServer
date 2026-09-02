@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { MovieCard } from './catalog-service.ts';
-import { MovieNightError, MovieNightService, type MovieNightEvent } from './movie-night-service.ts';
+import { MovieNightError, MovieNightService, type MovieNightEvent, type MovieNightOptions } from './movie-night-service.ts';
 
 const card = (id: string): MovieCard => ({ id, title: id.toUpperCase(), year: 2000, rating: 7 });
 const DECK = [card('a'), card('b'), card('c')];
@@ -9,7 +9,7 @@ const host = { id: 'host-1', maxMaturityLevel: null };
 /** A deterministic random source: cycles the given values. */
 function seeded(values: number[]) { let i = 0; return () => values[i++ % values.length]; }
 
-function build(deck = DECK, options: { random?: () => number; now?: () => number; ttlMs?: number } = {}) {
+function build(deck = DECK, options: MovieNightOptions = {}) {
   const deckSource = vi.fn(async () => deck);
   const events: MovieNightEvent[] = [];
   const service = new MovieNightService(deckSource, options);
@@ -66,6 +66,54 @@ describe('MovieNightService sessions', () => {
     expect(state).toEqual({ code, phase: 'lobby', deckSize: 3, participants: [{ id: ann.participantId, nickname: 'Ann', joinedAt: expect.any(Number) }], matches: [], dismissed: [], allDone: false });
     expect(service.state(code, ann.participantId)).toMatchObject({ participantId: ann.participantId, votes: {} });
     expect(() => service.state('ZZZZ-ZZZZ')).toThrow(new MovieNightError('not_found'));
+  });
+
+  it('reports per-participant progress to the host only', async () => {
+    const { service } = build();
+    const { code } = await service.create(host, {});
+    const ann = service.join(code, 'Ann', '1').participantId;
+    service.start(code, 'host-1');
+    service.vote(code, ann, 'a', 'yes');
+    expect(service.state(code, undefined, true).progress).toEqual({ [ann]: 1 });
+    expect(service.state(code, ann).progress).toBeUndefined();
+    expect(service.state(code).progress).toBeUndefined();
+  });
+
+  it('replaces a host own earlier session instead of orphaning it', async () => {
+    const { service, events } = build();
+    const first = await service.create(host, {});
+    const second = await service.create(host, {});
+    expect(second.code).not.toBe(first.code);
+    expect(events.some((e) => e.code === first.code && e.message.type === 'ended')).toBe(true);
+    expect(service.has(first.code)).toBe(false);
+    expect(service.has(second.code)).toBe(true);
+    // A different host is left alone.
+    const other = await service.create({ id: 'host-2', maxMaturityLevel: null }, {});
+    expect(service.has(second.code)).toBe(true);
+    expect(service.has(other.code)).toBe(true);
+  });
+
+  it('rejects a token minted in another session', async () => {
+    const { service } = build();
+    const a = await service.create(host, {});
+    const b = await service.create({ id: 'host-2', maxMaturityLevel: null }, {});
+    const ann = service.join(a.code, 'Ann', '1');
+    expect(() => service.authenticateParticipant(b.code, ann.token)).toThrow(new MovieNightError('not_found'));
+    expect(service.authenticateParticipant(a.code, ann.token)).toMatchObject({ nickname: 'Ann' });
+  });
+
+  it('sweeps join records once their window has passed', async () => {
+    let clock = 1_000_000;
+    const { service } = build(DECK, { now: () => clock });
+    const { code } = await service.create(host, {});
+    service.join(code, 'Ann', '10.0.9.1');
+    const joins = (service as unknown as { joinsByAddress: Map<string, number[]> }).joinsByAddress;
+    expect(joins.size).toBe(1);
+    service.sweep();
+    expect(joins.size).toBe(1);
+    clock += 10 * 60 * 1000 + 1;
+    service.sweep();
+    expect(joins.size).toBe(0);
   });
 
   it('accepts a code typed without its dash or in lower case', async () => {
@@ -170,6 +218,33 @@ describe('MovieNightService voting and matching', () => {
     expect(leaderEvents.length).toBeGreaterThan(0);
     expect(leaderEvents.every((e) => e.audience === 'host')).toBe(true);
     expect(service.state(code).allDone).toBe(true);
+  });
+
+  it('coalesces a burst of leaders emits into one a second', async () => {
+    let clock = 1_000_000;
+    const timers: Array<{ run: () => void; ms: number }> = [];
+    const built = build([card('a'), card('b'), card('c'), card('d'), card('e')], {
+      now: () => clock,
+      setTimer: (run, ms) => { timers.push({ run, ms }); return timers.length - 1; },
+      clearTimer: (handle) => { timers[handle as number] = { run: () => {}, ms: 0 }; },
+    });
+    const { code } = await built.service.create(host, {});
+    const ann = built.service.join(code, 'Ann', '1').participantId;
+    built.service.start(code, 'host-1');
+    built.events.length = 0;
+
+    for (const id of ['a', 'b', 'c', 'd', 'e']) built.service.vote(code, ann, id, 'yes');
+    const leaderEvents = () => built.events.filter((e) => e.message.type === 'leaders');
+    // The first vote emits immediately; the other four share one trailing emit.
+    expect(leaderEvents()).toHaveLength(1);
+    expect(timers).toHaveLength(1);
+    clock += 1_000;
+    timers[0].run();
+    expect(leaderEvents()).toHaveLength(2);
+    expect(leaderEvents().length).toBeLessThanOrEqual(2);
+    // Ordering still holds: leaders never lands after the progress it belongs to.
+    expect(built.events[0]?.message.type).toBe('leaders');
+    expect(built.events[1]?.message).toMatchObject({ type: 'progress', done: 1 });
   });
 
   it('ending removes the session and tells everyone', async () => {

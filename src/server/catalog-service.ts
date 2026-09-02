@@ -172,21 +172,28 @@ export class CatalogService {
     return and(...clauses);
   }
 
-  /** Every movie the viewer may see that matches the filters, as deck cards. Unshuffled; capped. */
-  async listMovieCards(filters: MovieDeckFilters, viewerId?: string): Promise<MovieCard[]> {
-    // The outer table's id is qualified via sql.identifier rather than interpolating
-    // `${mediaItems.id}` directly: drizzle renders a single-table query's own columns
-    // unqualified, which would otherwise collide with media_files' own `id` column
-    // inside this subquery. Deriving the identifier from the schema (table name +
+  /**
+   * Every movie the viewer may see that matches the filters, as deck cards.
+   * Unshuffled, and capped at `limit` — the cap is a *random* sample, so a
+   * library larger than the cap does not deal the same subset every night.
+   */
+  async listMovieCards(filters: MovieDeckFilters, viewerId?: string, limit = MOVIE_DECK_LIMIT): Promise<MovieCard[]> {
+    // Both columns inside the subquery are qualified via sql.identifier rather than
+    // interpolated directly: drizzle renders a single-table query's own columns
+    // unqualified, which would otherwise collide with media_files' own columns
+    // inside this subquery. Deriving the identifiers from the schema (table name +
     // column name) keeps this correct if either table is ever renamed.
-    const mediaItemsId = sql`${sql.identifier(getTableName(mediaItems))}.${sql.identifier(mediaItems.id.name)}`;
-    const runtime = sql<number | null>`(select max(${mediaFiles.durationSeconds}) from ${mediaFiles} where ${mediaFiles.mediaItemId} = ${mediaItemsId})`;
+    const qualify = (table: typeof mediaItems | typeof mediaFiles, column: { name: string }) =>
+      sql`${sql.identifier(getTableName(table))}.${sql.identifier(column.name)}`;
+    const mediaItemsId = qualify(mediaItems, mediaItems.id);
+    const duration = qualify(mediaFiles, mediaFiles.durationSeconds);
+    const runtime = sql<number | null>`(select max(${duration}) from ${mediaFiles} where ${mediaFiles.mediaItemId} = ${mediaItemsId})`;
     const rows = await this.database.select({
       id: mediaItems.id, title: mediaItems.title, userTitle: mediaItems.userTitle,
       year: mediaItems.year, userYear: mediaItems.userYear,
       posterPath: mediaItems.posterPath, overview: mediaItems.overview, userOverview: mediaItems.userOverview,
       providerRating: mediaItems.providerRating, durationSeconds: runtime,
-    }).from(mediaItems).where(this.movieDeckClauses(filters, viewerId)).orderBy(mediaItems.id).limit(MOVIE_DECK_LIMIT);
+    }).from(mediaItems).where(this.movieDeckClauses(filters, viewerId)).orderBy(sql`random()`).limit(limit);
     return rows.map((row) => ({
       id: row.id,
       title: row.userTitle ?? row.title,

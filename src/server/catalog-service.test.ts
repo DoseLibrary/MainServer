@@ -507,6 +507,22 @@ describe('CatalogService movie deck', () => {
     expect(await service.countMovieCards({ unwatchedOnly: true }, VIEWER)).toBe(2);
   });
 
+  it('samples the deck randomly rather than by id when the cap bites', async () => {
+    for (let index = 0; index < 12; index++) {
+      await client.query(
+        `insert into media_items (id, library_id, kind, natural_key, title, sort_title, year) values ($1, $2, 'movie', $3, $4, $5, 2010)`,
+        [`20000000-0000-4000-8000-0000000002${String(index).padStart(2, '0')}`, LIB2, `movie:deck:${index}`, `Deck ${index}`, `deck ${String(index).padStart(2, '0')}`]);
+    }
+    const sets = new Set<string>();
+    for (let attempt = 0; attempt < 12; attempt++) {
+      const ids = (await service.listMovieCards({}, undefined, 5)).map((c) => c.id);
+      expect(ids).toHaveLength(5);
+      sets.add([...ids].sort().join(','));
+    }
+    // An id-ordered cap would always deal the same five titles.
+    expect(sets.size).toBeGreaterThan(1);
+  });
+
   it('respects the viewer maturity limit', async () => {
     const limited = service.forViewer(2);
     // Gamma is unrated and therefore hidden from a restricted viewer.

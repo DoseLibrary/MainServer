@@ -11,9 +11,10 @@ import { MovieNightService } from './movie-night-service.ts';
 
 const DECK: MovieCard[] = [{ id: 'a', title: 'A' }, { id: 'b', title: 'B' }];
 const HOST = { id: 'host-1', username: 'owner', role: 'admin', maxMaturityLevel: null };
+const OTHER = { id: 'user-2', username: 'other', role: 'member', maxMaturityLevel: null };
 
 async function appWith() {
-  const auth = { authenticate: vi.fn(async (token?: string) => (token === 'host' ? HOST : null)) } as unknown as AuthService;
+  const auth = { authenticate: vi.fn(async (token?: string) => (token === 'host' ? HOST : token === 'other' ? OTHER : null)) } as unknown as AuthService;
   const listMovieCards = vi.fn(async () => DECK);
   const countMovieCards = vi.fn(async () => 2);
   const forViewer = vi.fn(() => ({ listMovieCards, countMovieCards }));
@@ -22,10 +23,11 @@ async function appWith() {
   const hub = new MovieNightHub(service);
   const app = Fastify(); await app.register(cookie); await app.register(websocket);
   registerMovieNightRoutes(app, auth, catalog, service, hub);
-  return { app, service, listMovieCards, countMovieCards, forViewer };
+  return { app, service, hub, listMovieCards, countMovieCards, forViewer };
 }
 
 const hostHeaders = { cookie: 'dose_session=host' };
+const otherHeaders = { cookie: 'dose_session=other' };
 const bearer = (token: string) => ({ authorization: `Bearer ${token}` });
 
 describe('movie night routes', () => {
@@ -74,14 +76,17 @@ describe('movie night routes', () => {
     const { code } = (await app.inject({ method: 'POST', url: '/api/v1/movie-night', headers: hostHeaders, payload: {} })).json();
     const ann = (await app.inject({ method: 'POST', url: `/api/v1/movie-night/${code}/join`, payload: { nickname: 'Ann' } })).json();
     expect((await app.inject({ method: 'PUT', url: `/api/v1/movie-night/${code}/votes/a`, headers: bearer(ann.token), payload: { vote: 'yes' } })).statusCode).toBe(409);
-    expect((await app.inject({ method: 'POST', url: `/api/v1/movie-night/${code}/start`, headers: bearer(ann.token) })).statusCode).toBe(403);
+    // A bearer token is not a signed-in Dose user, so the host routes answer 401, not 403.
+    expect((await app.inject({ method: 'POST', url: `/api/v1/movie-night/${code}/start`, headers: bearer(ann.token) })).statusCode).toBe(401);
+    // A signed-in user who is not the host is the 403 case.
+    expect((await app.inject({ method: 'POST', url: `/api/v1/movie-night/${code}/start`, headers: otherHeaders })).statusCode).toBe(403);
     expect((await app.inject({ method: 'POST', url: `/api/v1/movie-night/${code}/start`, headers: hostHeaders })).statusCode).toBe(200);
     expect((await app.inject({ method: 'PUT', url: `/api/v1/movie-night/${code}/votes/a`, headers: bearer(ann.token), payload: { vote: 'yes' } })).statusCode).toBe(200);
     expect((await app.inject({ method: 'PUT', url: `/api/v1/movie-night/${code}/votes/a`, headers: bearer(ann.token), payload: { vote: 'later' } })).statusCode).toBe(400);
     expect((await app.inject({ method: 'PUT', url: `/api/v1/movie-night/${code}/votes/zzz`, headers: bearer(ann.token), payload: { vote: 'yes' } })).statusCode).toBe(404);
     const state = (await app.inject({ method: 'GET', url: `/api/v1/movie-night/${code}`, headers: hostHeaders })).json().state;
     expect(state.matches.map((c: MovieCard) => c.id)).toEqual(['a']);
-    expect((await app.inject({ method: 'GET', url: `/api/v1/movie-night/${code}/leaders`, headers: bearer(ann.token) })).statusCode).toBe(403);
+    expect((await app.inject({ method: 'GET', url: `/api/v1/movie-night/${code}/leaders`, headers: bearer(ann.token) })).statusCode).toBe(401);
     expect((await app.inject({ method: 'GET', url: `/api/v1/movie-night/${code}/leaders`, headers: hostHeaders })).json().entries[0]).toMatchObject({ card: { id: 'a' }, yes: 1 });
     expect((await app.inject({ method: 'POST', url: `/api/v1/movie-night/${code}/dismiss/a`, headers: hostHeaders })).statusCode).toBe(200);
     expect((await app.inject({ method: 'DELETE', url: `/api/v1/movie-night/${code}/votes/a`, headers: bearer(ann.token) })).statusCode).toBe(200);
@@ -100,20 +105,49 @@ describe('movie night routes', () => {
     expect((await app.inject({ method: 'GET', url: `/api/v1/movie-night/${code}`, headers: hostHeaders })).statusCode).toBe(404);
   });
 
-  it('closes the socket 4404 for an unknown code and 4401 for any auth failure', async () => {
+  it('closes the socket 4401 for any auth failure and 4404 only once the caller is known', async () => {
     const built = await appWith(); app = built.app;
     const { code } = (await app.inject({ method: 'POST', url: '/api/v1/movie-night', headers: hostHeaders, payload: {} })).json();
     const address = (await app.listen({ port: 0, host: '127.0.0.1' })).replace('http', 'ws');
 
-    const closeCode = (url: string) => new Promise<number>((resolve, reject) => {
-      const client = new WebSocketClient(url);
+    const closeCode = (url: string, headers?: Record<string, string>) => new Promise<number>((resolve, reject) => {
+      const client = new WebSocketClient(url, { headers });
       client.on('close', (value) => resolve(value));
       client.on('error', () => reject(new Error('socket error')));
     });
 
-    await expect(closeCode(`${address}/api/v1/movie-night/ZZZZ-ZZZZ/socket`)).resolves.toBe(4404);
+    // Nothing to authenticate: the caller learns nothing about which codes exist.
+    await expect(closeCode(`${address}/api/v1/movie-night/ZZZZ-ZZZZ/socket`)).resolves.toBe(4401);
     await expect(closeCode(`${address}/api/v1/movie-night/${code}/socket`)).resolves.toBe(4401);
+    // A token can only be checked against a live session, so a bad one is an auth failure.
     await expect(closeCode(`${address}/api/v1/movie-night/${code}/socket?token=bogus`)).resolves.toBe(4401);
+    await expect(closeCode(`${address}/api/v1/movie-night/ZZZZ-ZZZZ/socket?token=bogus`)).resolves.toBe(4401);
+    // A recognised user asking after a session that is gone gets the informative code.
+    await expect(closeCode(`${address}/api/v1/movie-night/ZZZZ-ZZZZ/socket`, { cookie: 'dose_session=host' })).resolves.toBe(4404);
+  });
+
+  it('reports each participant progress to the host state and to nobody else', async () => {
+    const built = await appWith(); app = built.app;
+    const { code } = (await app.inject({ method: 'POST', url: '/api/v1/movie-night', headers: hostHeaders, payload: {} })).json();
+    const ann = (await app.inject({ method: 'POST', url: `/api/v1/movie-night/${code}/join`, payload: { nickname: 'Ann' } })).json();
+    await app.inject({ method: 'POST', url: `/api/v1/movie-night/${code}/start`, headers: hostHeaders });
+    await app.inject({ method: 'PUT', url: `/api/v1/movie-night/${code}/votes/a`, headers: bearer(ann.token), payload: { vote: 'yes' } });
+    const asHost = (await app.inject({ method: 'GET', url: `/api/v1/movie-night/${code}`, headers: hostHeaders })).json();
+    expect(asHost.state.progress).toEqual({ [ann.participantId]: 1 });
+    const asGuest = (await app.inject({ method: 'GET', url: `/api/v1/movie-night/${code}`, headers: bearer(ann.token) })).json();
+    expect(asGuest.state.progress).toBeUndefined();
+  });
+
+  it('throttles a flood of joins from one address', async () => {
+    const built = await appWith(); app = built.app;
+    const { code } = (await app.inject({ method: 'POST', url: '/api/v1/movie-night', headers: hostHeaders, payload: {} })).json();
+    const statuses: number[] = [];
+    for (let index = 0; index < 31; index++) {
+      statuses.push((await app.inject({ method: 'POST', url: `/api/v1/movie-night/${code}/join`, payload: { nickname: `p${index}` } })).statusCode);
+    }
+    expect(statuses[0]).toBe(200);
+    expect(statuses[statuses.length - 1]).toBe(429);
+    expect(statuses.filter((status) => status === 429)).toHaveLength(1);
   });
 });
 
@@ -131,7 +165,9 @@ describe('movie night socket', () => {
       tv.on('message', (d) => tvFrames.push(JSON.parse(String(d)).type));
       phone.on('message', (d) => phoneFrames.push(JSON.parse(String(d)).type));
       await Promise.all([open(tv), open(phone)]);
-      await vi.waitFor(() => expect(built.service).toBeDefined());
+      // Both sockets must be registered with the hub before the first event, or the
+      // frames below race the subscription rather than the fan-out being tested.
+      await vi.waitFor(() => expect(built.hub.connections(code)).toBe(2));
 
       await built.app.inject({ method: 'POST', url: `/api/v1/movie-night/${code}/start`, headers: hostHeaders });
       await built.app.inject({ method: 'PUT', url: `/api/v1/movie-night/${code}/votes/a`, headers: bearer(ann.token), payload: { vote: 'yes' } });

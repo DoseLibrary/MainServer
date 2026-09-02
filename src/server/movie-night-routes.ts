@@ -83,7 +83,7 @@ export function registerMovieNightRoutes(app: FastifyInstance, auth: AuthService
     try {
       const caller = await identify(request, code);
       if (!caller) return reply.status(401).send({ error: 'Authentication required' });
-      return { role: caller.role, state: service.state(code, caller.role === 'participant' ? caller.participant.id : undefined) };
+      return { role: caller.role, state: service.state(code, caller.role === 'participant' ? caller.participant.id : undefined, caller.role === 'host') };
     } catch (error) { return fail(error, reply); }
   });
 
@@ -143,8 +143,8 @@ export function registerMovieNightRoutes(app: FastifyInstance, auth: AuthService
     app.post(`/api/v1/movie-night/:code/${action}`, async (request, reply) => {
       const params = codeParams.safeParse(request.params); if (!params.success) return reply.status(400).send({ error: 'Invalid code' });
       const user = await auth.authenticate(cookieOf(request));
+      if (!user) return reply.status(401).send({ error: 'Authentication required' });
       try {
-        if (!user) throw new MovieNightError('forbidden');
         service[action](normalizeCode(params.data.code), user.id);
         return { ok: true };
       } catch (error) { return fail(error, reply); }
@@ -154,8 +154,8 @@ export function registerMovieNightRoutes(app: FastifyInstance, auth: AuthService
   app.post('/api/v1/movie-night/:code/dismiss/:cardId', async (request, reply) => {
     const params = cardParams.safeParse(request.params); if (!params.success) return reply.status(400).send({ error: 'Invalid code' });
     const user = await auth.authenticate(cookieOf(request));
+    if (!user) return reply.status(401).send({ error: 'Authentication required' });
     try {
-      if (!user) throw new MovieNightError('forbidden');
       service.dismiss(normalizeCode(params.data.code), user.id, params.data.cardId);
       return { ok: true };
     } catch (error) { return fail(error, reply); }
@@ -164,9 +164,10 @@ export function registerMovieNightRoutes(app: FastifyInstance, auth: AuthService
   app.get('/api/v1/movie-night/:code/leaders', async (request, reply) => {
     const params = codeParams.safeParse(request.params); if (!params.success) return reply.status(400).send({ error: 'Invalid code' });
     const code = normalizeCode(params.data.code);
+    const user = await auth.authenticate(cookieOf(request));
+    if (!user) return reply.status(401).send({ error: 'Authentication required' });
     try {
-      const user = await auth.authenticate(cookieOf(request));
-      if (!user || !service.isHost(code, user.id)) throw new MovieNightError('forbidden');
+      if (!service.isHost(code, user.id)) throw new MovieNightError('forbidden');
       return { entries: service.leaders(code) };
     } catch (error) { return fail(error, reply); }
   });
@@ -174,17 +175,20 @@ export function registerMovieNightRoutes(app: FastifyInstance, auth: AuthService
   app.get('/api/v1/movie-night/:code/socket', { websocket: true }, (socket, request) => {
     void (async () => {
       const params = codeParams.safeParse(request.params);
-      if (!params.success) { socket.close(4404, 'Unknown movie night'); return; }
-      const code = normalizeCode(params.data.code);
-      // Session existence is resolved before any auth check, so the close code
-      // always reflects whether the code exists rather than which credential
-      // (if any) the caller happened to present.
-      if (!service.has(code)) { socket.close(4404, 'Unknown movie night'); return; }
+      const code = params.success ? normalizeCode(params.data.code) : undefined;
+      // Authentication decides the close code first: an unauthenticated caller
+      // learns nothing about which codes exist (4401), and only a credential we
+      // actually recognise earns the more informative 4404. A participant token
+      // can only be checked against a live session, so a token for a code that is
+      // gone is simply an authentication failure.
       try {
         const user = await auth.authenticate(cookieOf(request));
-        if (user && service.isHost(code, user.id)) { hub.add(code, socket as unknown as RealtimeSocket, 'host'); return; }
+        if (user) {
+          if (!code || !service.has(code)) { socket.close(4404, 'Unknown movie night'); return; }
+          if (service.isHost(code, user.id)) { hub.add(code, socket as unknown as RealtimeSocket, 'host'); return; }
+        }
         const token = (request.query as Record<string, string | undefined>).token;
-        if (!token) { socket.close(4401, 'Authentication required'); return; }
+        if (!token || !code) { socket.close(4401, 'Authentication required'); return; }
         service.authenticateParticipant(code, token);
         hub.add(code, socket as unknown as RealtimeSocket, 'participant');
       } catch {

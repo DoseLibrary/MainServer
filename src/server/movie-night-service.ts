@@ -25,6 +25,8 @@ export interface PublicState {
   matches: MovieCard[]; dismissed: string[]; allDone: boolean;
   /** Only when the caller is a participant. */
   votes?: Record<string, Vote>; participantId?: string;
+  /** Votes cast per participant. Host only: phones never see the others' progress. */
+  progress?: Record<string, number>;
 }
 
 export type MovieNightReason = 'not_found' | 'nickname_taken' | 'invalid_nickname' | 'full' | 'forbidden' | 'wrong_phase' | 'unknown_card' | 'throttled';
@@ -49,6 +51,9 @@ interface Session {
   votes: Map<string, Map<string, Vote>>;
   matches: string[];
   dismissed: Set<string>;
+  /** Throttle state for the host-only `leaders` feed. */
+  leadersEmittedAt: number;
+  leadersTimer?: unknown;
 }
 
 export const MOVIE_NIGHT_TTL_MS = 6 * 60 * 60 * 1000;
@@ -56,12 +61,23 @@ export const MAX_PARTICIPANTS = 20;
 export const NICKNAME_MAX = 24;
 const JOIN_WINDOW_MS = 10 * 60 * 1000;
 const JOINS_PER_ADDRESS = 30;
+/** At most one `leaders` frame per session per second: a fast swiper must not flood the TV. */
+export const LEADERS_INTERVAL_MS = 1_000;
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
 /** Accepts a code with or without its dash, in any case. */
 export function normalizeCode(value: string): string {
   const bare = value.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
   return bare.length === 8 ? `${bare.slice(0, 4)}-${bare.slice(4)}` : bare;
+}
+
+export interface MovieNightOptions {
+  now?: () => number;
+  random?: () => number;
+  ttlMs?: number;
+  /** Injectable timers so the leaders throttle is testable without wall-clock waits. */
+  setTimer?: (run: () => void, ms: number) => unknown;
+  clearTimer?: (handle: unknown) => void;
 }
 
 export class MovieNightService {
@@ -71,11 +87,20 @@ export class MovieNightService {
   private readonly now: () => number;
   private readonly random: () => number;
   private readonly ttlMs: number;
+  private readonly setTimer: (run: () => void, ms: number) => unknown;
+  private readonly clearTimer: (handle: unknown) => void;
 
-  constructor(private readonly deckSource: DeckSource, options: { now?: () => number; random?: () => number; ttlMs?: number } = {}) {
+  constructor(private readonly deckSource: DeckSource, options: MovieNightOptions = {}) {
     this.now = options.now ?? Date.now;
     this.random = options.random ?? Math.random;
     this.ttlMs = options.ttlMs ?? MOVIE_NIGHT_TTL_MS;
+    this.setTimer = options.setTimer ?? ((run, ms) => {
+      const handle = setTimeout(run, ms);
+      // A pending leaders flush must never hold the process open on shutdown.
+      (handle as { unref?: () => void }).unref?.();
+      return handle;
+    });
+    this.clearTimer = options.clearTimer ?? ((handle) => clearTimeout(handle as ReturnType<typeof setTimeout>));
   }
 
   onEvent(listener: (event: MovieNightEvent) => void): () => void {
@@ -90,9 +115,14 @@ export class MovieNightService {
   async create(host: { id: string; maxMaturityLevel: number | null }, filters: MovieDeckFilters): Promise<{ code: string; deckSize: number }> {
     this.sweep();
     const deck = this.shuffle(await this.deckSource(filters, host.id, host.maxMaturityLevel));
+    // One night per host: pressing Create twice replaces the first rather than
+    // leaving an orphan session nobody can reach.
+    for (const existing of [...this.sessions.values()]) {
+      if (existing.hostUserId === host.id) this.discard(existing);
+    }
     const code = this.uniqueCode();
     const at = this.now();
-    this.sessions.set(code, { code, hostUserId: host.id, createdAt: at, lastActivityAt: at, phase: 'lobby', filters, deck, participants: new Map(), votes: new Map(), matches: [], dismissed: new Set() });
+    this.sessions.set(code, { code, hostUserId: host.id, createdAt: at, lastActivityAt: at, phase: 'lobby', filters, deck, participants: new Map(), votes: new Map(), matches: [], dismissed: new Set(), leadersEmittedAt: Number.NEGATIVE_INFINITY });
     return { code, deckSize: deck.length };
   }
 
@@ -133,7 +163,7 @@ export class MovieNightService {
     return this.sessions.has(normalizeCode(code));
   }
 
-  state(code: string, participantId?: string): PublicState {
+  state(code: string, participantId?: string, forHost = false): PublicState {
     const session = this.get(code);
     const state: PublicState = {
       code: session.code, phase: session.phase, deckSize: session.deck.length,
@@ -145,6 +175,11 @@ export class MovieNightService {
     if (participantId && session.participants.has(participantId)) {
       state.participantId = participantId;
       state.votes = Object.fromEntries(session.votes.get(participantId) ?? []);
+    }
+    // The TV seeds its progress bars from this, so a reload or a reconnect shows
+    // where everyone already is instead of waiting for the next vote.
+    if (forHost) {
+      state.progress = Object.fromEntries([...session.participants.keys()].map((id) => [id, session.votes.get(id)?.size ?? 0]));
     }
     return state;
   }
@@ -186,7 +221,7 @@ export class MovieNightService {
     session.votes.delete(participantId);
     this.touch(session);
     this.emit(session.code, 'all', { type: 'participant.left', participantId });
-    this.emit(session.code, 'host', { type: 'leaders', entries: this.leaders(session.code) });
+    this.queueLeaders(session);
     this.checkMatch(session);
   }
 
@@ -200,8 +235,13 @@ export class MovieNightService {
   }
 
   end(code: string, hostUserId: string): void {
-    const session = this.requireHost(code, hostUserId);
+    this.discard(this.requireHost(code, hostUserId));
+  }
+
+  /** Drop a session, cancel its pending work and tell everyone it is over. */
+  private discard(session: Session): void {
     session.phase = 'ended';
+    if (session.leadersTimer !== undefined) { this.clearTimer(session.leadersTimer); session.leadersTimer = undefined; }
     this.sessions.delete(session.code);
     this.emit(session.code, 'all', { type: 'ended' });
   }
@@ -232,9 +272,29 @@ export class MovieNightService {
 
   private afterVoteChange(session: Session, participantId: string): void {
     this.touch(session);
-    this.emit(session.code, 'host', { type: 'leaders', entries: this.leaders(session.code) });
+    this.queueLeaders(session);
     this.emit(session.code, 'all', { type: 'progress', participantId, done: session.votes.get(participantId)?.size ?? 0, total: session.deck.length });
     this.checkMatch(session);
+  }
+
+  /**
+   * Emit `leaders` at most once a second per session: the first change goes out
+   * immediately (so the ordering leaders → progress → match still holds), and
+   * anything during the following second is coalesced into one trailing emit.
+   */
+  private queueLeaders(session: Session): void {
+    const since = this.now() - session.leadersEmittedAt;
+    if (since >= LEADERS_INTERVAL_MS) { this.flushLeaders(session); return; }
+    if (session.leadersTimer !== undefined) return;
+    session.leadersTimer = this.setTimer(() => {
+      session.leadersTimer = undefined;
+      if (this.sessions.get(session.code) === session) this.flushLeaders(session);
+    }, LEADERS_INTERVAL_MS - since);
+  }
+
+  private flushLeaders(session: Session): void {
+    session.leadersEmittedAt = this.now();
+    this.emit(session.code, 'host', { type: 'leaders', entries: this.leaders(session.code) });
   }
 
   /** First card in deck order every current participant said yes to, not yet announced or dismissed. */
@@ -311,11 +371,16 @@ export class MovieNightService {
     this.joinsByAddress.set(address, recent);
   }
 
-  /** Drop sessions idle past the TTL. Called on create and by the sweep timer. */
+  /** Drop sessions idle past the TTL, and join records past their window. Called on create and by the sweep timer. */
   sweep(): void {
     const cutoff = this.now() - this.ttlMs;
-    for (const [code, session] of this.sessions) {
-      if (session.lastActivityAt < cutoff) { this.sessions.delete(code); this.emit(code, 'all', { type: 'ended' }); }
+    for (const session of [...this.sessions.values()]) {
+      if (session.lastActivityAt < cutoff) this.discard(session);
+    }
+    // Otherwise one address per join leaks for the lifetime of the process.
+    const joinCutoff = this.now() - JOIN_WINDOW_MS;
+    for (const [address, timestamps] of this.joinsByAddress) {
+      if ((timestamps[timestamps.length - 1] ?? 0) <= joinCutoff) this.joinsByAddress.delete(address);
     }
   }
 }
