@@ -116,3 +116,33 @@ describe('movie night routes', () => {
     await expect(closeCode(`${address}/api/v1/movie-night/${code}/socket?token=bogus`)).resolves.toBe(4401);
   });
 });
+
+describe('movie night socket', () => {
+  it('delivers matches to phones and leaders only to the host', async () => {
+    const built = await appWith();
+    const address = (await built.app.listen({ port: 0, host: '127.0.0.1' })).replace('http', 'ws');
+    try {
+      const { code } = (await built.app.inject({ method: 'POST', url: '/api/v1/movie-night', headers: hostHeaders, payload: {} })).json();
+      const ann = (await built.app.inject({ method: 'POST', url: `/api/v1/movie-night/${code}/join`, payload: { nickname: 'Ann' } })).json();
+      const open = (client: WebSocketClient) => new Promise<void>((resolve, reject) => { client.on('open', () => resolve()); client.on('error', () => reject(new Error('connect failed'))); });
+      const tv = new WebSocketClient(`${address}/api/v1/movie-night/${code}/socket`, { headers: { cookie: 'dose_session=host' } });
+      const phone = new WebSocketClient(`${address}/api/v1/movie-night/${code}/socket?token=${ann.token}`);
+      const tvFrames: string[] = []; const phoneFrames: string[] = [];
+      tv.on('message', (d) => tvFrames.push(JSON.parse(String(d)).type));
+      phone.on('message', (d) => phoneFrames.push(JSON.parse(String(d)).type));
+      await Promise.all([open(tv), open(phone)]);
+      await vi.waitFor(() => expect(built.service).toBeDefined());
+
+      await built.app.inject({ method: 'POST', url: `/api/v1/movie-night/${code}/start`, headers: hostHeaders });
+      await built.app.inject({ method: 'PUT', url: `/api/v1/movie-night/${code}/votes/a`, headers: bearer(ann.token), payload: { vote: 'yes' } });
+      await vi.waitFor(() => expect(phoneFrames).toContain('match'));
+      expect(tvFrames).toContain('leaders');
+      expect(phoneFrames).not.toContain('leaders');
+
+      const stranger = new WebSocketClient(`${address}/api/v1/movie-night/${code}/socket?token=bogus`);
+      const closeCode = await new Promise<number>((resolve) => stranger.on('close', resolve));
+      expect(closeCode).toBe(4401);
+      tv.close(); phone.close();
+    } finally { await built.app.close(); }
+  });
+});

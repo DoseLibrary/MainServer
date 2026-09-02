@@ -40,6 +40,9 @@ import { TraktHistorySource } from './history-sources/trakt.ts';
 import { TautulliHistorySource } from './history-sources/tautulli.ts';
 import { HardwareAccelerator } from './hwaccel.ts';
 import { createSeerrPlugin } from './plugins/seerr.ts';
+import { MovieNightHub } from './movie-night-hub.ts';
+import { registerMovieNightRoutes } from './movie-night-routes.ts';
+import { MovieNightService } from './movie-night-service.ts';
 
 /** Vite hashes everything under `assets/`, so a file never changes under the
  * same name and can be cached for good; the entry HTML, manifest, and service
@@ -129,11 +132,18 @@ export async function buildApp(config: AppConfig) {
   await app.register(fastifyWebsocket);
   const auth = new AuthService(database);
   registerRealtimeRoute(app, auth, realtime);
-  await registerApiRoutes(app, auth, config.NODE_ENV === 'production', undefined, scanner, new CatalogService(database, join(config.CONFIG_PATH, 'trailers'), pluginEvents), join(config.CONFIG_PATH, 'images'), config.NODE_ENV === 'development' && isEmbeddedDatabase(config.DATABASE_URL), plugins, pluginScheduler, artwork, subtitleStore, metadataMatch, libraryWatcher, spriteStore, new UserSettingsService(database), new UserCollectionsService(database, new UploadedImageStore(join(config.CONFIG_PATH, 'images'))), new QueueService(database), new WatchDataService(database), { plex: new PlexHistorySource(), trakt: new TraktHistorySource(), tautulli: new TautulliHistorySource() }, new DeviceAuthService(database), new PlaybackSessionService(database), downloads, hardware);
+  const catalog = new CatalogService(database, join(config.CONFIG_PATH, 'trailers'), pluginEvents);
+  const movieNight = new MovieNightService(async (filters, hostId, maturity) => catalog.forViewer(maturity).listMovieCards(filters, hostId));
+  const movieNightHub = new MovieNightHub(movieNight);
+  const movieNightSweep = setInterval(() => movieNight.sweep(), 15 * 60 * 1000);
+  registerMovieNightRoutes(app, auth, catalog, movieNight, movieNightHub);
+  await registerApiRoutes(app, auth, config.NODE_ENV === 'production', undefined, scanner, catalog, join(config.CONFIG_PATH, 'images'), config.NODE_ENV === 'development' && isEmbeddedDatabase(config.DATABASE_URL), plugins, pluginScheduler, artwork, subtitleStore, metadataMatch, libraryWatcher, spriteStore, new UserSettingsService(database), new UserCollectionsService(database, new UploadedImageStore(join(config.CONFIG_PATH, 'images'))), new QueueService(database), new WatchDataService(database), { plex: new PlexHistorySource(), trakt: new TraktHistorySource(), tautulli: new TautulliHistorySource() }, new DeviceAuthService(database), new PlaybackSessionService(database), downloads, hardware);
 
   app.addHook('onClose', async () => {
     clearInterval(downloadSweep);
     downloads.abortAll();
+    clearInterval(movieNightSweep);
+    movieNightHub.closeAll();
     realtime.closeAll();
     plugins.abortAll();
     await pluginScheduler.stop();
