@@ -31,8 +31,8 @@ export function SwipeDeck({ cards, index, onVote, onUndo, canUndo, lastUndoneVot
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div data-testid="swipe-stack" className="relative min-h-[60vh] flex-1">
+    <div className="relative h-full w-full">
+      <div data-testid="swipe-stack" className="absolute inset-x-4 top-14 bottom-28">
         {done
           ? <div data-testid="deck-done" className="flex h-full flex-col items-center justify-center rounded-3xl border border-white/10 bg-white/5 p-8 text-center">
             <p className="text-2xl font-bold">You're through the deck</p>
@@ -45,7 +45,7 @@ export function SwipeDeck({ cards, index, onVote, onUndo, canUndo, lastUndoneVot
               onSwipe={(direction) => onVote(card, VOTE_OF[direction])} />;
           })}
       </div>
-      <div className="mt-5 flex items-center justify-center gap-4">
+      <div className="absolute inset-x-0 z-20 flex items-center justify-center gap-4 bottom-[max(1.25rem,env(safe-area-inset-bottom))]">
         <button type="button" aria-label="Undo" disabled={!canUndo} onClick={undo}
           className="flex h-12 w-12 items-center justify-center rounded-full border border-white/15 bg-white/5 text-white/80 disabled:opacity-30"><RotateCcw className="h-5 w-5" aria-hidden="true" /></button>
         <button type="button" aria-label="No" disabled={done} onClick={() => top.current?.fly('left')}

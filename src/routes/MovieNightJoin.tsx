@@ -137,7 +137,9 @@ export function MovieNightJoin() {
   const others = state?.participants.filter((p) => p.id !== participant?.participantId) ?? [];
   const lastUndoneVote = history.length > 0 ? history[history.length - 1].vote : undefined;
 
-  return <main className="flex min-h-[100dvh] flex-col bg-[#0B0B0F] px-4 pb-6 pt-[max(1rem,env(safe-area-inset-top))] text-white">
+  return <main className={phase === 'swiping'
+    ? 'relative h-[100dvh] overflow-hidden bg-[#0B0B0F] text-white'
+    : 'flex min-h-[100dvh] flex-col bg-[#0B0B0F] px-4 pb-6 pt-[max(1rem,env(safe-area-inset-top))] text-white'}>
     {phase === 'entry' && <form onSubmit={join} className="m-auto flex w-full max-w-sm flex-col gap-4">
       <img src="/logo.svg" alt="" className="mx-auto h-12 w-12" />
       <h1 className="text-center text-3xl font-bold">Movie night</h1>
@@ -157,12 +159,12 @@ export function MovieNightJoin() {
       <Button variant="ghost" onClick={() => void leave()}>Leave</Button>
     </div>}
 
-    {phase === 'swiping' && <div className="flex flex-1 flex-col">
-      <div className="mb-3 flex items-center justify-between text-sm text-white/60">
+    {phase === 'swiping' && <div className="relative h-full w-full">
+      <div className="absolute inset-x-0 top-0 z-20 flex items-center justify-between px-4 pb-3 pt-[max(1rem,env(safe-area-inset-top))] text-sm text-white/60">
         <span>{Object.keys(votes).length} / {cards.length}</span>
         <button type="button" onClick={() => void leave()} className="underline-offset-2 hover:underline">Leave</button>
       </div>
-      <div className="flex min-h-0 flex-1 flex-col"><SwipeDeck cards={cards} index={index} onVote={(card, value) => void vote(card, value)} onUndo={() => void undo()} canUndo={history.length > 0} lastUndoneVote={lastUndoneVote} /></div>
+      <SwipeDeck cards={cards} index={index} onVote={(card, value) => void vote(card, value)} onUndo={() => void undo()} canUndo={history.length > 0} lastUndoneVote={lastUndoneVote} />
     </div>}
 
     {phase === 'ended' && <div className="m-auto text-center">
