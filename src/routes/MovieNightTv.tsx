@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import QRCode from 'qrcode';
 import { X } from 'lucide-react';
@@ -18,6 +18,8 @@ export function MovieNightTv() {
   const [genres, setGenres] = useState<CatalogCategorySummary[]>([]);
   const [filters, setFilters] = useState<MovieNightFilters>({});
   const [count, setCount] = useState<number>();
+  const [countError, setCountError] = useState(false);
+  const [countRetry, setCountRetry] = useState(0);
   const [error, setError] = useState<string>();
   const [code, setCode] = useState<string>();
   const [state, setState] = useState<MovieNightState>();
@@ -33,10 +35,18 @@ export function MovieNightTv() {
   }, [state]);
   const showFallback = !!state && state.phase === 'swiping' && state.allDone && !activeMatch;
 
+  const syncRequestRef = useRef(0);
   const sync = useCallback(async (session: string) => {
+    const requestId = ++syncRequestRef.current;
     const { state: next } = await api.movieNight.state(session);
+    if (syncRequestRef.current !== requestId) return;
     setState(next); setCode(session); setScreen('session');
-    if (next.phase === 'swiping') { try { setLeaders((await api.movieNight.leaders(session)).entries); } catch { /* not fatal */ } }
+    if (next.phase === 'swiping') {
+      try {
+        const { entries } = await api.movieNight.leaders(session);
+        if (syncRequestRef.current === requestId) setLeaders(entries);
+      } catch { /* not fatal */ }
+    }
   }, []);
 
   // Signed-in check, then rejoin a stored session or show the setup.
@@ -59,13 +69,15 @@ export function MovieNightTv() {
     void api.catalogCategories().then(({ categories }) => setGenres(categories)).catch(() => setGenres([]));
   }, [screen]);
 
-  // Live count as the filters change.
+  // Live count as the filters change (or a Retry is clicked after a failure).
+  const countRequestRef = useRef(0);
   useEffect(() => {
     if (screen !== 'setup') return;
-    let stale = false;
-    void api.movieNight.count(filters).then(({ count: n }) => { if (!stale) setCount(n); }).catch(() => { if (!stale) setCount(undefined); });
-    return () => { stale = true; };
-  }, [filters, screen]);
+    const requestId = ++countRequestRef.current;
+    void api.movieNight.count(filters)
+      .then(({ count: n }) => { if (countRequestRef.current === requestId) { setCount(n); setCountError(false); } })
+      .catch(() => { if (countRequestRef.current === requestId) { setCount(undefined); setCountError(true); } });
+  }, [filters, screen, countRetry]);
 
   // QR for the lobby, generated locally.
   useEffect(() => {
@@ -78,6 +90,7 @@ export function MovieNightTv() {
     return () => { cancelled = true; setQr(undefined); };
   }, [code, state?.phase]);
 
+  const allDoneRequestRef = useRef(0);
   const onMessage = useCallback((incoming: MovieNightMessage) => {
     setState((current) => {
       if (!current) return current;
@@ -93,9 +106,13 @@ export function MovieNightTv() {
     if (incoming.type === 'progress') setProgress((p) => ({ ...p, [incoming.participantId]: { done: incoming.done, total: incoming.total } }));
     if (incoming.type === 'leaders') setLeaders(incoming.entries);
     if (incoming.type === 'participant.left') setProgress((p) => { const next = { ...p }; delete next[incoming.participantId]; return next; });
-    // allDone is server-derived; refetch it whenever votes or the roster move.
+    // allDone is server-derived; refetch it whenever votes or the roster move. A slower,
+    // earlier request must not clobber a newer response, so only the latest one applies.
     if ((incoming.type === 'progress' || incoming.type === 'participant.left' || incoming.type === 'match.dismissed') && code) {
-      void api.movieNight.state(code).then(({ state: next }) => setState((cur) => cur ? { ...cur, allDone: next.allDone } : cur)).catch(() => undefined);
+      const requestId = ++allDoneRequestRef.current;
+      void api.movieNight.state(code)
+        .then(({ state: next }) => { if (allDoneRequestRef.current === requestId) setState((cur) => cur ? { ...cur, allDone: next.allDone } : cur); })
+        .catch(() => undefined);
     }
     if (incoming.type === 'ended') { sessionStorage.removeItem(HOST_KEY); setScreen('ended'); }
   }, [code]);
@@ -132,7 +149,7 @@ export function MovieNightTv() {
 
   if (screen === 'ended') return <main className="flex min-h-screen flex-col items-center justify-center gap-6 bg-background text-foreground">
     <h1 className="text-4xl font-bold">Night ended</h1>
-    <Button onClick={() => { setState(undefined); setCode(undefined); setLeaders([]); setProgress({}); setScreen('setup'); }}>Start another</Button>
+    <Button onClick={() => { setState(undefined); setCode(undefined); setLeaders([]); setProgress({}); setError(undefined); setCount(undefined); setScreen('setup'); }}>Start another</Button>
     <Button asChild variant="ghost"><Link to="/">Back to the library</Link></Button>
   </main>;
 
@@ -148,9 +165,12 @@ export function MovieNightTv() {
       <label className="space-y-1 text-sm"><span>Minimum rating</span><Input aria-label="Minimum rating" type="number" min={0} max={10} step={0.1} value={filters.ratingMin ?? ''} onChange={(e) => setFilters((old) => ({ ...old, ratingMin: number(e.target.value) }))} /></label>
       <label className="flex items-end gap-2 pb-2 text-sm"><input type="checkbox" aria-label="Unwatched only" checked={!!filters.unwatchedOnly} onChange={(e) => setFilters((old) => ({ ...old, unwatchedOnly: e.target.checked || undefined }))} className="h-5 w-5" /><span>Unwatched only</span></label>
     </div>
-    <p role="status" className="text-center text-lg">{count == null ? 'Counting…' : `${count} movies in the deck`}</p>
+    {countError ? <div className="flex flex-col items-center gap-2">
+      <p role="alert" className="text-center text-lg text-destructive">Could not count the deck</p>
+      <Button variant="outline" onClick={() => setCountRetry((n) => n + 1)}>Retry</Button>
+    </div> : <p role="status" className="text-center text-lg">{count == null ? 'Counting…' : `${count} movies in the deck`}</p>}
     {error && <p role="alert" className="text-center text-sm text-destructive">{error}</p>}
-    <Button size="lg" className="mx-auto" disabled={busy || !count} onClick={() => void create()}>Create movie night</Button>
+    <Button size="lg" className="mx-auto" disabled={busy || !count || countError} onClick={() => void create()}>Create movie night</Button>
     <Button asChild variant="ghost" className="mx-auto"><Link to="/">Cancel</Link></Button>
   </main>;
 
