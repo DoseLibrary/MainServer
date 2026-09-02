@@ -26,6 +26,8 @@ import { Downloads } from '@/routes/Downloads';
 import { TrailerWatch } from '@/routes/TrailerWatch';
 import { PairDevice } from '@/routes/PairDevice';
 import { LinkDevice } from '@/routes/LinkDevice';
+import { MovieNightTv } from '@/routes/MovieNightTv';
+import { MovieNightJoin } from '@/routes/MovieNightJoin';
 
 const routes: RouteObject[] = [
   { path: '/', element: <Home /> },
@@ -43,6 +45,9 @@ const routes: RouteObject[] = [
   // Device pairing: /pair runs on the device without a keyboard, /link on the phone.
   { path: '/pair', element: <PairDevice /> },
   { path: '/link', element: <LinkDevice /> },
+  // Movie night: /movie-night runs on the TV, /movie-night/join on each phone.
+  { path: '/movie-night', element: <MovieNightTv /> },
+  { path: '/movie-night/join', element: <MovieNightJoin /> },
   // Plugin administration moved under /admin; the old path stays as a redirect.
   { path: '/profile/plugins', element: <Navigate to="/admin/plugins" replace /> },
   { path: '/admin', element: <AdminRoute><AdminHome /></AdminRoute> },

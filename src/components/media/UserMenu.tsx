@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Clapperboard, Dices, Download, Film, History, LayoutDashboard, ListOrdered, ListVideo, LogOut, Puzzle, UserRound, UsersRound } from 'lucide-react';
+import { Clapperboard, Dices, Download, Film, History, LayoutDashboard, ListOrdered, ListVideo, LogOut, PartyPopper, Puzzle, UserRound, UsersRound } from 'lucide-react';
 import { api, type User } from '@/lib/api';
 import { clearCache } from '@/lib/cache';
 import { downloadQueue } from '@/lib/downloads';
@@ -65,6 +65,7 @@ export function UserMenu({ user: providedUser, onLogout }: { user?: User; onLogo
             <DropdownMenuSeparator />
             <DropdownMenuGroup>
               <DropdownMenuItem onSelect={() => setRandomOpen(true)}><Dices className="mr-2 h-4 w-4" aria-hidden="true" />Random pick</DropdownMenuItem>
+              <DropdownMenuItem asChild><a href="/movie-night"><PartyPopper className="mr-2 h-4 w-4" aria-hidden="true" />Movie night</a></DropdownMenuItem>
               <DropdownMenuItem asChild><a href="/profile"><UserRound className="mr-2 h-4 w-4" aria-hidden="true" />Profile</a></DropdownMenuItem>
               <DropdownMenuItem asChild><a href="/profile/collections"><ListVideo className="mr-2 h-4 w-4" aria-hidden="true" />My Collections</a></DropdownMenuItem>
               <DropdownMenuItem asChild><a href="/profile/queue"><ListOrdered className="mr-2 h-4 w-4" aria-hidden="true" />Marathon queue</a></DropdownMenuItem>
