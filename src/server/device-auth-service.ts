@@ -2,7 +2,7 @@ import { and, eq, lt, or } from 'drizzle-orm';
 import { randomBytes } from 'node:crypto';
 import type { Database } from './db/client.ts';
 import { deviceAuthRequests, sessions } from './db/schema.ts';
-import { createSessionToken, hashSessionToken, SESSION_TTL_MS } from './security.ts';
+import { createSessionToken, DEVICE_SESSION_TTL_MS, hashSessionToken } from './security.ts';
 
 /** Pairing requests are short-lived: a code on a TV screen is a standing invitation. */
 export const DEVICE_CODE_TTL_MS = 10 * 60 * 1000;
@@ -114,7 +114,7 @@ export class DeviceAuthService {
       if (!claimed) throw new DeviceAuthError('already_used');
       await tx.insert(sessions).values({
         userId, tokenHash: hashSessionToken(token), deviceName: request.deviceName, createdVia: 'device',
-        expiresAt: new Date(Date.now() + SESSION_TTL_MS),
+        expiresAt: new Date(Date.now() + DEVICE_SESSION_TTL_MS),
       });
     });
     return { status: 'approved', token, userId };

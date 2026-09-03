@@ -1,14 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { AuthService, DuplicateLibraryError, UserInvariantError } from './auth-service.ts';
 import type { Database } from './db/client.ts';
+import { DEVICE_SESSION_TTL_MS, SESSION_TTL_MS } from './security.ts';
 
 const user = { id: 'user-id', username: 'person', passwordHash: 'hash', role: 'member' as const, disabled: false, createdAt: new Date(), updatedAt: new Date() };
 
-function authDatabase(row: Record<string, unknown> | null) {
+function authDatabase(row: Record<string, unknown> | null, sets: Record<string, unknown>[] = []) {
   // Sessions carry an id and a last-seen stamp that authenticate() refreshes.
-  const full = row ? { id: 'session-id', lastSeenAt: new Date(), ...row } : null;
+  const full = row ? { id: 'session-id', lastSeenAt: new Date(), createdVia: 'password', ...row } : null;
   const query = { from: () => query, innerJoin: () => query, where: () => query, limit: async () => full ? [full] : [] };
-  const update = { set: () => update, where: async () => undefined };
+  const update = { set: (change: Record<string, unknown>) => { sets.push(change); return update; }, where: async () => undefined };
   return { select: () => query, update: () => update } as unknown as Database;
 }
 
@@ -27,8 +28,47 @@ describe('AuthService session validation', () => {
   });
   it('refreshes a stale last-seen stamp without failing the request', async () => {
     const stale = new Date(Date.now() - 60 * 60 * 1000);
-    const service = new AuthService(authDatabase({ user, expiresAt: new Date(Date.now() + 10_000), lastSeenAt: stale }));
+    const sets: Record<string, unknown>[] = [];
+    const service = new AuthService(authDatabase({ user, expiresAt: new Date(Date.now() + SESSION_TTL_MS), lastSeenAt: stale }, sets));
     await expect(service.authenticate('token')).resolves.toMatchObject({ id: 'user-id' });
+    expect(sets).toHaveLength(1);
+    expect(sets[0]).toHaveProperty('lastSeenAt');
+    expect(sets[0]).not.toHaveProperty('expiresAt');
+  });
+  it('does not write anything when last-seen is fresh and the session is far from expiry', async () => {
+    const sets: Record<string, unknown>[] = [];
+    const service = new AuthService(authDatabase({ user, expiresAt: new Date(Date.now() + SESSION_TTL_MS) }, sets));
+    await expect(service.authenticate('token')).resolves.toMatchObject({ id: 'user-id' });
+    expect(sets).toHaveLength(0);
+  });
+  it('renews a browser session nearing expiry, in the same throttled write as the last-seen refresh', async () => {
+    const stale = new Date(Date.now() - 60 * 60 * 1000);
+    const nearExpiry = new Date(Date.now() + SESSION_TTL_MS * 0.1); // inside the last 25% of its lifetime
+    const sets: Record<string, unknown>[] = [];
+    const service = new AuthService(authDatabase({ user, expiresAt: nearExpiry, lastSeenAt: stale }, sets));
+    await expect(service.authenticate('token')).resolves.toMatchObject({ id: 'user-id' });
+    expect(sets).toHaveLength(1);
+    const change = sets[0] as { lastSeenAt: Date; expiresAt: Date };
+    expect(change.expiresAt.getTime()).toBeGreaterThan(Date.now() + SESSION_TTL_MS * 0.9);
+  });
+  it('renews a near-expiry device session using the long device TTL, not the browser one', async () => {
+    const stale = new Date(Date.now() - 60 * 60 * 1000);
+    const nearExpiry = new Date(Date.now() + DEVICE_SESSION_TTL_MS * 0.1);
+    const sets: Record<string, unknown>[] = [];
+    const service = new AuthService(authDatabase({ user, expiresAt: nearExpiry, lastSeenAt: stale, createdVia: 'device' }, sets));
+    await expect(service.authenticate('token')).resolves.toMatchObject({ id: 'user-id' });
+    expect(sets).toHaveLength(1);
+    const change = sets[0] as { lastSeenAt: Date; expiresAt: Date };
+    expect(change.expiresAt.getTime()).toBeGreaterThan(Date.now() + DEVICE_SESSION_TTL_MS * 0.9);
+  });
+  it('does not renew a session outside the renewal window even when last-seen is stale', async () => {
+    const stale = new Date(Date.now() - 60 * 60 * 1000);
+    const notNearExpiry = new Date(Date.now() + SESSION_TTL_MS * 0.9);
+    const sets: Record<string, unknown>[] = [];
+    const service = new AuthService(authDatabase({ user, expiresAt: notNearExpiry, lastSeenAt: stale }, sets));
+    await expect(service.authenticate('token')).resolves.toMatchObject({ id: 'user-id' });
+    expect(sets).toHaveLength(1);
+    expect(sets[0]).not.toHaveProperty('expiresAt');
   });
   it('maps postgres unique violations to a domain error', async () => {
     const returning = async () => { throw Object.assign(new Error('private database detail'), { code: '23505' }); };

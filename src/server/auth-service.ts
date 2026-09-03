@@ -1,9 +1,12 @@
 import { eq, sql } from 'drizzle-orm';
 import type { Database } from './db/client.ts';
 import { libraries, sessions, users } from './db/schema.ts';
-import { createSessionToken, DUMMY_PASSWORD_HASH, hashPassword, hashSessionToken, SESSION_TTL_MS, verifyPassword } from './security.ts';
+import { createSessionToken, DEVICE_SESSION_TTL_MS, DUMMY_PASSWORD_HASH, hashPassword, hashSessionToken, SESSION_TTL_MS, verifyPassword } from './security.ts';
 
 const LAST_SEEN_REFRESH_MS = 5 * 60 * 1000;
+/** Sliding renewal: once a session enters the last quarter of its lifetime,
+ * a valid use extends it rather than letting it lapse under an idle device. */
+const RENEWAL_WINDOW_FRACTION = 0.25;
 
 export type PublicUser = { id: string; username: string; role: 'admin' | 'member'; maxMaturityLevel: number | null };
 export type ManagedUser = PublicUser & { disabled: boolean; createdAt: Date; updatedAt: Date };
@@ -45,14 +48,18 @@ export class AuthService {
   async authenticate(token?: string) {
     if (!token) return null;
     const tokenHash = hashSessionToken(token);
-    const [row] = await this.db.select({ user: users, id: sessions.id, expiresAt: sessions.expiresAt, lastSeenAt: sessions.lastSeenAt })
+    const [row] = await this.db.select({ user: users, id: sessions.id, expiresAt: sessions.expiresAt, lastSeenAt: sessions.lastSeenAt, createdVia: sessions.createdVia })
       .from(sessions).innerJoin(users, eq(sessions.userId, users.id))
       .where(eq(sessions.tokenHash, tokenHash)).limit(1);
     if (!row || row.user.disabled || row.expiresAt <= new Date()) return null;
     // Device management shows "last seen"; a write per request would be wasteful,
-    // so the stamp is refreshed at most once every few minutes.
+    // so the stamp (and, near expiry, a sliding renewal of the session) is
+    // refreshed at most once every few minutes, in the same write.
     if (Date.now() - row.lastSeenAt.getTime() > LAST_SEEN_REFRESH_MS) {
-      await this.db.update(sessions).set({ lastSeenAt: new Date() }).where(eq(sessions.id, row.id));
+      const ttl = row.createdVia === 'device' ? DEVICE_SESSION_TTL_MS : SESSION_TTL_MS;
+      const change: { lastSeenAt: Date; expiresAt?: Date } = { lastSeenAt: new Date() };
+      if (row.expiresAt.getTime() - Date.now() <= ttl * RENEWAL_WINDOW_FRACTION) change.expiresAt = new Date(Date.now() + ttl);
+      await this.db.update(sessions).set(change).where(eq(sessions.id, row.id));
     }
     return this.publicUser(row.user);
   }

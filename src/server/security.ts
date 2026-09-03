@@ -5,6 +5,9 @@ import { argon2id, hash, verify } from 'argon2';
 
 export const SESSION_COOKIE = 'dose_session';
 export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+/** Device sessions (QR pairing, e.g. an Android TV) live far longer than
+ * browser sessions: there's no user around to log back in when they expire. */
+export const DEVICE_SESSION_TTL_MS = 365 * 24 * 60 * 60 * 1000;
 export const DUMMY_PASSWORD_HASH = '$argon2id$v=19$m=65536,p=4,t=3$eHBmb2FFV+eTKddtBTIUcA$1j70Q7tF59vZl0T39ApEe1zvw0HIS+5SeB5Ijx1Lu9Y';
 
 export interface LibraryFilesystem {

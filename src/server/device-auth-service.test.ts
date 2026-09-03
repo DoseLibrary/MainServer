@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { AuthService } from './auth-service.ts';
 import type { Database } from './db/client.ts';
 import { DeviceAuthError, DeviceAuthService, normalizeUserCode } from './device-auth-service.ts';
+import { DEVICE_SESSION_TTL_MS, SESSION_TTL_MS } from './security.ts';
 
 describe('DeviceAuthService', () => {
   let client: PGlite;
@@ -50,6 +51,20 @@ describe('DeviceAuthService', () => {
     expect(await auth.authenticate(session!.token)).toMatchObject({ id: userId, username: 'owner' });
     const sessions = await devices.listSessions(userId, session!.token);
     expect(sessions[0]).toMatchObject({ deviceName: 'TV in the den', createdVia: 'device', current: true });
+  });
+
+  it('mints a paired session with the long device TTL, not the browser one', async () => {
+    const started = await devices.start('TV in the den');
+    await devices.resolve(started.userCode, userId, 'approved');
+    await allowPoll();
+    const before = Date.now();
+    await devices.poll(started.deviceCode);
+
+    const [row] = await devices.listSessions(userId);
+    const ttlMs = row.expiresAt.getTime() - before;
+    expect(ttlMs).toBeGreaterThan(SESSION_TTL_MS);
+    expect(ttlMs).toBeLessThanOrEqual(DEVICE_SESSION_TTL_MS + 5_000);
+    expect(ttlMs).toBeGreaterThan(DEVICE_SESSION_TTL_MS - 5_000);
   });
 
   it('reports a denial and never mints a session', async () => {

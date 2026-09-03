@@ -12,6 +12,9 @@ const environmentSchema = z.object({
   SCAN_STALE_AFTER_MS: z.coerce.number().int().min(60_000).max(86_400_000).default(1_800_000),
   LIBRARY_WATCH_ENABLED: z.stringbool().default(true),
   LIBRARY_WATCH_DEBOUNCE_MS: z.coerce.number().int().min(50).max(60_000).default(1_000),
+  /** Advertises the server as `dose.local` via mDNS so clients can find it
+   * without typing an IP. Off it goes when multicast is unavailable or unwanted. */
+  MDNS_ENABLED: z.stringbool().default(true),
   // Probing reads container headers, not whole files; a modern box and an
   // array both handle more than three at once.
   FFPROBE_CONCURRENCY: z.coerce.number().int().min(1).max(16).default(6),
@@ -39,7 +42,7 @@ const environmentSchema = z.object({
 });
 
 type ParsedConfig = z.infer<typeof environmentSchema>;
-type TuningKey = 'SCAN_FS_CONCURRENCY' | 'SCAN_INGEST_CONCURRENCY' | 'SCAN_STALE_AFTER_MS' | 'LIBRARY_WATCH_ENABLED' | 'LIBRARY_WATCH_DEBOUNCE_MS' | 'FFPROBE_CONCURRENCY' | 'FFPROBE_TIMEOUT_MS' | 'TMDB_CONCURRENCY' | 'TMDB_IMAGE_CONCURRENCY' | 'TRUST_PROXY' | 'TMDB_REQUESTS_PER_SECOND' | 'TMDB_TIMEOUT_MS' | 'HWACCEL' | 'HWACCEL_DECODE';
+type TuningKey = 'SCAN_FS_CONCURRENCY' | 'SCAN_INGEST_CONCURRENCY' | 'SCAN_STALE_AFTER_MS' | 'LIBRARY_WATCH_ENABLED' | 'LIBRARY_WATCH_DEBOUNCE_MS' | 'MDNS_ENABLED' | 'FFPROBE_CONCURRENCY' | 'FFPROBE_TIMEOUT_MS' | 'TMDB_CONCURRENCY' | 'TMDB_IMAGE_CONCURRENCY' | 'TRUST_PROXY' | 'TMDB_REQUESTS_PER_SECOND' | 'TMDB_TIMEOUT_MS' | 'HWACCEL' | 'HWACCEL_DECODE';
 export type AppConfig = Omit<ParsedConfig, TuningKey> & Partial<Pick<ParsedConfig, TuningKey>>;
 
 export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppConfig {
