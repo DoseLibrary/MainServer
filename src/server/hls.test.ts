@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { PlaybackPlan } from './playback.ts';
-import { SEGMENT_SECONDS, buildSegmentArgs, ladderFor, masterPlaylist, mediaPlaylist, segmentCount } from './hls.ts';
+import { SEGMENT_SECONDS, buildSegmentArgs, ladderFor, masterPlaylist, mediaPlaylist, segmentCount, type HlsVariant } from './hls.ts';
 import { buildTranscodeArgs } from './streaming.ts';
 
 const execFileAsync = promisify(execFile);
@@ -95,4 +95,21 @@ describe('encoding a real segment', () => {
     void probe; // piping to ffprobe stdin is flaky on Windows; the offset flag is asserted in args instead
     expect(args.join(' ')).toContain('-output_ts_offset 12');
   }, 90_000);
+});
+
+describe('HDR segments', () => {
+  const hdrPlan: PlaybackPlan = { mode: 'transcode', container: 'mp4', remux: false, audioTrackIndex: 0, video: { action: 'transcode', codec: 'h264', height: 2160, hdr: true }, audio: { action: 'transcode', codec: 'aac' }, reasons: [] };
+  const variant: HlsVariant = { id: '1080p', label: '1080p', height: 1080, bandwidth: 8_000_000, crf: 21, maxBitrateK: 8000 };
+
+  it('tone-maps every rung of an HDR transcode after the downscale', () => {
+    const joined = buildSegmentArgs('/media/a.mkv', hdrPlan, variant, 0, 600).join(' ');
+    expect(joined).toContain('tonemap=');
+    expect(joined.indexOf('scale=-2:1080')).toBeLessThan(joined.indexOf('tonemap='));
+  });
+
+  it('keeps the hardware upload after the tone-map', () => {
+    const vaapi = { family: 'vaapi', codec: 'h264', encoder: 'h264_vaapi', device: '/dev/dri/renderD128' } as unknown as Parameters<typeof buildSegmentArgs>[5];
+    const joined = buildSegmentArgs('/media/a.mkv', hdrPlan, variant, 0, 600, vaapi).join(' ');
+    expect(joined.indexOf('tonemap=')).toBeLessThan(joined.indexOf('hwupload'));
+  });
 });

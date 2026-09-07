@@ -66,12 +66,38 @@ const VIDEO_ENCODERS: Record<string, string> = {
   av1: 'libsvtav1',
 };
 
+/** Encoders that take more than two channels. */
+const SURROUND_ENCODERS = new Set(['aac', 'opus', 'vorbis']);
+
 const AUDIO_ENCODERS: Record<string, string> = {
   aac: 'aac',
   opus: 'libopus',
   mp3: 'libmp3lame',
   vorbis: 'libvorbis',
 };
+
+/**
+ * HDR (PQ/HLG) frames re-encoded straight into an 8-bit SDR stream come out
+ * grey and washed out. This chain converts to linear light, tone-maps with the
+ * Hable curve, and lands in BT.709 limited range, which is what every SDR
+ * player expects. It runs on the CPU in float, so it sits after any downscale.
+ */
+const TONE_MAP_TO_SDR = [
+  'zscale=t=linear:npl=100',
+  'format=gbrpf32le',
+  'zscale=p=bt709',
+  'tonemap=tonemap=hable:desat=0',
+  'zscale=t=bt709:m=bt709:r=tv',
+  'format=yuv420p',
+];
+
+/** Insert the tone-map chain after the scale step, before any GPU upload. */
+export function toneMapped(filters: string[], hdr?: boolean): string[] {
+  if (!hdr) return filters;
+  const scaleAt = filters.findIndex((filter) => filter.startsWith('scale='));
+  const at = scaleAt + 1;
+  return [...filters.slice(0, at), ...TONE_MAP_TO_SDR, ...filters.slice(at)];
+}
 
 /**
  * Build ffmpeg args that realise a negotiated plan, streaming a fragmented MP4
@@ -96,20 +122,30 @@ export function buildTranscodeArgs(plan: PlaybackPlan, inputPath: string, startS
     args.push('-map', '0:v:0');
     if (plan.video.action === 'copy') {
       args.push('-c:v', 'copy');
+      // ffmpeg tags copied HEVC as `hev1`; Safari and some TV players only
+      // recognise `hvc1`, and every player accepts it.
+      if (plan.video.codec === 'hevc') args.push('-tag:v', 'hvc1');
     } else if (encoder) {
       args.push('-c:v', encoder.encoder, ...rateControlArgs(encoder, 21));
-      const filters = videoFilters(encoder, plan.video.height);
+      const filters = toneMapped(videoFilters(encoder, plan.video.height), plan.video.hdr);
       if (filters.length) args.push('-vf', filters.join(','));
     } else {
       args.push('-c:v', VIDEO_ENCODERS[plan.video.codec] ?? 'libx264', '-preset', 'veryfast', '-crf', '21');
-      if (plan.video.height) args.push('-vf', `scale=-2:${plan.video.height}`);
+      const filters = toneMapped(plan.video.height ? [`scale=-2:${plan.video.height}`] : [], plan.video.hdr);
+      if (filters.length) args.push('-vf', filters.join(','));
     }
   }
 
   if (plan.audio) {
     args.push('-map', `0:a:${plan.audioTrackIndex ?? 0}`);
     if (plan.audio.action === 'copy') args.push('-c:a', 'copy');
-    else args.push('-c:a', AUDIO_ENCODERS[plan.audio.codec] ?? 'aac', '-b:a', '192k');
+    else {
+      // Some sources (notably converted E-AC-3) carry six channels with no
+      // named layout, which the AAC encoder refuses outright; naming the
+      // layouts it may pick makes swresample map the channels instead.
+      const layouts = SURROUND_ENCODERS.has(plan.audio.codec) ? '7.1|5.1|stereo|mono' : 'stereo|mono';
+      args.push('-c:a', AUDIO_ENCODERS[plan.audio.codec] ?? 'aac', '-b:a', '192k', '-af', `aformat=channel_layouts=${layouts}`);
+    }
   }
 
   // Fragmented MP4 so playback starts before the whole file is produced.
@@ -134,6 +170,7 @@ export function decodePlaybackPlan(value: string): PlaybackPlan | null {
       ((track.action === 'copy' || track.action === 'transcode') && typeof track.codec === 'string' && PLAN_CODECS.test(track.codec));
     if (!validTrack(raw.video) || !validTrack(raw.audio)) return null;
     if (raw.video?.height != null && (!Number.isInteger(raw.video.height) || raw.video.height <= 0 || raw.video.height > 16384)) return null;
+    if (raw.video?.hdr != null && typeof raw.video.hdr !== 'boolean') return null;
     return raw as PlaybackPlan;
   } catch {
     return null;

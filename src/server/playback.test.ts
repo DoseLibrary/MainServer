@@ -165,3 +165,47 @@ describe('sources that cannot be handed over untouched', () => {
     expect(negotiatePlayback(h264Mp4, capable, 0, { directPlayable: true }).mode).toBe('direct');
   });
 });
+
+describe('matroska direct play', () => {
+  const mkvH264: Probe = {
+    format: { format_name: 'matroska,webm' },
+    streams: [
+      { codec_type: 'video', codec_name: 'h264', height: 1080 },
+      { codec_type: 'audio', codec_name: 'aac' },
+    ],
+  };
+
+  it('direct plays an mkv for a client that declares matroska', () => {
+    const plan = negotiatePlayback(mkvH264, { containers: ['mp4', 'matroska'], videoCodecs: ['h264'], audioCodecs: ['aac'] });
+    expect(plan.mode).toBe('direct');
+    expect(plan.container).toBe('matroska');
+  });
+
+  it('treats the mkv token as matroska', () => {
+    const plan = negotiatePlayback(mkvH264, { containers: ['mp4', 'mkv'], videoCodecs: ['h264'], audioCodecs: ['aac'] });
+    expect(plan.mode).toBe('direct');
+    expect(plan.container).toBe('matroska');
+  });
+});
+
+describe('high dynamic range sources', () => {
+  const hdrHevc: Probe = {
+    format: { format_name: 'matroska,webm' },
+    streams: [
+      { codec_type: 'video', codec_name: 'hevc', height: 2160, color_transfer: 'smpte2084', color_primaries: 'bt2020' },
+      { codec_type: 'audio', codec_name: 'aac' },
+    ],
+  };
+
+  it('marks a re-encoded HDR video so the encoder can tone-map it', () => {
+    const plan = negotiatePlayback(hdrHevc, { containers: ['mp4'], videoCodecs: ['h264'], audioCodecs: ['aac'] });
+    expect(plan.video).toMatchObject({ action: 'transcode', codec: 'h264', hdr: true });
+  });
+
+  it('marks a copied HDR video too, and leaves SDR video unmarked', () => {
+    const copied = negotiatePlayback(hdrHevc, { containers: ['mp4'], videoCodecs: ['hevc'], audioCodecs: ['aac'] });
+    expect(copied.video).toMatchObject({ action: 'copy', codec: 'hevc', hdr: true });
+    const sdr = negotiatePlayback(h264Mp4, { containers: ['mkv'], videoCodecs: ['hevc'], audioCodecs: ['aac'] });
+    expect(sdr.video?.hdr).toBeUndefined();
+  });
+});

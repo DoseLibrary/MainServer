@@ -23,6 +23,8 @@ export interface ProbeStream {
   height?: number;
   channels?: number;
   bit_rate?: string | number;
+  color_transfer?: string;
+  color_primaries?: string;
 }
 
 export interface Probe {
@@ -39,7 +41,8 @@ export interface PlaybackPlan {
   container: string;
   /** `true` when both tracks are copied but the container is repackaged (cheap, no re-encode). */
   remux: boolean;
-  video: { action: TrackAction; codec: string; height?: number } | null;
+  /** `hdr` marks a PQ/HLG source: a copy passes it through, a re-encode must tone-map it. */
+  video: { action: TrackAction; codec: string; height?: number; hdr?: boolean } | null;
   audio: { action: TrackAction; codec: string } | null;
   /** Which audio stream of the file to play, by position among audio streams. */
   audioTrackIndex: number;
@@ -79,6 +82,22 @@ function preferred(supported: string[], fallback: string): string {
 const WEBM_VIDEO_CODECS = new Set(['vp8', 'vp9', 'av1']);
 const WEBM_AUDIO_CODECS = new Set(['vorbis', 'opus']);
 
+/**
+ * Clients name containers by file extension while ffprobe names the demuxer;
+ * `mkv` and `matroska` are the one pair that differs and it has to match, or
+ * an Android TV that plays Matroska natively is handed a remux instead.
+ */
+function containerToken(token: string): string {
+  return token === 'mkv' ? 'matroska' : token;
+}
+
+/** PQ (HDR10, Dolby Vision profiles 8.x) and HLG transfer characteristics. */
+const HDR_TRANSFERS = new Set(['smpte2084', 'smpte-st-2084', 'arib-std-b67']);
+
+function isHdr(stream: ProbeStream): boolean {
+  return HDR_TRANSFERS.has(stream.color_transfer?.toLowerCase() ?? '');
+}
+
 function sourceContainers(formatName: string, streams: ProbeStream[]): string[] {
   const tokens = formatName.split(',').map((token) => token.trim()).filter(Boolean);
   if (!tokens.includes('matroska') || !tokens.includes('webm')) return tokens;
@@ -102,12 +121,13 @@ export function negotiatePlayback(probe: Probe, capabilities: ClientCapabilities
   const streams = probe.streams ?? [];
   const source = probe.format?.format_name ?? '';
   const containerTokens = sourceContainers(source, streams);
-  const matchedContainer = containerTokens.find((token) => capabilities.containers.includes(token));
+  const clientContainers = capabilities.containers.map(containerToken);
+  const matchedContainer = containerTokens.find((token) => clientContainers.includes(token));
   const containerSupported = matchedContainer != null && options.directPlayable !== false;
   if (matchedContainer != null && !containerSupported) reasons.push('source container is not progressively playable; repackaging');
   // Everything the pipeline builds is fragmented mp4, so only a direct play keeps
   // the source container; a remux or re-encode is delivered in what we can produce.
-  const deliveryContainer = preferred(capabilities.containers, DEFAULT_CONTAINER);
+  const deliveryContainer = preferred(clientContainers, DEFAULT_CONTAINER);
   if (matchedContainer == null) reasons.push(`container ${source || 'unknown'} not supported; delivering ${deliveryContainer}`);
 
   const overallBitrate = toBitrate(probe.format?.bit_rate);
@@ -121,15 +141,17 @@ export function negotiatePlayback(probe: Probe, capabilities: ClientCapabilities
     const codecOk = capabilities.videoCodecs.includes(codec);
     const heightOk = capabilities.maxHeight == null || (height ?? 0) <= capabilities.maxHeight;
     const bitrateOk = capabilities.maxBitrate == null || bitrate == null || bitrate <= capabilities.maxBitrate;
+    const hdr = isHdr(videoStream) ? { hdr: true } : {};
     if (codecOk && heightOk && bitrateOk) {
-      video = { action: 'copy', codec, height };
+      video = { action: 'copy', codec, height, ...hdr };
     } else {
       const targetCodec = preferred(capabilities.videoCodecs, DEFAULT_VIDEO);
       const targetHeight = capabilities.maxHeight != null && height != null ? Math.min(height, capabilities.maxHeight) : height;
-      video = { action: 'transcode', codec: targetCodec, height: targetHeight };
+      video = { action: 'transcode', codec: targetCodec, height: targetHeight, ...hdr };
       if (!codecOk) reasons.push(`video codec ${codec || 'unknown'} unsupported; transcoding to ${targetCodec}`);
       else if (!heightOk) reasons.push(`video height ${height} exceeds ${capabilities.maxHeight}; downscaling`);
       else reasons.push('video bitrate exceeds client ceiling; transcoding');
+      if (hdr.hdr) reasons.push('HDR source is tone-mapped to SDR while re-encoding');
     }
   }
 

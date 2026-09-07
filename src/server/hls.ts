@@ -1,5 +1,6 @@
 import type { PlaybackPlan } from './playback.ts';
 import { decodeArgs, forcedKeyframeArgs, rateControlArgs, videoFilters, type EncoderChoice } from './hwaccel.ts';
+import { toneMapped } from './streaming.ts';
 
 /** Segment length. Short enough for snappy seeks, long enough to amortize the
  * per-segment encoder spawn. */
@@ -94,12 +95,13 @@ export function buildSegmentArgs(input: string, plan: PlaybackPlan, variant: Hls
   args.push('-map', '0:v:0');
   if (accel) {
     args.push('-c:v', accel.encoder, ...rateControlArgs(accel, variant.crf, variant.maxBitrateK));
-    const filters = videoFilters(accel, variant.height);
+    const filters = toneMapped(videoFilters(accel, variant.height), plan.video?.hdr);
     if (filters.length) args.push('-vf', filters.join(','));
   } else {
     args.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', String(variant.crf));
     if (variant.maxBitrateK) args.push('-maxrate', `${variant.maxBitrateK}k`, '-bufsize', `${variant.maxBitrateK * 2}k`);
-    if (variant.height) args.push('-vf', `scale=-2:${variant.height}`);
+    const filters = toneMapped(variant.height ? [`scale=-2:${variant.height}`] : [], plan.video?.hdr);
+    if (filters.length) args.push('-vf', filters.join(','));
   }
   // Every segment must open on a keyframe or the player cannot start mid-stream.
   args.push('-force_key_frames', 'expr:eq(n,0)', ...(accel ? forcedKeyframeArgs(accel) : []));

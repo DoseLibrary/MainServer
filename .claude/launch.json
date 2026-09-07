@@ -19,6 +19,16 @@
       "port": 3000
     },
     {
+      "name": "dose-api-localdb",
+      "runtimeExecutable": "pwsh",
+      "runtimeArgs": [
+        "-NoProfile",
+        "-Command",
+        "$env:NODE_ENV='development'; $env:PORT='3000'; $env:HOST='127.0.0.1'; $env:DATABASE_URL=\"pglite://$PWD/.dose/database\"; $env:CONFIG_PATH=\"$PWD/.dose/config\"; $env:TRANSCODE_PATH=\"$PWD/.dose/transcode\"; bun src/server/index.ts"
+      ],
+      "port": 3000
+    },
+    {
       "name": "dose-prod",
       "runtimeExecutable": "pwsh",
       "runtimeArgs": [

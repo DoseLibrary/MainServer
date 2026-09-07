@@ -529,3 +529,38 @@ describe('CatalogService movie deck', () => {
     expect((await limited.listMovieCards({})).map((c) => c.id)).toEqual([A]);
   });
 });
+
+describe('CatalogService file preference', () => {
+  let client: PGlite;
+  let service: CatalogService;
+  const SHORT = '10000000-0000-4000-8000-00000000f001';
+  const LONG = '10000000-0000-4000-8000-00000000f002';
+
+  beforeEach(async () => {
+    client = new PGlite('memory://');
+    const database = drizzle(client) as unknown as Database;
+    await migrate(database as never, { migrationsFolder: resolve(process.cwd(), 'drizzle') });
+    service = new CatalogService(database);
+    await client.query(`insert into libraries (id, name, kind, root_path) values ($1, 'Shows', 'shows', '/media')`, [LIB]);
+    await client.query(`insert into media_items (id, library_id, kind, natural_key, title, sort_title) values ($1, $2, 'movie', 'movie:pickle', 'Pickle', 'pickle')`, [MOVIE, LIB]);
+    // A truncated conversion sits beside the full file; insertion order must not decide which one plays.
+    await client.query(`insert into media_files (id, media_item_id, library_id, relative_path, size_bytes, modified_at, duration_seconds) values ($1, $2, $3, 'Pickle.mp4', 100, now(), 295)`, [SHORT, MOVIE, LIB]);
+    await client.query(`insert into media_files (id, media_item_id, library_id, relative_path, size_bytes, modified_at, duration_seconds) values ($1, $2, $3, 'Pickle.mkv', 1000, now(), 1405)`, [LONG, MOVIE, LIB]);
+    await client.query(`update media_files set updated_at = now() where id = $1`, [SHORT]);
+  });
+  afterEach(async () => { await client.close(); });
+
+  it('plays, lists and times the longest file consistently', async () => {
+    const source = await service.playbackSource(MOVIE);
+    expect(source?.relativePath).toBe('Pickle.mkv');
+    expect(source?.durationSeconds).toBe(1405);
+    const details = await service.item(MOVIE, USER) as { runtime?: string; files: Array<{ relativePath: string }> };
+    expect(details.runtime).toBe('23m');
+    expect(details.files.map((file) => file.relativePath)).toEqual(['Pickle.mkv', 'Pickle.mp4']);
+    const home = await service.home(LIB, USER);
+    const card = home.sections.flatMap((section) => section.items).find((item) => item.id === MOVIE);
+    expect(card).toBeDefined();
+    const search = await service.search(LIB, 'Pickle');
+    expect(search.groups.flatMap((group) => group.items).find((item) => item.id === MOVIE)?.meta).toBe('23m');
+  });
+});
