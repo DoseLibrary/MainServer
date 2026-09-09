@@ -1,5 +1,5 @@
 import type { PlaybackPlan } from './playback.ts';
-import { decodeArgs, forcedKeyframeArgs, rateControlArgs, videoFilters, type EncoderChoice } from './hwaccel.ts';
+import { DEFAULT_ENCODING, decodeArgs, forcedKeyframeArgs, rateControlArgs, threadArgs, videoFilters, type EncoderChoice, type EncodingOptions } from './hwaccel.ts';
 import { toneMapped } from './streaming.ts';
 
 /** Segment length. Short enough for snappy seeks, long enough to amortize the
@@ -17,7 +17,7 @@ export interface HlsVariant {
   height?: number;
   /** Rough peak bandwidth for the master playlist, bits per second. */
   bandwidth: number;
-  /** x264 rate control for this rung. */
+  /** x264 rate control for this rung at the default quality; the operator's quality shifts every rung together. */
   crf: number;
   maxBitrateK?: number;
 }
@@ -83,8 +83,9 @@ export function mediaPlaylist(durationSeconds: number, segmentUrl: (index: numbe
  * 6-second marks — only at keyframes — and misaligned cuts stutter at every
  * boundary; x264 veryfast is the price of clean, seekable segments.
  */
-export function buildSegmentArgs(input: string, plan: PlaybackPlan, variant: HlsVariant, index: number, durationSeconds: number, accel?: EncoderChoice | null): string[] {
+export function buildSegmentArgs(input: string, plan: PlaybackPlan, variant: HlsVariant, index: number, durationSeconds: number, accel?: EncoderChoice | null, encoding: EncodingOptions = DEFAULT_ENCODING): string[] {
   const start = index * SEGMENT_SECONDS;
+  const crf = variant.crf - DEFAULT_ENCODING.quality + encoding.quality;
   const remaining = Math.max(0.5, Math.min(SEGMENT_SECONDS, durationSeconds - start));
   const args = [
     '-hide_banner', '-loglevel', 'error',
@@ -94,11 +95,11 @@ export function buildSegmentArgs(input: string, plan: PlaybackPlan, variant: Hls
 
   args.push('-map', '0:v:0');
   if (accel) {
-    args.push('-c:v', accel.encoder, ...rateControlArgs(accel, variant.crf, variant.maxBitrateK));
+    args.push('-c:v', accel.encoder, ...rateControlArgs(accel, crf, variant.maxBitrateK, encoding.preset));
     const filters = toneMapped(videoFilters(accel, variant.height), plan.video?.hdr);
     if (filters.length) args.push('-vf', filters.join(','));
   } else {
-    args.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', String(variant.crf));
+    args.push('-c:v', 'libx264', '-preset', encoding.preset, '-crf', String(crf), ...threadArgs(encoding));
     if (variant.maxBitrateK) args.push('-maxrate', `${variant.maxBitrateK}k`, '-bufsize', `${variant.maxBitrateK * 2}k`);
     const filters = toneMapped(variant.height ? [`scale=-2:${variant.height}`] : [], plan.video?.hdr);
     if (filters.length) args.push('-vf', filters.join(','));

@@ -61,6 +61,17 @@ describe('CatalogService enrichment serialization', () => {
     expect(recs[0]).toMatchObject({ id: REC, posterUrl: '/api/v1/images/q.jpg' });
   });
 
+  it('offers an unauthenticated share preview with the backdrop over the poster', async () => {
+    expect(await service.sharePreview(MOVIE)).toEqual({ title: 'One', overview: 'A film', kind: 'movie', year: 2020, imageUrl: '/api/v1/images/p.jpg' });
+    expect(await service.sharePreview('00000000-0000-4000-8000-0000000000aa')).toBeNull();
+  });
+
+  it('reports when a title was added to the library', async () => {
+    const details = await service.item(MOVIE, USER) as Record<string, unknown>;
+    expect(typeof details.addedAt).toBe('string');
+    expect(Number.isNaN(Date.parse(details.addedAt as string))).toBe(false);
+  });
+
   it('adds quality badge and genres to search results', async () => {
     const { groups } = await service.search(LIB, 'One');
     const item = groups.flatMap((group) => group.items).find((entry) => entry.id === MOVIE);

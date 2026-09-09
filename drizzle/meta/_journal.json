@@ -183,6 +183,13 @@
       "when": 1788279495447,
       "tag": "0025_dazzling_marvex",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1788937575165,
+      "tag": "0026_server_settings",
+      "breakpoints": true
     }
   ]
 }

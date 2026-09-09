@@ -1,6 +1,6 @@
 import { resolve, sep } from 'node:path';
 import type { PlaybackPlan } from './playback.ts';
-import { decodeArgs, rateControlArgs, videoFilters, type EncoderChoice } from './hwaccel.ts';
+import { DEFAULT_ENCODING, decodeArgs, rateControlArgs, threadArgs, videoFilters, type EncoderChoice, type EncodingOptions } from './hwaccel.ts';
 
 const PLAN_CODECS = /^[a-z0-9._-]{1,32}$/i;
 
@@ -103,7 +103,7 @@ export function toneMapped(filters: string[], hdr?: boolean): string[] {
  * Build ffmpeg args that realise a negotiated plan, streaming a fragmented MP4
  * to stdout. `accel` picks a GPU encoder; without it the software path runs.
  */
-export function buildTranscodeArgs(plan: PlaybackPlan, inputPath: string, startSeconds?: number, accel?: EncoderChoice | null): string[] {
+export function buildTranscodeArgs(plan: PlaybackPlan, inputPath: string, startSeconds?: number, accel?: EncoderChoice | null, encoding: EncodingOptions = DEFAULT_ENCODING): string[] {
   // Hardware decoding only helps when we also re-encode; a copied video track
   // is never decoded at all.
   const reEncoding = plan.video?.action === 'transcode';
@@ -126,11 +126,11 @@ export function buildTranscodeArgs(plan: PlaybackPlan, inputPath: string, startS
       // recognise `hvc1`, and every player accepts it.
       if (plan.video.codec === 'hevc') args.push('-tag:v', 'hvc1');
     } else if (encoder) {
-      args.push('-c:v', encoder.encoder, ...rateControlArgs(encoder, 21));
+      args.push('-c:v', encoder.encoder, ...rateControlArgs(encoder, encoding.quality, undefined, encoding.preset));
       const filters = toneMapped(videoFilters(encoder, plan.video.height), plan.video.hdr);
       if (filters.length) args.push('-vf', filters.join(','));
     } else {
-      args.push('-c:v', VIDEO_ENCODERS[plan.video.codec] ?? 'libx264', '-preset', 'veryfast', '-crf', '21');
+      args.push('-c:v', VIDEO_ENCODERS[plan.video.codec] ?? 'libx264', '-preset', encoding.preset, '-crf', String(encoding.quality), ...threadArgs(encoding));
       const filters = toneMapped(plan.video.height ? [`scale=-2:${plan.video.height}`] : [], plan.video.hdr);
       if (filters.length) args.push('-vf', filters.join(','));
     }

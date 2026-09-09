@@ -45,7 +45,7 @@ describe('ArtworkService', () => {
   });
 
   it('returns empty options when the title has no provider id', async () => {
-    expect(await service.options(NO_ID)).toEqual({ posters: [], backdrops: [] });
+    expect(await service.options(NO_ID)).toEqual({ posters: [], backdrops: [], logos: [] });
     expect(getImages).not.toHaveBeenCalled();
   });
 
@@ -55,6 +55,22 @@ describe('ArtworkService', () => {
     expect(result).toMatchObject({ id: MOVIE, posterUrl: '/api/v1/images/p2.jpg' });
     const { rows } = await client.query<{ poster_path: string }>(`select poster_path from media_items where id = $1`, [MOVIE]);
     expect(rows[0]?.poster_path).toBe('/p2.jpg');
+  });
+
+  it('lists provider logos alongside posters and backdrops', async () => {
+    getImages.mockResolvedValueOnce({ posters: [], backdrops: [], logos: ['/l1.png'] });
+    const options = await service.options(MOVIE);
+    expect(options?.logos).toEqual([{ path: '/l1.png', previewUrl: 'https://image.tmdb.org/t/p/w500/l1.png' }]);
+  });
+
+  it('caches and applies a chosen logo, and clears it on null', async () => {
+    const result = await service.apply(MOVIE, { logoPath: '/l1.png' });
+    expect(cache).toHaveBeenCalledWith('/l1.png', 'logo');
+    expect(result).toMatchObject({ id: MOVIE, logoUrl: '/api/v1/images/l1.png' });
+    const cleared = await service.apply(MOVIE, { logoPath: null });
+    expect(cleared?.logoUrl).toBeUndefined();
+    const { rows } = await client.query<{ logo_path: string | null }>(`select logo_path from media_items where id = $1`, [MOVIE]);
+    expect(rows[0]?.logo_path).toBeNull();
   });
 
   it('rejects malformed image paths', async () => {

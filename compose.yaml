@@ -1,6 +1,9 @@
 services:
   dose:
-    build: .
+    # Published by .github/workflows/docker.yml on every push to v2. Pin a
+    # release with DOSE_VERSION=1.2.3 in .env; build from source instead with
+    # compose.build.yaml.
+    image: ghcr.io/doselibrary/dose:${DOSE_VERSION:-latest}
     restart: unless-stopped
     depends_on:
       postgres:

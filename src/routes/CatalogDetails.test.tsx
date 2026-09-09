@@ -82,6 +82,30 @@ describe('CatalogDetails', () => {
     expect(await screen.findByRole('link', { name: 'Play' })).toHaveAttribute('href', '/watch/m4');
     expect(screen.queryByRole('link', { name: 'Play from start' })).toBeNull();
   });
+  it('shows when a movie would end and when it was added', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, now: new Date('2026-03-14T20:00:00') });
+    try {
+      globalThis.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ item: {
+        id: 'm6', title: 'Heat', kind: 'movie', progress: 0.5, addedAt: '2026-03-01T09:30:00.000Z',
+        files: [{ id: 'f1', relativePath: 'Heat.mkv', durationSeconds: 7200 }],
+      } }), { status: 200 }));
+      render(<MemoryRouter initialEntries={['/media/m6']}><Routes><Route path="/media/:id" element={<CatalogDetails />} /></Routes></MemoryRouter>);
+      await screen.findByRole('heading', { name: 'Heat' });
+      // Half of two hours remains, so the film ends an hour from "now".
+      const expected = new Date('2026-03-14T21:00:00').toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      expect(screen.getByText(`Ends at ${expected}`)).toBeInTheDocument();
+      const added = `Added ${new Date('2026-03-01T09:30:00.000Z').toLocaleDateString()}`;
+      expect(screen.getByText((_, node) => node?.textContent?.trim().endsWith(added) === true && node.tagName === 'SPAN')).toBeInTheDocument();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('leaves the ending time off a series page', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ item: { id: 's9', title: 'Lost', kind: 'series', files: [{ id: 'f1', relativePath: 'x', durationSeconds: 100 }] } }), { status: 200 }));
+    render(<MemoryRouter initialEntries={['/media/s9']}><Routes><Route path="/media/:id" element={<CatalogDetails />} /></Routes></MemoryRouter>);
+    await screen.findByRole('heading', { name: 'Lost' });
+    expect(screen.queryByText(/Ends at/)).toBeNull();
+  });
+
   it('renders enriched movie details: quality badge, genres, tagline, cast, and recommendations', async () => {
     globalThis.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ item: {
       id: 'm1', title: 'Inception', year: 2010, kind: 'movie', overview: 'A heist inside dreams.', tagline: 'Your mind is the scene of the crime.',

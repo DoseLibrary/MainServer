@@ -109,6 +109,11 @@ export function Watch() {
   const duration = playback.durationSeconds ?? item.files?.[0]?.durationSeconds;
   // Resume from the last saved spot; progress is a 0..1 fraction, so scale by runtime.
   const startPositionSeconds = resumeAt ?? (!fromStart && typeof item.progress === 'number' && item.progress > 0 && item.progress < 1 && duration ? item.progress * duration : undefined);
+  // The receiver fetches tracks by cast token: the stream URL's sibling path,
+  // with the same delay the local track carries.
+  const castSubtitleUrl = playback.stream.castUrl
+    ? (track: { id: string }) => new URL(`${playback.stream.castUrl!.replace(/\/stream$/, '')}/subtitles/${encodeURIComponent(track.id)}${subtitleOffsetMs ? `?offsetMs=${subtitleOffsetMs}` : ''}`, window.location.href).href
+    : undefined;
   const subtitles = (item.subtitles ?? []).map((track) => ({
     id: track.id, label: track.label, srcLang: track.language,
     src: subtitleOffsetMs ? `${track.url}?offsetMs=${subtitleOffsetMs}` : track.url,
@@ -140,6 +145,7 @@ export function Watch() {
   return <main className="flex min-h-screen items-center bg-black"><VideoPlayer
     src={src}
     castSrc={playback.stream.castUrl ? new URL(playback.stream.castUrl, window.location.href).href : undefined}
+    castSubtitleUrl={castSubtitleUrl}
     title={item.title}
     subtitles={subtitles}
     meta={[item.year, playback.plan.mode === 'direct' ? 'Direct play' : playback.plan.remux ? 'Remux' : 'Optimized'].filter(Boolean).join(' · ')}

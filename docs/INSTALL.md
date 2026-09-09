@@ -53,10 +53,20 @@ Replace `192.168.x.x` with the Docker host's LAN address (`ipconfig` /
 ## 3. Start it
 
 ```sh
-docker compose up --build -d
+docker compose pull
+docker compose up -d
 ```
 
-First build takes a few minutes. Then open **https://dose.local**.
+The server image is pulled from GitHub Container Registry
+(`ghcr.io/doselibrary/dose`), so nothing is compiled on this machine. Then
+open **https://dose.local**.
+
+To run the code in this checkout instead of the published image, build it
+locally:
+
+```sh
+docker compose -f compose.yaml -f compose.build.yaml up --build -d
+```
 
 **About the certificate warning:** the proxy signs its own certificate — a LAN
 name cannot get a public one. Either accept the warning once per browser, or
@@ -149,10 +159,13 @@ limits and approval rules there if children have accounts here.
 
 ```sh
 git pull
-docker compose up --build -d
+docker compose pull
+docker compose up -d
 ```
 
-Database migrations run automatically on start.
+`git pull` refreshes the compose file and proxy config; `docker compose pull`
+fetches the newest image. Set `DOSE_VERSION` in `.env` to stay on a release
+instead of following `latest`. Database migrations run automatically on start.
 
 ## Backup
 

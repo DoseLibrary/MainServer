@@ -491,3 +491,10 @@ export const mediaTrailers = pgTable('media_trailers', {
   uniqueIndex('media_trailers_item_provider_unique').on(table.mediaItemId, table.providerSource, table.providerId),
   index('media_trailers_item_preferred_index').on(table.mediaItemId, table.preferred),
 ]);
+
+/** Operator-level settings edited from the admin UI, one JSON document per key. */
+export const serverSettings = pgTable('server_settings', {
+  key: text('key').primaryKey(),
+  value: jsonb('value').$type<Record<string, unknown>>().notNull().default({}),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});

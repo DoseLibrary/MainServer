@@ -17,7 +17,7 @@ import {
   Cast,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { castMedia, subscribeToCast, type CastState } from '@/lib/google-cast';
+import { castMedia, lastRemotePosition, remote, subscribeToCast, subscribeToRemote, type CastState, type RemoteStatus } from '@/lib/google-cast';
 
 export interface PlayerTrack {
   id: string;
@@ -50,6 +50,8 @@ export interface VideoPlayerProps {
   /** Public, short-lived stream URL loaded by a Chromecast receiver. */
   castSrc?: string;
   castContentType?: string;
+  /** Public WebVTT URL for a track, so the receiver can show subtitles too. */
+  castSubtitleUrl?: (track: PlayerTrack) => string;
   title?: string;
   /** Full-frame poster shown before playback (the `<video>` poster). */
   poster?: string;
@@ -133,10 +135,14 @@ function ControlButton({ label, onClick, children }: { label: string; onClick: (
 
 type MenuKind = 'subtitles' | 'settings' | null;
 
+/** How long a click waits to be sure it is not the first half of a double-click. */
+const CLICK_DELAY_MS = 200;
+
 export function VideoPlayer({
   src,
   castSrc,
   castContentType = 'video/mp4',
+  castSubtitleUrl,
   title,
   poster,
   posterSrc,
@@ -269,17 +275,71 @@ export function VideoPlayer({
   const [activeCcId, setActiveCcId] = useState<string | null>(null);
   const [hover, setHover] = useState<{ time: number; left: number } | null>(null);
   const [castState, setCastState] = useState<CastState>('unavailable');
+  const [remoteStatus, setRemoteStatus] = useState<RemoteStatus>();
 
   useEffect(() => subscribeToCast(setCastState), []);
+  useEffect(() => subscribeToRemote(setRemoteStatus), []);
+
+  // While the receiver holds the title, every control drives it instead of
+  // the local element, and the picture on this screen is only a placeholder.
+  const casting = castState === 'connected' && remoteStatus?.mediaLoaded === true;
+  // Mirrored into refs so the control callbacks never go stale.
+  const castingRef = useRef(casting);
+  const remoteRef = useRef(remoteStatus);
+  useEffect(() => { castingRef.current = casting; remoteRef.current = remoteStatus; });
+  const shownCurrent = casting ? remoteStatus.currentTime : current;
+  const shownDuration = casting ? (remoteStatus.duration || duration) : duration;
+  const shownPlaying = casting ? !remoteStatus.paused : playing;
+  const shownVolume = casting ? remoteStatus.volume : volume;
+  const shownMuted = casting ? remoteStatus.muted : muted;
+
+  // Receiver track ids are positions in the subtitle list, one-based; zero is reserved.
+  const castTrackId = useCallback((id: string | null) => {
+    const index = id == null ? -1 : subtitles.findIndex((track) => track.id === id);
+    return index < 0 ? null : index + 1;
+  }, [subtitles]);
 
   const startCasting = useCallback(async () => {
     const video = videoRef.current;
     if (!video || !castSrc) return;
+    if (castState === 'connected' && castingRef.current) { remote.stop(); return; }
     try {
-      await castMedia({ src: castSrc, contentType: castContentType, title, poster, currentTime: video.currentTime });
+      const tracks = castSubtitleUrl ? subtitles.map((track, index) => ({ id: index + 1, src: castSubtitleUrl(track), label: track.label, language: track.srcLang })) : [];
+      await castMedia({ src: castSrc, contentType: castContentType, title, poster, currentTime: offsetRef.current + video.currentTime, tracks, activeTrackId: castTrackId(activeCcId) });
       video.pause();
     } catch { /* The Cast chooser may be dismissed; keep local playback unchanged. */ }
-  }, [castContentType, castSrc, poster, title]);
+  }, [activeCcId, castContentType, castSrc, castState, castSubtitleUrl, castTrackId, poster, subtitles, title]);
+
+  // Hand-off both ways: the local element rests while the receiver plays, and
+  // picks up where the receiver stopped once the session ends.
+  const wasCastingRef = useRef(false);
+  useEffect(() => {
+    const video = videoRef.current;
+    if (casting) { wasCastingRef.current = true; video?.pause(); return; }
+    if (!wasCastingRef.current || castState === 'connected') return;
+    wasCastingRef.current = false;
+    if (!video) return;
+    const position = lastRemotePosition();
+    if (position > 0) {
+      const target = position - offsetRef.current;
+      if (onRestartAt && target < 0) onRestartAt(position);
+      else video.currentTime = Math.max(0, target);
+    }
+    void video.play();
+  }, [casting, castState, onRestartAt]);
+
+  // The receiver's clock is the progress clock while casting; report it on the
+  // same cadence the local element uses, and mark the title done when it ends.
+  const lastRemoteReport = useRef(0);
+  useEffect(() => {
+    if (!casting || !remoteStatus) return;
+    const dur = remoteStatus.duration || timelineRef.current || 0;
+    if (dur > 0 && Math.abs(remoteStatus.currentTime - lastRemoteReport.current) >= 10) {
+      lastRemoteReport.current = remoteStatus.currentTime;
+      onProgressRef.current?.(remoteStatus.currentTime, dur);
+    }
+    if (remoteStatus.ended) onEndedRef.current?.({ autoAdvanceCancelled: true });
+  }, [casting, remoteStatus]);
 
   // An open menu is a conversation with the player. Letting the controls slide
   // away mid-choice takes the menu with them (the bar turns click-through), so
@@ -304,15 +364,28 @@ export function VideoPlayer({
   }, [openMenu, showControls]);
 
   const togglePlay = useCallback(() => {
+    if (castingRef.current) { remote.playOrPause(); return; }
     const video = videoRef.current;
     if (!video) return;
     // A deliberate pause ends any automatic start still waiting on the browser.
     setAutoStarting(false);
     if (video.paused) void video.play();
     else video.pause();
-  }, []);
+  }, [setAutoStarting]);
+
+  // A click on the picture waits long enough to tell it from a double-click,
+  // so entering fullscreen does not also flip playback twice on the way.
+  const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clickPicture = useCallback(() => {
+    // A deliberate press ends any automatic start still waiting on the browser.
+    setAutoStarting(false);
+    if (clickTimer.current) clearTimeout(clickTimer.current);
+    clickTimer.current = setTimeout(() => { clickTimer.current = null; togglePlay(); }, CLICK_DELAY_MS);
+  }, [setAutoStarting, togglePlay]);
+  useEffect(() => () => { if (clickTimer.current) clearTimeout(clickTimer.current); }, []);
 
   const seekTo = useCallback((time: number) => {
+    if (castingRef.current) { remote.seek(time); return; }
     const video = videoRef.current;
     if (!video) return;
     const target = time - offsetRef.current;
@@ -327,6 +400,11 @@ export function VideoPlayer({
   }, [onRestartAt]);
 
   const seekBy = useCallback((delta: number) => {
+    if (castingRef.current && remoteRef.current) {
+      const limit = remoteRef.current.duration || timelineRef.current || Number.MAX_SAFE_INTEGER;
+      remote.seek(Math.min(Math.max(0, remoteRef.current.currentTime + delta), limit));
+      return;
+    }
     const video = videoRef.current;
     if (!video) return;
     const limit = timelineRef.current ?? (Number.isFinite(video.duration) ? video.duration : Number.MAX_SAFE_INTEGER);
@@ -345,6 +423,7 @@ export function VideoPlayer({
   }, [duration, thumbnails]);
 
   const changeVolume = useCallback((value: number) => {
+    if (castingRef.current) { remote.setVolume(value); remote.setMuted(value === 0); return; }
     const video = videoRef.current;
     if (!video) return;
     const v = Math.min(1, Math.max(0, value));
@@ -353,6 +432,7 @@ export function VideoPlayer({
   }, []);
 
   const toggleMute = useCallback(() => {
+    if (castingRef.current && remoteRef.current) { remote.setMuted(!remoteRef.current.muted); return; }
     const video = videoRef.current;
     if (video) video.muted = !video.muted;
   }, []);
@@ -364,7 +444,13 @@ export function VideoPlayer({
     else void el.requestFullscreen();
   }, []);
 
+  const doubleClickPicture = useCallback(() => {
+    if (clickTimer.current) { clearTimeout(clickTimer.current); clickTimer.current = null; }
+    toggleFullscreen();
+  }, [toggleFullscreen]);
+
   const selectCaptions = useCallback((id: string | null) => {
+    if (castingRef.current) remote.selectTrack(castTrackId(id));
     const video = videoRef.current;
     if (video) {
       Array.from(video.textTracks).forEach((track, i) => {
@@ -373,7 +459,7 @@ export function VideoPlayer({
     }
     setActiveCcId(id);
     setOpenMenu(null);
-  }, [subtitles, setOpenMenu]);
+  }, [castTrackId, subtitles, setOpenMenu]);
 
   // Sync UI state from the media element's own events (no setState-in-effect churn).
   useEffect(() => {
@@ -552,9 +638,9 @@ export function VideoPlayer({
     }
     return name;
   };
-  const progressPct = duration > 0 ? (current / duration) * 100 : 0;
-  const bufferedPct = duration > 0 ? (buffered / duration) * 100 : 0;
-  const VolumeIcon = muted || volume === 0 ? VolumeX : volume < 0.5 ? Volume1 : Volume2;
+  const progressPct = shownDuration > 0 ? (shownCurrent / shownDuration) * 100 : 0;
+  const bufferedPct = casting ? 0 : duration > 0 ? (buffered / duration) * 100 : 0;
+  const VolumeIcon = shownMuted || shownVolume === 0 ? VolumeX : shownVolume < 0.5 ? Volume1 : Volume2;
   const captionCss = captionStyle && (captionStyle.sizePercent !== 100 || captionStyle.background !== 'shadow')
     ? `#${CSS.escape(menuId)}-stage video::cue{font-size:${captionStyle.sizePercent}%;`
       + (captionStyle.background === 'box' ? 'background-color:rgba(0,0,0,0.75);text-shadow:none;'
@@ -600,7 +686,8 @@ export function VideoPlayer({
         poster={everPlayed ? undefined : poster}
         autoPlay={autoPlay}
         playsInline
-        onClick={togglePlay}
+        onClick={clickPicture}
+        onDoubleClick={doubleClickPicture}
         className="h-full w-full bg-black"
       >
         {subtitles.map((track) => (
@@ -705,10 +792,20 @@ export function VideoPlayer({
         </div>
       )}
 
-      {!playing && !waiting && !autoStarting && (
+      {casting && (
+        <div className="absolute inset-0 z-[5] flex flex-col items-center justify-center gap-3 bg-black/85 text-white" role="status">
+          {poster && <img src={poster} alt="" className="absolute inset-0 h-full w-full object-cover opacity-30" />}
+          <Cast className="relative h-10 w-10" aria-hidden="true" />
+          <p className="relative text-base font-medium">Casting to {remoteStatus.deviceName ?? 'your TV'}</p>
+          <p className="relative text-sm text-white/70">Use the controls below, or the Cast button to stop.</p>
+        </div>
+      )}
+
+      {!casting && !playing && !waiting && !autoStarting && (
         <button
           type="button"
-          onClick={togglePlay}
+          onClick={clickPicture}
+          onDoubleClick={doubleClickPicture}
           aria-label="Play"
           className="absolute inset-0 flex items-center justify-center bg-black/20 transition-colors hover:bg-black/30 focus-visible:outline-none"
         >
@@ -747,9 +844,9 @@ export function VideoPlayer({
           <input
             type="range"
             min={0}
-            max={duration || 0}
+            max={shownDuration || 0}
             step="any"
-            value={current}
+            value={shownCurrent}
             onChange={(e) => seekTo(Number(e.target.value))}
             aria-label="Seek"
             className="absolute inset-0 z-10 h-5 w-full cursor-pointer opacity-0"
@@ -770,8 +867,8 @@ export function VideoPlayer({
         </div>
 
         <div className="mt-1.5 flex items-center gap-1">
-          <ControlButton label={playing ? 'Pause' : 'Play'} onClick={togglePlay}>
-            {playing ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5 fill-current" />}
+          <ControlButton label={shownPlaying ? 'Pause' : 'Play'} onClick={togglePlay}>
+            {shownPlaying ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5 fill-current" />}
           </ControlButton>
           <ControlButton label="Back 10 seconds" onClick={() => seekBy(-10)}>
             <RotateCcw className="h-5 w-5" />
@@ -786,7 +883,7 @@ export function VideoPlayer({
           )}
 
           <div className="group/vol flex items-center">
-            <ControlButton label={muted ? 'Unmute' : 'Mute'} onClick={toggleMute}>
+            <ControlButton label={shownMuted ? 'Unmute' : 'Mute'} onClick={toggleMute}>
               <VolumeIcon className="h-5 w-5" />
             </ControlButton>
             <input
@@ -794,7 +891,7 @@ export function VideoPlayer({
               min={0}
               max={1}
               step={0.05}
-              value={muted ? 0 : volume}
+              value={shownMuted ? 0 : shownVolume}
               onChange={(e) => changeVolume(Number(e.target.value))}
               aria-label="Volume"
               className="h-1 w-0 cursor-pointer opacity-0 transition-all duration-200 group-hover/vol:w-16 group-hover/vol:opacity-100 focus-visible:w-16 focus-visible:opacity-100 accent-white"
@@ -802,12 +899,12 @@ export function VideoPlayer({
           </div>
 
           <div className="px-2 text-xs tabular-nums text-white/80">
-            {formatTime(current)} <span className="text-white/40">/</span> {formatTime(duration)}
+            {formatTime(shownCurrent)} <span className="text-white/40">/</span> {formatTime(shownDuration)}
           </div>
 
           <div className="ml-auto flex items-center gap-1">
             {castSrc && castState !== 'unavailable' && (
-              <ControlButton label={castState === 'connected' ? 'Casting' : 'Cast'} onClick={() => { void startCasting(); }}>
+              <ControlButton label={casting ? 'Stop casting' : 'Cast'} onClick={() => { void startCasting(); }}>
                 <Cast className={cn('h-5 w-5', castState === 'connected' && 'fill-current')} />
               </ControlButton>
             )}
@@ -843,7 +940,7 @@ export function VideoPlayer({
               </div>
             )}
 
-            {hasSettings && (
+            {hasSettings && !casting && (
               <div className="relative">
                 <ControlButton label="Settings" onClick={() => setOpenMenu((m) => (m === 'settings' ? null : 'settings'))}>
                   <Settings className="h-5 w-5" />

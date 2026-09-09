@@ -14,6 +14,9 @@ import { REALTIME_SUBSCRIBER, RealtimeService, registerRealtimeRoute } from './r
 import { registerApiRoutes } from './routes.ts';
 import { ScanCoordinator } from './scanner.ts';
 import { CatalogService } from './catalog-service.ts';
+import { ServerSettingsService } from './server-settings-service.ts';
+import { injectHead, openGraphTags, sharePathItemId, shareTitle } from './open-graph.ts';
+import { readFile } from 'node:fs/promises';
 import { PluginRegistry } from './plugins/registry.ts';
 import { PluginEventBus } from './plugins/events.ts';
 import { createTrailerFetcherPlugin, ytDlpDownloader } from './plugins/trailer-fetcher.ts';
@@ -137,7 +140,7 @@ export async function buildApp(config: AppConfig) {
   const movieNightHub = new MovieNightHub(movieNight);
   const movieNightSweep = setInterval(() => movieNight.sweep(), 15 * 60 * 1000);
   registerMovieNightRoutes(app, auth, catalog, movieNight, movieNightHub);
-  await registerApiRoutes(app, auth, config.NODE_ENV === 'production', undefined, scanner, catalog, join(config.CONFIG_PATH, 'images'), config.NODE_ENV === 'development' && isEmbeddedDatabase(config.DATABASE_URL), plugins, pluginScheduler, artwork, subtitleStore, metadataMatch, libraryWatcher, spriteStore, new UserSettingsService(database), new UserCollectionsService(database, new UploadedImageStore(join(config.CONFIG_PATH, 'images'))), new QueueService(database), new WatchDataService(database), { plex: new PlexHistorySource(), trakt: new TraktHistorySource(), tautulli: new TautulliHistorySource() }, new DeviceAuthService(database), new PlaybackSessionService(database), downloads, hardware);
+  await registerApiRoutes(app, auth, config.NODE_ENV === 'production', undefined, scanner, catalog, join(config.CONFIG_PATH, 'images'), config.NODE_ENV === 'development' && isEmbeddedDatabase(config.DATABASE_URL), plugins, pluginScheduler, artwork, subtitleStore, metadataMatch, libraryWatcher, spriteStore, new UserSettingsService(database), new UserCollectionsService(database, new UploadedImageStore(join(config.CONFIG_PATH, 'images'))), new QueueService(database), new WatchDataService(database), { plex: new PlexHistorySource(), trakt: new TraktHistorySource(), tautulli: new TautulliHistorySource() }, new DeviceAuthService(database), new PlaybackSessionService(database), downloads, hardware, undefined, new ServerSettingsService(database));
 
   app.addHook('onClose', async () => {
     clearInterval(downloadSweep);
@@ -168,11 +171,27 @@ export async function buildApp(config: AppConfig) {
       setHeaders: (reply, path) => { void reply.header('Cache-Control', staticCacheControl(path)); },
     });
 
-    app.setNotFoundHandler((request, reply) => {
+    // The shell is read once; a title page gets link-preview tags spliced into
+    // its head so a pasted URL unfurls with artwork instead of a blank card.
+    const shellPath = resolve(fileURLToPath(new URL('.', import.meta.url)), '../../dist/index.html');
+    let shell: Promise<string> | undefined;
+    app.setNotFoundHandler(async (request, reply) => {
       if (request.url.startsWith('/api/')) {
         return reply.status(404).send({ error: 'Not found' });
       }
-      return reply.sendFile('index.html');
+      const itemId = sharePathItemId(request.url);
+      if (!itemId) return reply.sendFile('index.html');
+      try {
+        const preview = await catalog.sharePreview(itemId);
+        if (!preview) return reply.sendFile('index.html');
+        shell ??= readFile(shellPath, 'utf8');
+        const origin = `${request.protocol}://${request.host}`;
+        const html = injectHead(await shell, openGraphTags(preview, origin, request.url), shareTitle(preview));
+        return reply.header('Cache-Control', staticCacheControl(shellPath)).type('text/html; charset=utf-8').send(html);
+      } catch (error) {
+        app.log.warn(error, 'link preview failed; serving the plain shell');
+        return reply.sendFile('index.html');
+      }
     });
   }
 

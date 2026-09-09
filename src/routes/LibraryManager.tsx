@@ -3,6 +3,7 @@ import { api, type Library, type LibraryScan } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Modal, ModalContent, ModalDescription, ModalFooter, ModalHeader, ModalTitle } from '@/components/ui/modal';
+import { DirectoryPicker } from './DirectoryPicker';
 
 interface LibraryManagerProps {
   open: boolean;
@@ -19,6 +20,8 @@ interface LibraryManagerProps {
 export function LibraryManager({ open, embedded = false, libraries, onOpenChange, onChanged, onError, error, onScanCompleted }: LibraryManagerProps) {
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState<Library>();
+  const [browsing, setBrowsing] = useState(false);
+  const [rootPath, setRootPath] = useState('');
   const [scans, setScans] = useState<Record<string, LibraryScan | null>>({});
   const [refreshing, setRefreshing] = useState<Record<string, boolean>>({});
   const [refreshResult, setRefreshResult] = useState<Record<string, string>>({});
@@ -112,6 +115,7 @@ export function LibraryManager({ open, embedded = false, libraries, onOpenChange
       });
       await refresh();
       form.reset();
+      setRootPath('');
     } catch (caught) {
       onError(caught instanceof Error ? caught.message : 'Could not add library.');
     } finally { setBusy(false); }
@@ -129,6 +133,8 @@ export function LibraryManager({ open, embedded = false, libraries, onOpenChange
       onError(caught instanceof Error ? caught.message : 'Could not delete library.');
     } finally { setBusy(false); }
   }
+
+  const picker = <DirectoryPicker open={browsing} onOpenChange={setBrowsing} onPick={setRootPath} initialPath={rootPath} />;
 
   const confirmDialog = (
     <Modal open={Boolean(confirming)} onOpenChange={(next) => { if (!next) setConfirming(undefined); }}>
@@ -150,7 +156,10 @@ export function LibraryManager({ open, embedded = false, libraries, onOpenChange
               <option value="movies">Movies</option><option value="shows">Shows</option>
             </select>
           </label>
-          <Input name="rootPath" label="Media path" placeholder="D:\\Media\\Movies or /media/movies" title="Use an absolute host path in native development or a mounted /media path in Docker" required disabled={busy} />
+          <div className="flex items-end gap-2">
+            <div className="flex-1"><Input name="rootPath" label="Media path" placeholder="D:\\Media\\Movies or /media/movies" title="Use an absolute host path in native development or a mounted /media path in Docker" required disabled={busy} value={rootPath} onChange={(event) => setRootPath(event.target.value)} /></div>
+            <Button type="button" variant="outline" onClick={() => setBrowsing(true)} disabled={busy}>Browse</Button>
+          </div>
           <Button type="submit" disabled={busy}>Add library</Button>
         </form>
         <section className="mt-6 border-t pt-4" aria-labelledby="configured-libraries">
@@ -167,7 +176,7 @@ export function LibraryManager({ open, embedded = false, libraries, onOpenChange
     </>
   );
 
-  if (embedded) return <section aria-label="Manage libraries" className="w-full max-w-2xl">{content}{confirmDialog}</section>;
+  if (embedded) return <section aria-label="Manage libraries" className="w-full max-w-2xl">{content}{confirmDialog}{picker}</section>;
   return (
     <Modal open={open} onOpenChange={onOpenChange}>
       <ModalContent aria-describedby="library-manager-description">
@@ -178,6 +187,7 @@ export function LibraryManager({ open, embedded = false, libraries, onOpenChange
         {content}
       </ModalContent>
       {confirmDialog}
+      {picker}
     </Modal>
   );
 }

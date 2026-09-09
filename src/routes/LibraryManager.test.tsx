@@ -108,3 +108,21 @@ describe('LibraryManager scans', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/v1/libraries/lib-1', expect.objectContaining({ method: 'DELETE' }));
   });
 });
+
+describe('LibraryManager path picker', () => {
+  const originalFetch = globalThis.fetch;
+  afterEach(() => { globalThis.fetch = originalFetch; });
+
+  it('fills the media path from the folder browser', async () => {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith('/api/v1/admin/filesystem')) return json({ path: '/media/shows', parent: '/media', entries: [] });
+      return json({ libraries: [] });
+    });
+    render(<LibraryManager open libraries={[]} onOpenChange={() => undefined} onChanged={() => undefined} onError={() => undefined} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Browse' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Use this folder' }));
+    await waitFor(() => expect(screen.getByLabelText('Media path')).toHaveValue('/media/shows'));
+  });
+});

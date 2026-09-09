@@ -102,15 +102,15 @@ const defaultRunner: CommandRunner = async (file, args, timeoutMs) => {
  * each family maps it onto its own control, which is never quite the same
  * number and never quite the same meaning.
  */
-export function rateControlArgs(choice: EncoderChoice, quality: number, maxBitrateK?: number): string[] {
+export function rateControlArgs(choice: EncoderChoice, quality: number, maxBitrateK?: number, preset: SoftwarePreset = 'veryfast'): string[] {
   const cap = maxBitrateK ? ['-maxrate', `${maxBitrateK}k`, '-bufsize', `${maxBitrateK * 2}k`] : [];
   switch (choice.family) {
     case 'nvenc':
-      // p4 is NVENC's balanced preset; constant-quality mode needs an explicit
-      // zero target bitrate or the encoder quietly reverts to plain VBR.
-      return ['-preset', 'p4', '-rc', 'vbr', '-cq', String(quality + 2), '-b:v', '0', ...cap];
+      // NVENC presets run p1 (fastest) to p7; constant-quality mode needs an
+      // explicit zero target bitrate or the encoder quietly reverts to plain VBR.
+      return ['-preset', NVENC_PRESETS[preset], '-rc', 'vbr', '-cq', String(quality + 2), '-b:v', '0', ...cap];
     case 'qsv':
-      return ['-preset', 'veryfast', '-global_quality', String(quality + 2), ...cap];
+      return ['-preset', preset, '-global_quality', String(quality + 2), ...cap];
     case 'amf':
       return ['-quality', 'balanced', '-rc', 'cqp', '-qp_i', String(quality + 2), '-qp_p', String(quality + 3), ...cap];
     case 'videotoolbox':
@@ -120,9 +120,19 @@ export function rateControlArgs(choice: EncoderChoice, quality: number, maxBitra
     case 'vaapi':
       return ['-rc_mode', 'CQP', '-qp', String(quality + 2), ...cap];
     default:
-      return ['-preset', 'veryfast', '-crf', String(quality), ...cap];
+      return ['-preset', preset, '-crf', String(quality), ...cap];
   }
 }
+
+/** The x264 speed ladder; every family that has a preset knob maps from it. */
+export type SoftwarePreset = 'ultrafast' | 'superfast' | 'veryfast' | 'faster' | 'fast' | 'medium' | 'slow';
+// p4 stays the balanced default the software `veryfast` maps to.
+const NVENC_PRESETS: Record<SoftwarePreset, string> = { ultrafast: 'p1', superfast: 'p2', veryfast: 'p4', faster: 'p4', fast: 'p5', medium: 'p5', slow: 'p6' };
+
+/** Operator-tuned encoder knobs shared by every re-encode path. */
+export interface EncodingOptions { preset: SoftwarePreset; quality: number; threads: number }
+export const DEFAULT_ENCODING: EncodingOptions = { preset: 'veryfast', quality: 21, threads: 0 };
+export function threadArgs(encoding: EncodingOptions): string[] { return encoding.threads > 0 ? ['-threads', String(encoding.threads)] : []; }
 
 /**
  * Video filter chain for a target height. VAAPI encodes from GPU surfaces, so

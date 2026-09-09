@@ -22,6 +22,7 @@ import type { WatchDataService } from './watch-data-service.ts';
 import { HistorySourceError } from './history-sources/types.ts';
 import type { HistorySources } from './routes.ts';
 import { ZodError } from 'zod';
+import { CastGrantStore } from './cast-grants.ts';
 
 function service(overrides: Partial<Record<keyof AuthService, unknown>> = {}) {
   return {
@@ -842,6 +843,120 @@ describe('HLS delivery', () => {
   it('requires a session like every other stream route', async () => {
     const app = await appWithHls(service({ authenticate: vi.fn(async () => null) }));
     expect((await app.inject({ method: 'GET', url: `/api/v1/catalog/items/${ID}/hls/master.m3u8?plan=${encoded}` })).statusCode).toBe(401);
+    await app.close();
+  });
+});
+
+describe('directory browsing for the library path picker', () => {
+  const admin = () => service({ authenticate: vi.fn(async () => ({ id: 'user-id', username: 'admin', role: 'admin' })) });
+  const lister = { listDirectories: vi.fn(async () => [{ name: 'movies' }, { name: '.hidden', hidden: true }]), roots: vi.fn(async () => ['C:\\']) };
+
+  async function appWithLister(auth: AuthService, nativeLibraryPaths: boolean) {
+    const filesystem: LibraryFilesystem = { realpath: async (path) => path, isDirectory: async () => true };
+    const app = Fastify(); await app.register(cookie);
+    await registerApiRoutes(app, auth, false, filesystem, undefined, undefined, undefined, nativeLibraryPaths, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, lister);
+    return app;
+  }
+
+  it('requires an administrator', async () => {
+    const app = await appWithLister(service({ authenticate: vi.fn(async () => ({ id: 'u', username: 'm', role: 'member' })) }), false);
+    expect((await app.inject({ method: 'GET', url: '/api/v1/admin/filesystem', headers: { cookie: 'dose_session=t' } })).statusCode).toBe(403);
+    await app.close();
+  });
+
+  it('lists /media in a container by default', async () => {
+    const app = await appWithLister(admin(), false);
+    const response = await app.inject({ method: 'GET', url: '/api/v1/admin/filesystem', headers: { cookie: 'dose_session=t' } });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ path: '/media', parent: null, entries: [{ name: 'movies', path: '/media/movies' }] });
+    await app.close();
+  });
+
+  it('maps a bad path to 400 with the reason', async () => {
+    const app = await appWithLister(admin(), false);
+    const response = await app.inject({ method: 'GET', url: '/api/v1/admin/filesystem?path=/etc', headers: { cookie: 'dose_session=t' } });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({ error: 'Path must be below /media' });
+    await app.close();
+  });
+
+  it('lists host drives natively when no path is given', async () => {
+    const app = await appWithLister(admin(), true);
+    const response = await app.inject({ method: 'GET', url: '/api/v1/admin/filesystem', headers: { cookie: 'dose_session=t' } });
+    expect(response.json()).toEqual({ path: null, parent: null, entries: [{ name: 'C:\\', path: 'C:\\' }] });
+    await app.close();
+  });
+});
+
+describe('transcoding settings', () => {
+  const admin = () => service({ authenticate: vi.fn(async () => ({ id: 'user-id', username: 'admin', role: 'admin' })) });
+  function settingsStub() {
+    let current = { preset: 'veryfast', quality: 21, threads: 0, preferHevcOutput: false };
+    return {
+      transcoding: vi.fn(async () => current),
+      updateTranscoding: vi.fn(async (patch: Record<string, unknown>) => { current = { ...current, ...patch }; return current; }),
+    };
+  }
+  async function appWithSettings(auth: AuthService, settings: ReturnType<typeof settingsStub>) {
+    const filesystem: LibraryFilesystem = { realpath: async (path) => path, isDirectory: async () => true };
+    const app = Fastify(); await app.register(cookie);
+    await registerApiRoutes(app, auth, false, filesystem, undefined, undefined, undefined, false, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, settings as never);
+    return app;
+  }
+
+  it('reads the current settings for an administrator only', async () => {
+    const settings = settingsStub();
+    const app = await appWithSettings(admin(), settings);
+    const response = await app.inject({ method: 'GET', url: '/api/v1/admin/transcoding/settings', headers: { cookie: 'dose_session=t' } });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ settings: { preset: 'veryfast', quality: 21, threads: 0, preferHevcOutput: false } });
+    const member = await appWithSettings(service({ authenticate: vi.fn(async () => ({ id: 'u', username: 'm', role: 'member' })) }), settings);
+    expect((await member.inject({ method: 'GET', url: '/api/v1/admin/transcoding/settings', headers: { cookie: 'dose_session=t' } })).statusCode).toBe(403);
+    await app.close(); await member.close();
+  });
+
+  it('patches a subset and rejects values outside the allowed range', async () => {
+    const settings = settingsStub();
+    const app = await appWithSettings(admin(), settings);
+    const ok = await app.inject({ method: 'PATCH', url: '/api/v1/admin/transcoding/settings', headers: { cookie: 'dose_session=t' }, payload: { preset: 'medium', preferHevcOutput: true } });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json()).toEqual({ settings: { preset: 'medium', quality: 21, threads: 0, preferHevcOutput: true } });
+    expect(settings.updateTranscoding).toHaveBeenCalledWith({ preset: 'medium', preferHevcOutput: true });
+    const bad = await app.inject({ method: 'PATCH', url: '/api/v1/admin/transcoding/settings', headers: { cookie: 'dose_session=t' }, payload: { quality: 99 } });
+    expect(bad.statusCode).toBe(400);
+    await app.close();
+  });
+});
+
+describe('cast subtitles', () => {
+  const ITEM = '11111111-1111-4111-8111-111111111111';
+  const SUB = '22222222-2222-4222-8222-222222222222';
+  async function appWithGrant() {
+    const grants = new CastGrantStore();
+    const token = grants.mint({ itemId: ITEM, maturityLimit: null });
+    const catalog = catalogStub({ subtitle: vi.fn(async (id: string) => id === SUB ? { storageKey: 'sub.vtt', mediaItemId: ITEM } : null) });
+    const subtitleStore = { read: vi.fn(async () => Buffer.from(['WEBVTT', '', '00:00:01.000 --> 00:00:02.000', 'Hi', ''].join('\n'))) } as unknown as SubtitleStore;
+    const app = Fastify(); await app.register(cookie);
+    const filesystem: LibraryFilesystem = { realpath: async (path) => path, isDirectory: async () => true };
+    await registerApiRoutes(app, service(), false, filesystem, undefined, catalog, undefined, false, undefined, undefined, undefined, subtitleStore, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, grants);
+    return { app, token };
+  }
+
+  it('serves a WebVTT track to the receiver without a cookie, with CORS open', async () => {
+    const { app, token } = await appWithGrant();
+    const response = await app.inject({ method: 'GET', url: `/api/v1/cast/${token}/subtitles/${SUB}?offsetMs=500` });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-type']).toContain('text/vtt');
+    expect(response.headers['access-control-allow-origin']).toBe('*');
+    expect(response.body).toContain('00:00:01.500 --> 00:00:02.500');
+    await app.close();
+  });
+
+  it('refuses a subtitle that belongs to another title, and an unknown token', async () => {
+    const { app, token } = await appWithGrant();
+    const other = '33333333-3333-4333-8333-333333333333';
+    expect((await app.inject({ method: 'GET', url: `/api/v1/cast/${token}/subtitles/${other}` })).statusCode).toBe(404);
+    expect((await app.inject({ method: 'GET', url: `/api/v1/cast/${'f'.repeat(64)}/subtitles/${SUB}` })).statusCode).toBe(404);
     await app.close();
   });
 });

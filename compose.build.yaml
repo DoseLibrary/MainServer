@@ -1,0 +1,9 @@
+# Build the Dose image from this checkout instead of pulling it:
+#
+#   docker compose -f compose.yaml -f compose.build.yaml up --build -d
+#
+# For development on the server code. Installs use compose.yaml alone.
+services:
+  dose:
+    build: .
+    image: ghcr.io/doselibrary/dose:local

@@ -14,7 +14,9 @@ The short version:
 1. Copy `.env.example` to `.env`; set `POSTGRES_PASSWORD`, your media paths,
    and a TMDB token.
 2. Point `dose.local` at this machine (router DNS entry, or a hosts line).
-3. `docker compose up --build -d` and open `https://dose.local`.
+3. `docker compose pull && docker compose up -d` and open `https://dose.local`.
+   The server image comes from `ghcr.io/doselibrary/dose`, built by GitHub
+   Actions from the `v2` branch; `compose.build.yaml` builds from source instead.
 
 The bundled Caddy proxy serves HTTPS with a local certificate — required for
 installing Dose as an app and for offline downloads on iOS. The app container

@@ -92,6 +92,7 @@ export function CatalogDetails() {
   const seriesLink = item?.series && item.series.id !== item.id
     ? <span key="series"><a href={`/media/${encodeURIComponent(item.series.id)}`} onClick={routeTo(`/media/${encodeURIComponent(item.series.id)}`)} className="hover:underline focus-visible:outline-none focus-visible:underline">{item.series.title}</a></span>
     : null;
+  const endsAt = endingTime(item);
   const metaPieces: ReactNode[] = [
     item?.year != null ? String(item.year) : null,
     seriesLink,
@@ -103,8 +104,10 @@ export function CatalogDetails() {
       {item.episodeNumber != null ? `Episode ${item.episodeNumber}` : ''}
     </span> : null,
     item?.runtime || null,
+    endsAt ? `Ends at ${endsAt}` : null,
     item?.providerRating != null ? `★ ${item.providerRating.toFixed(1)}` : null,
     item?.collection ? <span key="collection">Part of <a href={`/collection/${encodeURIComponent(item.collection.id)}`} className="hover:underline focus-visible:outline-none focus-visible:underline">{item.collection.name}</a></span> : null,
+    item?.addedAt ? `Added ${new Date(item.addedAt).toLocaleDateString()}` : null,
   ].filter((piece) => piece != null);
   const metadata = metaPieces.length > 0 ? <>{metaPieces.map((piece, index) => <span key={index}>{index > 0 ? '  ·  ' : ''}{piece}</span>)}</> : undefined;
   const recommendations = (item?.recommendations ?? []).map((rec) => ({
@@ -179,4 +182,17 @@ export function CatalogDetails() {
     {isAdmin && <ArtworkManager open={artworkOpen} itemId={id} onOpenChange={setArtworkOpen} onApplied={() => void load()} />}
     {isAdmin && item && (item.kind === 'movie' || item.kind === 'series') && <MetadataRematch open={rematchOpen} itemId={id} kind={item.kind} initialTitle={item.title} onOpenChange={setRematchOpen} onMatched={() => { void load(); setArtworkOpen(true); }} />}
   </>;
+}
+
+/**
+ * Wall-clock time a title would finish if pressed play now: what is left of
+ * the file after the watched part. Only a playable title has an ending.
+ */
+function endingTime(item: CatalogItemDetails | undefined): string | undefined {
+  if (!item || (item.kind !== 'movie' && item.kind !== 'episode')) return undefined;
+  const duration = item.files?.[0]?.durationSeconds;
+  if (!duration) return undefined;
+  const watched = typeof item.progress === 'number' && item.progress > 0 && item.progress < 1 ? item.progress : 0;
+  const end = new Date(Date.now() + duration * (1 - watched) * 1000);
+  return end.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }

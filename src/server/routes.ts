@@ -3,7 +3,6 @@ import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
-import { randomBytes } from 'node:crypto';
 import { z, ZodError } from 'zod';
 import { DuplicateLibraryError, DuplicateUsernameError, UserInvariantError, UserNotFoundError, type AuthService, type PublicUser } from './auth-service.ts';
 import { nodeLibraryFilesystem, resolveLibraryRoot, resolveNativeLibraryRoot, SESSION_COOKIE, SESSION_TTL_MS, type LibraryFilesystem } from './security.ts';
@@ -34,6 +33,9 @@ import { applyAlignment, parseSubtitles, serializeVtt } from './subtitle-sync.ts
 import { ImageVariantStore } from './images.ts';
 import { MatchItemNotFoundError, MatchUnsupportedKindError, TmdbMatchNotFoundError, type MetadataMatchService } from './metadata-match-service.ts';
 import type { LibraryWatcher } from './library-watcher.ts';
+import { browseDirectories, type DirectoryLister } from './directory-browser.ts';
+import { DEFAULT_TRANSCODING_SETTINGS, transcodingSettingsPatch, type ServerSettingsService } from './server-settings-service.ts';
+import { CastGrantStore } from './cast-grants.ts';
 import { userSettingsPatch, type UserSettingsService } from './user-settings-service.ts';
 import { UserCollectionImageError, UserCollectionNotFoundError, userCollectionImage, userCollectionInput, userCollectionOrder, userCollectionPatch, type UserCollectionsService } from './user-collections-service.ts';
 import { queueItemBody, queueOrder, type QueueService } from './queue-service.ts';
@@ -98,6 +100,7 @@ const seerrRequestBody = z.object({
 const hlsQuery = z.object({ plan: z.string().max(4096), q: z.string().regex(/^[a-z0-9]{1,12}$/) });
 const hlsSegmentParams = z.object({ id: z.string().uuid(), index: z.coerce.number().int().min(0).max(100_000) });
 const castStreamParams = z.object({ token: z.string().regex(/^[a-f0-9]{64}$/) });
+const castSubtitleParams = castStreamParams.extend({ id: z.string().uuid() });
 const IMAGE_TYPES: Record<string, string> = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif' };
 const maturityLimit = z.number().int().min(0).max(21).nullable();
 const userCreate = credentials.extend({ role: z.enum(['admin', 'member']).default('member'), maxMaturityLevel: maturityLimit.optional() });
@@ -117,7 +120,7 @@ const pluginIdParams = z.object({ id: z.string().min(1).max(64) });
 const pluginActionParams = pluginIdParams.extend({ actionId: z.string().min(1).max(64) });
 const pluginConfigBody = z.object({ enabled: z.boolean().optional(), schedule: z.string().trim().max(200).nullable().optional(), settings: z.record(z.string(), z.unknown()).optional() });
 const tmdbImagePath = z.string().regex(/^\/[A-Za-z0-9._/-]{1,255}$/);
-const artworkBody = z.object({ posterPath: tmdbImagePath.nullable().optional(), backdropPath: tmdbImagePath.nullable().optional() }).refine((value) => value.posterPath !== undefined || value.backdropPath !== undefined, { message: 'posterPath or backdropPath is required' });
+const artworkBody = z.object({ posterPath: tmdbImagePath.nullable().optional(), backdropPath: tmdbImagePath.nullable().optional(), logoPath: tmdbImagePath.nullable().optional() }).refine((value) => value.posterPath !== undefined || value.backdropPath !== undefined || value.logoPath !== undefined, { message: 'posterPath, backdropPath or logoPath is required' });
 const tmdbSearchQuery = z.object({ type: z.enum(['movie', 'series']), q: z.string().trim().max(128).default('') });
 const tmdbMatchBody = z.object({ tmdbId: z.number().int().positive() });
 
@@ -146,13 +149,14 @@ function requireAdmin(user: PublicUser, reply: FastifyReply) {
   return true;
 }
 
-export async function registerApiRoutes(app: FastifyInstance, service: AuthService, production: boolean, filesystem: LibraryFilesystem = nodeLibraryFilesystem, scanner?: ScanCoordinator, catalog?: CatalogService, imagesDir = '/config/images', nativeLibraryPaths = false, plugins?: PluginService, pluginScheduler?: PluginScheduler, artwork?: ArtworkService, subtitleStore?: SubtitleStore, metadataMatch?: MetadataMatchService, libraryWatcher?: Pick<LibraryWatcher, 'synchronize'>, spriteStore?: PreviewSpriteStore, settings?: UserSettingsService, userCollections?: UserCollectionsService, queue?: QueueService, watchData?: WatchDataService, historySources?: HistorySources, deviceAuth?: DeviceAuthService, playbackSessions?: PlaybackSessionService, downloads?: DownloadService, hardware?: HardwareAccelerator) {
+export async function registerApiRoutes(app: FastifyInstance, service: AuthService, production: boolean, filesystem: LibraryFilesystem = nodeLibraryFilesystem, scanner?: ScanCoordinator, catalog?: CatalogService, imagesDir = '/config/images', nativeLibraryPaths = false, plugins?: PluginService, pluginScheduler?: PluginScheduler, artwork?: ArtworkService, subtitleStore?: SubtitleStore, metadataMatch?: MetadataMatchService, libraryWatcher?: Pick<LibraryWatcher, 'synchronize'>, spriteStore?: PreviewSpriteStore, settings?: UserSettingsService, userCollections?: UserCollectionsService, queue?: QueueService, watchData?: WatchDataService, historySources?: HistorySources, deviceAuth?: DeviceAuthService, playbackSessions?: PlaybackSessionService, downloads?: DownloadService, hardware?: HardwareAccelerator, directoryLister?: DirectoryLister, serverSettings?: ServerSettingsService, castGrants: CastGrantStore = new CastGrantStore()) {
+  // Operator encoder knobs; the defaults keep playback working without the service.
+  const transcoding = async () => serverSettings ? await serverSettings.transcoding() : DEFAULT_TRANSCODING_SETTINGS;
   const imageVariants = new ImageVariantStore(imagesDir);
   const synchronizeWatchers = async () => {
     try { await libraryWatcher?.synchronize(); }
     catch (error) { app.log.error(error, 'library watcher synchronization failed'); }
   };
-  const castStreams = new Map<string, { itemId: string; plan?: string; expiresAt: number; maturityLimit: number | null }>();
   app.get('/api/v1/setup/status', async () => ({ setupRequired: await service.setupRequired() }));
   app.post('/api/v1/setup', async (request, reply) => {
     const parsed = credentials.safeParse(request.body);
@@ -553,6 +557,15 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
     const removed = await catalog.removeItem(params.data.id); if (!removed) return reply.status(404).send({ error: 'Item not found' });
     return reply.status(204).send();
   });
+  // One level of the host directory tree for the library path picker. Admin only:
+  // it reveals folder names, and only folders, never files.
+  app.get('/api/v1/admin/filesystem', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user || !requireAdmin(user, reply)) return;
+    const query = z.object({ path: z.string().min(1).max(4096).optional() }).safeParse(request.query);
+    if (!query.success) return reply.status(400).send({ error: 'Invalid path' });
+    try { return await browseDirectories(query.data.path, { native: nativeLibraryPaths, filesystem: directoryLister }); }
+    catch (error) { return reply.status(400).send({ error: error instanceof Error ? error.message : 'Could not read that directory' }); }
+  });
   app.get('/api/v1/libraries', async (request, reply) => { const user = await requireUser(request, reply, service); if (user) return { libraries: await service.listLibraries() }; });
   app.post('/api/v1/libraries', async (request, reply) => {
     const user = await requireUser(request, reply, service); if (!user || !requireAdmin(user, reply)) return;
@@ -777,15 +790,14 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
     // so the file's layout decides whether direct play is really on the table.
     const sourcePath = source.rootPath ? resolveWithin(source.rootPath, source.relativePath) : null;
     const directPlayable = sourcePath ? !(await isFragmentedMp4(sourcePath)) : true;
-    const plan = negotiatePlayback(source.probe, body.data, body.data.audioTrackIndex, { directPlayable });
+    const encoderPreference = await transcoding();
+    const plan = negotiatePlayback(source.probe, body.data, body.data.audioTrackIndex, { directPlayable, preferredVideoCodec: encoderPreference.preferHevcOutput ? 'hevc' : undefined });
     if (plan.mode === 'transcode' && plan.container !== 'mp4') return reply.status(406).send({ error: 'No supported transcode container; client must support mp4' });
     const baseUrl = `/api/v1/catalog/items/${params.data.id}/stream`;
     const url = plan.mode === 'direct' ? baseUrl : `${baseUrl}?plan=${encodeURIComponent(encodePlaybackPlan(plan))}`;
-    const castToken = randomBytes(32).toString('hex');
     // Negotiation also happens speculatively (a details page warming a stream),
     // so expired grants are swept here rather than only when one is redeemed.
-    if (castStreams.size > 256) for (const [token, grant] of castStreams) if (grant.expiresAt <= Date.now()) castStreams.delete(token);
-    castStreams.set(castToken, { itemId: params.data.id, plan: plan.mode === 'direct' ? undefined : encodePlaybackPlan(plan), expiresAt: Date.now() + 6 * 60 * 60 * 1000, maturityLimit: user.maxMaturityLevel });
+    const castToken = castGrants.mint({ itemId: params.data.id, plan: plan.mode === 'direct' ? undefined : encodePlaybackPlan(plan), maturityLimit: user.maxMaturityLevel });
     // Full transcodes stream over HLS (seek + quality ladder); remuxes stay on
     // the progressive pipe with seek-restart, since their video is not re-encoded.
     const canHls = plan.mode === 'transcode' && !plan.remux && plan.video != null && source.durationSeconds != null;
@@ -806,6 +818,16 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
     const user = await requireUser(request, reply, service); if (!user || !requireAdmin(user, reply)) return;
     if (!hardware) return reply.status(503).send({ error: 'Hardware detection unavailable' });
     return { hardware: await hardware.ready() };
+  });
+  app.get('/api/v1/admin/transcoding/settings', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user || !requireAdmin(user, reply)) return;
+    return { settings: await transcoding() };
+  });
+  app.patch('/api/v1/admin/transcoding/settings', async (request, reply) => {
+    const user = await requireUser(request, reply, service); if (!user || !requireAdmin(user, reply)) return;
+    if (!serverSettings) return reply.status(503).send({ error: 'Settings unavailable' });
+    const parsed = transcodingSettingsPatch.safeParse(request.body); if (!parsed.success) return reply.status(400).send({ error: 'Invalid transcoding settings' });
+    return { settings: await serverSettings.updateTranscoding(parsed.data) };
   });
   app.post('/api/v1/admin/transcoding/detect', async (request, reply) => {
     const user = await requireUser(request, reply, service); if (!user || !requireAdmin(user, reply)) return;
@@ -845,7 +867,7 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
       if (!plan) return reply.status(400).send({ error: 'Invalid playback plan' });
       // A seek outside the buffer restarts the stream here rather than replaying
       // everything from zero; the player offsets its timeline by the same amount.
-      const child = spawn('ffmpeg', buildTranscodeArgs(plan, absolute, query.data.start, plan.video ? hardware?.choose(plan.video.codec) : null), { stdio: ['ignore', 'pipe', 'ignore'] });
+      const child = spawn('ffmpeg', buildTranscodeArgs(plan, absolute, query.data.start, plan.video ? hardware?.choose(plan.video.codec) : null, await transcoding()), { stdio: ['ignore', 'pipe', 'ignore'] });
       child.on('error', () => { request.raw.destroy(); });
       request.raw.on('close', () => child.kill('SIGKILL'));
       reply.header('Content-Type', 'video/mp4'); reply.header('Cache-Control', 'no-store');
@@ -866,9 +888,10 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
   const readaheadEncodes = new Semaphore(1);
   const segmentCache = new SegmentCache();
   const READAHEAD_SEGMENTS = 2;
-  const encodeSegment = (absolute: string, plan: PlaybackPlan, variant: HlsVariant, index: number, duration: number) =>
-    new Promise<Buffer>((resolveSegment, rejectSegment) => {
-      const child = spawn('ffmpeg', buildSegmentArgs(absolute, plan, variant, index, duration, hardware?.choose('h264')), { stdio: ['ignore', 'pipe', 'pipe'] });
+  const encodeSegment = async (absolute: string, plan: PlaybackPlan, variant: HlsVariant, index: number, duration: number) => {
+    const encoding = await transcoding();
+    return new Promise<Buffer>((resolveSegment, rejectSegment) => {
+      const child = spawn('ffmpeg', buildSegmentArgs(absolute, plan, variant, index, duration, hardware?.choose('h264'), encoding), { stdio: ['ignore', 'pipe', 'pipe'] });
       const chunks: Buffer[] = [];
       const stderr: Buffer[] = [];
       const timer = setTimeout(() => child.kill('SIGKILL'), SEGMENT_SECONDS * 10_000);
@@ -881,6 +904,7 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
         else rejectSegment(new Error(`ffmpeg exited with code ${code}: ${Buffer.concat(stderr).toString().slice(0, 200)}`));
       });
     });
+  };
   const hlsSource = async (reply: FastifyReply, user: PublicUser, itemId: string) => {
     if (!catalog) { await reply.status(503).send({ error: 'Catalog unavailable' }); return null; }
     const source = await catalog.forViewer(user.maxMaturityLevel).playbackSource(itemId);
@@ -983,10 +1007,28 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
     let body; try { body = await spriteStore.read(sprite.storageKey); } catch { return reply.status(404).send({ error: 'Preview sprite not found' }); }
     reply.header('Content-Type', 'image/jpeg'); reply.header('Cache-Control', 'private, max-age=86400'); return reply.send(body);
   });
+  // The receiver fetches text tracks itself, from another origin and with no
+  // cookie: the cast token stands in, and only for the title it was minted for.
+  app.get('/api/v1/cast/:token/subtitles/:id', async (request, reply) => {
+    const params = castSubtitleParams.safeParse(request.params); if (!params.success) return reply.status(404).send({ error: 'Subtitle not found' });
+    const grant = castGrants.get(params.data.token); if (!grant) return reply.status(404).send({ error: 'Subtitle not found' });
+    if (!catalog || !subtitleStore) return reply.status(503).send({ error: 'Subtitles unavailable' });
+    const row = await catalog.subtitle(params.data.id);
+    if (!row || row.mediaItemId !== grant.itemId) return reply.status(404).send({ error: 'Subtitle not found' });
+    const query = subtitleQuery.safeParse(request.query); if (!query.success) return reply.status(400).send({ error: 'Invalid subtitle offset' });
+    try {
+      const body = await subtitleStore.read(row.storageKey);
+      reply.header('Content-Type', 'text/vtt; charset=utf-8');
+      reply.header('Access-Control-Allow-Origin', '*');
+      reply.header('Cache-Control', 'private, max-age=3600');
+      if (!query.data.offsetMs) return reply.send(body);
+      return reply.send(serializeVtt(applyAlignment(parseSubtitles(body.toString('utf8')), { offsetMs: query.data.offsetMs, scale: 1 })));
+    } catch { return reply.status(404).send({ error: 'Subtitle not found' }); }
+  });
   app.get('/api/v1/cast/:token/stream', async (request, reply) => {
     const params = castStreamParams.safeParse(request.params); if (!params.success) return reply.status(404).send({ error: 'Stream not found' });
-    const grant = castStreams.get(params.data.token);
-    if (!grant || grant.expiresAt <= Date.now()) { castStreams.delete(params.data.token); return reply.status(404).send({ error: 'Stream not found' }); }
+    const grant = castGrants.get(params.data.token);
+    if (!grant) return reply.status(404).send({ error: 'Stream not found' });
     if (!catalog) return reply.status(503).send({ error: 'Catalog unavailable' });
     const source = await catalog.forViewer(grant.maturityLimit).playbackSource(grant.itemId); if (!source) return reply.status(404).send({ error: 'Stream not found' });
     const absolute = resolveWithin(source.rootPath, source.relativePath); if (!absolute) return reply.status(404).send({ error: 'Stream not found' });
@@ -994,7 +1036,7 @@ export async function registerApiRoutes(app: FastifyInstance, service: AuthServi
     if (!info.isFile()) return reply.status(404).send({ error: 'Stream not found' });
     if (grant.plan) {
       const plan = decodePlaybackPlan(grant.plan); if (!plan) return reply.status(404).send({ error: 'Stream not found' });
-      const child = spawn('ffmpeg', buildTranscodeArgs(plan, absolute, undefined, plan.video ? hardware?.choose(plan.video.codec) : null), { stdio: ['ignore', 'pipe', 'ignore'] });
+      const child = spawn('ffmpeg', buildTranscodeArgs(plan, absolute, undefined, plan.video ? hardware?.choose(plan.video.codec) : null, await transcoding()), { stdio: ['ignore', 'pipe', 'ignore'] });
       child.on('error', () => { request.raw.destroy(); }); request.raw.on('close', () => child.kill('SIGKILL'));
       reply.header('Content-Type', 'video/mp4'); reply.header('Cache-Control', 'private, no-store'); return reply.send(child.stdout);
     }

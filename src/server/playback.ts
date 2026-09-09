@@ -114,6 +114,8 @@ export interface NegotiationOptions {
    * caller marks it unplayable and negotiation repackages it instead.
    */
   directPlayable?: boolean;
+  /** Codec the operator would rather produce when a re-encode is needed and the client decodes it. */
+  preferredVideoCodec?: string;
 }
 
 export function negotiatePlayback(probe: Probe, capabilities: ClientCapabilities, requestedAudioTrackIndex = 0, options: NegotiationOptions = {}): PlaybackPlan {
@@ -145,7 +147,9 @@ export function negotiatePlayback(probe: Probe, capabilities: ClientCapabilities
     if (codecOk && heightOk && bitrateOk) {
       video = { action: 'copy', codec, height, ...hdr };
     } else {
-      const targetCodec = preferred(capabilities.videoCodecs, DEFAULT_VIDEO);
+      const targetCodec = options.preferredVideoCodec && capabilities.videoCodecs.includes(options.preferredVideoCodec)
+        ? options.preferredVideoCodec
+        : preferred(capabilities.videoCodecs, DEFAULT_VIDEO);
       const targetHeight = capabilities.maxHeight != null && height != null ? Math.min(height, capabilities.maxHeight) : height;
       video = { action: 'transcode', codec: targetCodec, height: targetHeight, ...hdr };
       if (!codecOk) reasons.push(`video codec ${codec || 'unknown'} unsupported; transcoding to ${targetCodec}`);

@@ -92,9 +92,13 @@ export interface SeerrRequests { configured: boolean; requests: SeerrRequestStat
 export interface CatalogCollectionSummary { id: string; name: string; posterUrl?: string; count: number }
 export interface CatalogCollectionView { id: string; name: string; posterUrl?: string; titles: CatalogItem[]; missing?: CatalogCollectionGap[] }
 export interface EncoderProbeResult { family: string; encoder: string; codec: string; built: boolean; working: boolean; error?: string }
+export const ENCODER_PRESETS = ['ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow'] as const;
+export interface TranscodingSettings { preset: (typeof ENCODER_PRESETS)[number]; quality: number; threads: number; preferHevcOutput: boolean }
 export interface HardwareReport { adapters: string[]; encoders: EncoderProbeResult[]; available: string[]; selected: string | null; mode: string; warning?: string; detectedAt: string }
 export interface ArtworkOption { path: string; previewUrl: string }
-export interface ArtworkOptions { posters: ArtworkOption[]; backdrops: ArtworkOption[] }
+/** One level of the host directory tree; `path` is null when listing drives. */
+export interface DirectoryListing { path: string | null; parent: string | null; entries: Array<{ name: string; path: string }> }
+export interface ArtworkOptions { posters: ArtworkOption[]; backdrops: ArtworkOption[]; logos: ArtworkOption[] }
 export interface TmdbTitleCandidate { id: number; title: string; year?: number; overview?: string; posterPath?: string }
 export interface AdminMediaItem { id: string; title: string; year?: number; kind: string; library: string; archived: boolean; archivedAt: string | null; posterUrl?: string; tmdbId?: string }
 export interface AdminMediaList { items: AdminMediaItem[]; total: number }
@@ -104,6 +108,8 @@ export interface CatalogQuality { badge?: string; resolutionLabel: string | null
 export interface CatalogItemDetails extends Omit<CatalogItem, 'genres' | 'collection'> {
   originalTitle?: string;
   releaseDate?: string;
+  /** When the title first appeared in this library, ISO 8601. */
+  addedAt?: string;
   tagline?: string;
   contentRating?: string;
   providerRating?: number;
@@ -352,6 +358,7 @@ export const api = {
   getSettings: () => request<{ settings: UserSettings }>('/api/v1/me/settings'),
   updateSettings: (change: Partial<UserSettings>) => request<{ settings: UserSettings }>('/api/v1/me/settings', { method: 'PUT', body: JSON.stringify(change) }),
   libraries: () => request<{ libraries: Library[] }>('/api/v1/libraries'),
+  browseDirectories: (path?: string) => request<DirectoryListing>(`/api/v1/admin/filesystem${path ? `?path=${encodeURIComponent(path)}` : ''}`),
   createLibrary: (library: { name: string; kind: 'movies' | 'shows'; rootPath: string }) =>
     request<{ library: Library }>('/api/v1/libraries', { method: 'POST', body: JSON.stringify(library) }),
   deleteLibrary: (id: string) => request<void>(`/api/v1/libraries/${encodeURIComponent(id)}`, { method: 'DELETE' }),
@@ -394,6 +401,8 @@ export const api = {
   requestTitle: (tmdbId: number, mediaType: 'movie' | 'tv' = 'movie') =>
     request<{ request: SeerrRequestState }>('/api/v1/requests', { method: 'POST', body: JSON.stringify({ tmdbId, mediaType }) }),
   transcoding: () => request<{ hardware: HardwareReport }>('/api/v1/admin/transcoding'),
+  transcodingSettings: () => request<{ settings: TranscodingSettings }>('/api/v1/admin/transcoding/settings'),
+  updateTranscodingSettings: (patch: Partial<TranscodingSettings>) => request<{ settings: TranscodingSettings }>('/api/v1/admin/transcoding/settings', { method: 'PATCH', body: JSON.stringify(patch) }),
   detectTranscoding: () => request<{ hardware: HardwareReport }>('/api/v1/admin/transcoding/detect', { method: 'POST' }),
   catalogCollections: () => request<{ collections: CatalogCollectionSummary[] }>('/api/v1/catalog/collections'),
   userCollections: () => request<{ collections: UserCollectionSummary[] }>('/api/v1/me/collections'),
@@ -421,7 +430,7 @@ export const api = {
   catalogCategory: (key: string) => request<{ category: CatalogCategoryView }>(`/api/v1/catalog/categories/${encodeURIComponent(key)}`),
   catalogCollection: (id: string) => request<{ collection: CatalogCollectionView }>(`/api/v1/catalog/collections/${encodeURIComponent(id)}`),
   artworkOptions: (id: string) => request<ArtworkOptions>(`/api/v1/catalog/items/${encodeURIComponent(id)}/artwork`),
-  setArtwork: (id: string, change: { posterPath?: string | null; backdropPath?: string | null }) =>
+  setArtwork: (id: string, change: { posterPath?: string | null; backdropPath?: string | null; logoPath?: string | null }) =>
     request<{ item: { id: string; posterUrl?: string; backdropUrl?: string } }>(`/api/v1/catalog/items/${encodeURIComponent(id)}/artwork`, { method: 'PATCH', body: JSON.stringify(change) }),
   catalogSearch: (libraryId: string | undefined, query: string) => request<CatalogSearch>(`/api/v1/catalog/search?${libraryId ? `libraryId=${encodeURIComponent(libraryId)}&` : ''}q=${encodeURIComponent(query)}`),
   playback: (id: string, capabilities: ClientCapabilities, audioTrackIndex?: number) => request<PlaybackResponse>(`/api/v1/catalog/items/${encodeURIComponent(id)}/playback`, { method: 'POST', body: JSON.stringify({ ...capabilities, ...(audioTrackIndex != null ? { audioTrackIndex } : {}) }) }),

@@ -209,3 +209,23 @@ describe('high dynamic range sources', () => {
     expect(sdr.video?.hdr).toBeUndefined();
   });
 });
+
+describe('operator codec preference', () => {
+  const hevcCapable: ClientCapabilities = { ...capable, videoCodecs: ['h264', 'hevc'] };
+  const needsEncode: Probe = { ...h264Mp4, streams: [{ codec_type: 'video', codec_name: 'av1', width: 1920, height: 1080 }, { codec_type: 'audio', codec_name: 'aac' }] };
+
+  it('re-encodes to HEVC when the operator prefers it and the client can decode it', () => {
+    const plan = negotiatePlayback(needsEncode, hevcCapable, 0, { preferredVideoCodec: 'hevc' });
+    expect(plan.video).toMatchObject({ action: 'transcode', codec: 'hevc' });
+  });
+
+  it('keeps H.264 for a client that cannot decode the preferred codec', () => {
+    const plan = negotiatePlayback(needsEncode, capable, 0, { preferredVideoCodec: 'hevc' });
+    expect(plan.video).toMatchObject({ action: 'transcode', codec: 'h264' });
+  });
+
+  it('never re-encodes a copyable track just to honour the preference', () => {
+    const plan = negotiatePlayback(h264Mp4, hevcCapable, 0, { preferredVideoCodec: 'hevc' });
+    expect(plan.video).toMatchObject({ action: 'copy', codec: 'h264' });
+  });
+});

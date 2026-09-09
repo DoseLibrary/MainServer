@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { PlaybackPlan } from './playback.ts';
 import { SEGMENT_SECONDS, buildSegmentArgs, ladderFor, masterPlaylist, mediaPlaylist, segmentCount, type HlsVariant } from './hls.ts';
 import { buildTranscodeArgs } from './streaming.ts';
+import { rateControlArgs } from './hwaccel.ts';
 
 const execFileAsync = promisify(execFile);
 
@@ -111,5 +112,32 @@ describe('HDR segments', () => {
     const vaapi = { family: 'vaapi', codec: 'h264', encoder: 'h264_vaapi', device: '/dev/dri/renderD128' } as unknown as Parameters<typeof buildSegmentArgs>[5];
     const joined = buildSegmentArgs('/media/a.mkv', hdrPlan, variant, 0, 600, vaapi).join(' ');
     expect(joined.indexOf('tonemap=')).toBeLessThan(joined.indexOf('hwupload'));
+  });
+});
+
+describe('operator encoding settings', () => {
+  const encoding = { preset: 'medium', quality: 18, threads: 4 } as const;
+
+  it('applies preset, quality and threads to a software segment, keeping the rung offset', () => {
+    const args = buildSegmentArgs('/m/f.mkv', plan, ladderFor(1080)[1], 3, 100, undefined, encoding);
+    const text = args.join(' ');
+    // The 720p rung sits two CRF points below the source rung (21 → 23), so 18 → 20.
+    expect(text).toContain('-preset medium -crf 20');
+    expect(text).toContain('-threads 4');
+  });
+
+  it('applies preset and quality to a progressive re-encode and leaves threads to ffmpeg when zero', () => {
+    const text = buildTranscodeArgs(plan, '/m/f.mkv', undefined, undefined, { preset: 'slow', quality: 24, threads: 0 }).join(' ');
+    expect(text).toContain('-preset slow -crf 24');
+    expect(text).not.toContain('-threads');
+  });
+
+  it('maps the preset onto NVENC and Quick Sync, and ignores it where the family has none', () => {
+    const nvenc = rateControlArgs({ family: 'nvenc', encoder: 'h264_nvenc', codec: 'h264' }, 21, undefined, 'slow');
+    expect(nvenc.slice(0, 2)).toEqual(['-preset', 'p6']);
+    const qsv = rateControlArgs({ family: 'qsv', encoder: 'h264_qsv', codec: 'h264' }, 21, undefined, 'medium');
+    expect(qsv.slice(0, 2)).toEqual(['-preset', 'medium']);
+    const vaapi = rateControlArgs({ family: 'vaapi', encoder: 'h264_vaapi', codec: 'h264' }, 21, undefined, 'slow');
+    expect(vaapi).not.toContain('-preset');
   });
 });

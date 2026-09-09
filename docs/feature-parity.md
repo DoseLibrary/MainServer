@@ -24,6 +24,13 @@ what is still missing. Functionality only: none of this copies their interfaces.
 | Security baseline | Login throttling, CSP/security headers, HTTPS via bundled Caddy at dose.local. |
 | Trailers, scrubber previews, subtitle extraction | Plugins, scheduled and event-driven. |
 | Collections, watchlist, marathon queue, watch-data import | See `docs/personal-library.md`. |
+| Chromecast remote control | Play/pause, seek, volume, and subtitle switching drive the receiver while casting; local playback resumes where the receiver stopped. The receiver fetches WebVTT through the cast token. |
+| Transcoding settings | Admin-tunable encoder preset, CRF quality, thread count, and an HEVC-output preference, applied to HLS segments, progressive re-encodes, and cast streams. |
+| Library folder picker | Folder-only browser in the library manager; confined to `/media` in Docker, host drives in native development. |
+| Title logo artwork | Admin can pick or clear the transparent title logo used by the hero, alongside poster and backdrop. |
+| Link previews | Open Graph and Twitter card tags are injected into the shell for `/media/:id` so a pasted link unfurls with title, overview, and artwork (unauthenticated, ignores maturity limits by design). |
+| Details page clock | "Ends at" for what is left of a movie or episode, and the date the title was added. |
+| Player gestures | Double-click the picture for fullscreen; single click still toggles playback. |
 
 ## Still missing
 

@@ -463,7 +463,8 @@ export class CatalogService {
 
   /** Storage key for a subtitle track, so the API can stream the WebVTT file. */
   async subtitle(id: string) {
-    const [row] = await this.database.select({ storageKey: mediaSubtitles.storageKey }).from(mediaSubtitles).where(eq(mediaSubtitles.id, id)).limit(1);
+    const [row] = await this.database.select({ storageKey: mediaSubtitles.storageKey, mediaItemId: mediaFiles.mediaItemId })
+      .from(mediaSubtitles).innerJoin(mediaFiles, eq(mediaFiles.id, mediaSubtitles.mediaFileId)).where(eq(mediaSubtitles.id, id)).limit(1);
     return row ?? null;
   }
 
@@ -816,6 +817,17 @@ export class CatalogService {
     const featured = chosen ? { ...chosen, hasLocalTrailer: (await this.localTrailerSource(chosen.id)) != null } : null;
     return { libraryId: libraryId ?? null, featured, sections };
   }
+  /**
+   * The little a link preview needs about a title. Deliberately ignores the
+   * viewer: there is none, a chat app's crawler fetches the page anonymously.
+   */
+  async sharePreview(id: string): Promise<{ title: string; overview: string | null; kind: string; year: number | null; imageUrl: string | undefined } | null> {
+    const [row] = await this.database.select({ title: mediaItems.title, overview: mediaItems.overview, kind: mediaItems.kind, year: mediaItems.year, posterPath: mediaItems.posterPath, backdropPath: mediaItems.backdropPath })
+      .from(mediaItems).where(and(eq(mediaItems.id, id), isNull(mediaItems.archivedAt))).limit(1);
+    if (!row) return null;
+    return { title: row.title, overview: row.overview, kind: row.kind, year: row.year, imageUrl: imageLocalUrl(row.backdropPath) ?? imageLocalUrl(row.posterPath) };
+  }
+
   async item(id: string, userId: string) {
     const [row] = await this.database.select({ item: mediaItems, progress: playbackProgress }).from(mediaItems).leftJoin(playbackProgress, and(eq(playbackProgress.mediaItemId, mediaItems.id), eq(playbackProgress.userId, userId))).where(and(eq(mediaItems.id, id), eq(mediaItems.available, true), this.withinMaturity, isNull(mediaItems.archivedAt))).limit(1); if (!row) return null;
     const childRows = await this.database.select({ item: mediaItems, progress: playbackProgress }).from(mediaItems).leftJoin(playbackProgress, and(eq(playbackProgress.mediaItemId, mediaItems.id), eq(playbackProgress.userId, userId))).where(and(eq(mediaItems.parentId, id), eq(mediaItems.available, true), this.withinMaturity, isNull(mediaItems.archivedAt))).orderBy(mediaItems.seasonNumber, mediaItems.episodeNumber, mediaItems.sortTitle);
@@ -842,6 +854,7 @@ export class CatalogService {
       watched: row.progress?.watched ?? false,
       originalTitle: row.item.originalTitle ?? undefined,
       releaseDate: row.item.releaseDate ?? undefined,
+      addedAt: row.item.createdAt.toISOString(),
       tagline: row.item.tagline ?? undefined,
       contentRating: row.item.contentRating ?? undefined,
       providerRating: row.item.providerRating ?? undefined,
