@@ -1,3 +1,13 @@
+# Dose — self-hosted household media server.
+#
+# Self-contained: this file plus a `.env` next to it is a complete install.
+# Nothing else from the repository is needed; the server image is pulled from
+# GitHub Container Registry and the proxy config is inlined below.
+#
+#   docker compose pull && docker compose up -d
+#
+# Needs Docker Compose 2.23.1 or newer (inline `configs: content:`).
+
 services:
   dose:
     # Published by .github/workflows/docker.yml on every push to v2. Pin a
@@ -83,12 +93,39 @@ services:
     ports:
       - "80:80"
       - "443:443"
+    configs:
+      - source: caddyfile
+        target: /etc/caddy/Caddyfile
     volumes:
-      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
       - dose-caddy-data:/data
       - dose-caddy-config:/config
     security_opt:
       - no-new-privileges:true
+
+# Reverse proxy for Dose, serving https://dose.local with a locally generated
+# certificate. HTTPS is not cosmetic: installing Dose as an app and holding
+# offline downloads both require a secure context on iOS.
+#
+# Point dose.local at this machine first (router DNS entry, or a hosts line
+# on each device). The certificate is Caddy's own local CA: trust it once per
+# device or accept the browser warning; a LAN name cannot get a public one.
+configs:
+  caddyfile:
+    content: |
+      dose.local {
+        tls internal
+        encode gzip
+        # WebSockets (live catalog updates) are proxied transparently.
+        reverse_proxy dose:3000 {
+          # Streaming and downloads move gigabytes; never buffer them.
+          flush_interval -1
+        }
+      }
+
+      # Plain HTTP redirects to HTTPS so a typed address still lands somewhere.
+      http://dose.local {
+        redir https://dose.local{uri} permanent
+      }
 
 volumes:
   dose-postgres:

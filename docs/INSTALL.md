@@ -19,9 +19,10 @@ devices. Every step is here in order; skim the headings if you only need one.
 
 ## 1. Configure
 
-```sh
-cp .env.example .env
-```
+No clone needed. Make a folder for Dose and put two files in it, both
+copied from the [README](../README.md#install): `compose.yaml` as-is, and
+`.env` with your values. (In a checkout, `cp .env.example .env` gives the
+same starting point.)
 
 Edit `.env`:
 
